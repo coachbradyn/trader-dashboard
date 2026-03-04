@@ -19,6 +19,16 @@ class Settings(BaseSettings):
         env_file = ".env"
 
     @property
+    def async_database_url(self) -> str:
+        """Convert standard postgres URL to async-compatible URL."""
+        url = self.database_url
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url
+
+    @property
     def origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",")]
 
