@@ -1,0 +1,28 @@
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+
+class Settings(BaseSettings):
+    database_url: str = "sqlite+aiosqlite:///./dev.db"
+    admin_secret: str = "change-me"
+    allowed_origins: str = "http://localhost:3000"
+
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://data.alpaca.markets"
+
+    # Price polling
+    price_poll_interval_market: int = 15  # seconds during market hours
+    price_poll_interval_closed: int = 60  # seconds outside market hours
+
+    class Config:
+        env_file = ".env"
+
+    @property
+    def origins_list(self) -> list[str]:
+        return [o.strip() for o in self.allowed_origins.split(",")]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #030712;
+  --foreground: #f9fafb;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-border rounded-xl p-5;
+  }
+  .stat-value {
+    @apply text-2xl font-bold tabular-nums;
+  }
+  .stat-label {
+    @apply text-xs text-gray-400 uppercase tracking-wider;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .badge-long {
+    @apply badge bg-profit/15 text-profit;
+  }
+  .badge-short {
+    @apply badge bg-loss/15 text-loss;
+  }
+  .badge-open {
+    @apply badge bg-accent/15 text-accent;
+  }
+  .badge-closed {
+    @apply badge bg-gray-700 text-gray-300;
+  }
+}
