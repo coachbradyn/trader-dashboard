@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 
@@ -22,7 +22,7 @@ class PriceService:
         return entry["price"] if entry else None
 
     def _is_market_hours(self) -> bool:
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         # US Eastern: UTC-5 (EST) or UTC-4 (EDT)
         # Approximate: market open ~14:30 UTC, close ~21:00 UTC
         hour = now.hour
@@ -52,7 +52,7 @@ class PriceService:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = datetime.utcnow().isoformat()
                     for ticker, snapshot in data.items():
                         latest_trade = snapshot.get("latestTrade", {})
                         price = latest_trade.get("p", 0)

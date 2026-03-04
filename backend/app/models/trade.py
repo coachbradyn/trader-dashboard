@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import String, Float, Integer, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,7 +42,7 @@ class Trade(Base):
     raw_entry_payload: Mapped[dict | None] = mapped_column(JSON)
     raw_exit_payload: Mapped[dict | None] = mapped_column(JSON)
 
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     trader: Mapped["Trader"] = relationship(back_populates="trades")
     portfolio_trades: Mapped[list["PortfolioTrade"]] = relationship(back_populates="trade")

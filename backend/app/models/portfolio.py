@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import String, Float, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -16,7 +16,7 @@ class Portfolio(Base):
     initial_capital: Mapped[float] = mapped_column(Float, default=10000.0)
     cash: Mapped[float] = mapped_column(Float, default=10000.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")
     portfolio_trades: Mapped[list["PortfolioTrade"]] = relationship(back_populates="portfolio")
