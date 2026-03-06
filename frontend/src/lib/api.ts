@@ -44,4 +44,19 @@ export const api = {
 
   // Prices
   getPrices: () => fetchApi<import("./types").PriceCache>("/prices"),
+
+  // AI Analysis
+  getBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing"),
+  postReview: (daysBack: number) =>
+    fetchApi<import("./types").ReviewResponse>("/ai/review", {
+      method: "POST",
+      body: JSON.stringify({ days_back: daysBack }),
+    }),
+  postQuery: (question: string) =>
+    fetchApi<import("./types").QueryResponse>("/ai/query", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
+  getConflicts: (daysBack: number = 7) =>
+    fetchApi<import("./types").ConflictResolution[]>(`/ai/conflicts?days_back=${daysBack}`),
 };

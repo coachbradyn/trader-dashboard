@@ -7,6 +7,12 @@
   --foreground: #f9fafb;
 }
 
+@property --gradient-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -37,5 +43,159 @@ body {
   }
   .badge-closed {
     @apply badge bg-gray-700 text-gray-300;
+  }
+
+  /* ── AI Design System ─────────────────────────────────────────── */
+
+  .ai-card {
+    @apply bg-surface rounded-xl p-5 relative overflow-hidden;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .ai-card:hover {
+    border-color: rgba(99, 102, 241, 0.35);
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .ai-badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium uppercase tracking-wider;
+    background: rgba(99, 102, 241, 0.12);
+    color: #a5b4fc;
+  }
+
+  .ai-gradient-border {
+    position: relative;
+    border-radius: 0.75rem;
+    overflow: hidden;
+  }
+
+  .ai-gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 2px;
+    border-radius: 0.75rem;
+    background: conic-gradient(
+      from var(--gradient-angle, 0deg),
+      #6366f1,
+      #8b5cf6,
+      #6366f1,
+      #3b82f6,
+      #6366f1
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: gradient-rotate 4s linear infinite;
+    pointer-events: none;
+  }
+
+  .ai-gradient-border > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Terminal styling */
+  .terminal-viewport {
+    @apply font-mono text-sm leading-relaxed;
+    background: #0a0a0f;
+    color: #d1d5db;
+  }
+
+  .terminal-viewport .query {
+    @apply text-ai-blue font-medium;
+  }
+
+  .terminal-viewport .response {
+    @apply text-gray-300;
+  }
+
+  .terminal-viewport .response strong {
+    @apply text-white font-semibold;
+  }
+
+  .terminal-viewport .response ul {
+    @apply pl-4 space-y-1;
+  }
+
+  .terminal-viewport .response li {
+    @apply relative;
+  }
+
+  .terminal-viewport .response li::before {
+    content: "•";
+    @apply absolute -left-3 text-ai-purple;
+  }
+
+  /* Confidence gauge colors */
+  .confidence-high {
+    @apply bg-profit;
+  }
+  .confidence-mid {
+    @apply bg-yellow-500;
+  }
+  .confidence-low {
+    @apply bg-loss;
+  }
+
+  /* Skeleton loading for AI */
+  .ai-skeleton {
+    @apply rounded;
+    background: linear-gradient(
+      90deg,
+      rgba(99, 102, 241, 0.08) 25%,
+      rgba(99, 102, 241, 0.15) 50%,
+      rgba(99, 102, 241, 0.08) 75%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  }
+
+  @keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* Markdown rendering inside AI responses */
+  .ai-prose h2 {
+    @apply text-white font-semibold text-base mt-4 mb-2 first:mt-0;
+  }
+
+  .ai-prose h3 {
+    @apply text-gray-200 font-medium text-sm mt-3 mb-1;
+  }
+
+  .ai-prose p {
+    @apply text-gray-300 text-sm leading-relaxed mb-2;
+  }
+
+  .ai-prose ul {
+    @apply space-y-1 mb-3;
+  }
+
+  .ai-prose li {
+    @apply text-sm text-gray-300 pl-4 relative;
+  }
+
+  .ai-prose li::before {
+    content: "•";
+    @apply absolute left-0 text-ai-purple;
+  }
+
+  .ai-prose strong {
+    @apply text-white font-semibold;
+  }
+
+  .ai-prose code {
+    @apply font-mono text-xs bg-surface-light/50 px-1.5 py-0.5 rounded text-ai-blue;
+  }
+
+  .ai-prose blockquote {
+    @apply border-l-2 border-ai-blue pl-4 py-2 my-3 bg-ai-blue/5 rounded-r-lg;
+  }
+
+  .ai-prose blockquote p {
+    @apply text-gray-200 italic;
   }
 }

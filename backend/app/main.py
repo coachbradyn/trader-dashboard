@@ -1,12 +1,18 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.api import webhooks, trades, traders, portfolios, leaderboard
 from app.services.price_service import price_service
+from app.database import async_session
+from app.models import Trade, Trader, ConflictResolution
 
 
 @asynccontextmanager
@@ -44,6 +50,149 @@ app.include_router(portfolios.router, prefix="/api", tags=["portfolios"])
 app.include_router(leaderboard.router, prefix="/api", tags=["leaderboard"])
 
 
+# ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────
+
+async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
+    """Fetch trades from the last N days, formatted as webhook-style dicts for ai_service."""
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    async with async_session() as db:
+        result = await db.execute(
+            select(Trade)
+            .options(selectinload(Trade.trader))
+            .where(Trade.created_at >= cutoff)
+            .order_by(Trade.created_at.desc())
+        )
+        db_trades = result.scalars().all()
+
+    out = []
+    for t in db_trades:
+        if t.status == "open":
+            out.append({
+                "signal": "entry",
+                "trader": t.trader.trader_id,
+                "dir": t.direction,
+                "ticker": t.ticker,
+                "price": t.entry_price,
+                "qty": t.qty,
+                "sig": t.entry_signal_strength or 0,
+                "adx": t.entry_adx or 0,
+                "atr": t.entry_atr or 0,
+                "stop": t.stop_price or 0,
+                "tf": t.timeframe or "?",
+                "time": int(t.entry_time.timestamp() * 1000) if t.entry_time else 0,
+            })
+        else:
+            out.append({
+                "signal": "exit",
+                "trader": t.trader.trader_id,
+                "dir": t.direction,
+                "ticker": t.ticker,
+                "price": t.exit_price or t.entry_price,
+                "pnl_pct": t.pnl_percent or 0,
+                "bars_in_trade": t.bars_in_trade or 0,
+                "exit_reason": t.exit_reason or "unknown",
+                "tf": t.timeframe or "?",
+                "time": int(t.exit_time.timestamp() * 1000) if t.exit_time else 0,
+            })
+            # Also include the entry for this trade
+            out.append({
+                "signal": "entry",
+                "trader": t.trader.trader_id,
+                "dir": t.direction,
+                "ticker": t.ticker,
+                "price": t.entry_price,
+                "qty": t.qty,
+                "sig": t.entry_signal_strength or 0,
+                "adx": t.entry_adx or 0,
+                "atr": t.entry_atr or 0,
+                "stop": t.stop_price or 0,
+                "tf": t.timeframe or "?",
+                "time": int(t.entry_time.timestamp() * 1000) if t.entry_time else 0,
+            })
+    return out
+
+
+async def get_positions_for_ai() -> list[dict]:
+    """Fetch currently open positions, formatted for ai_service."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Trade)
+            .options(selectinload(Trade.trader))
+            .where(Trade.status == "open")
+            .order_by(Trade.entry_time.desc())
+        )
+        open_trades = result.scalars().all()
+
+    out = []
+    for t in open_trades:
+        current_price = price_service.get_price(t.ticker) or t.entry_price
+        if t.direction == "long":
+            pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+        else:
+            pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
+
+        out.append({
+            "trader": t.trader.trader_id,
+            "dir": t.direction,
+            "ticker": t.ticker,
+            "entry_price": t.entry_price,
+            "current_price": current_price,
+            "pnl_pct": round(pnl_pct, 2),
+            "bars_in_trade": 0,
+        })
+    return out
+
+
+async def get_market_data_for_ai() -> dict | None:
+    """Pull SPY/VIX from the price service cache."""
+    spy_price = price_service.get_price("SPY")
+    vix_price = price_service.get_price("VIX")
+    if not spy_price:
+        return None
+    return {
+        "spy_change": 0.0,  # Would need previous close to calculate
+        "vix": vix_price or 0.0,
+    }
+
+
+# ─── REGISTER AI ROUTES ──────────────────────────────────────────────────────
+
+from app.services.ai_service import register_ai_routes
+register_ai_routes(app, get_trades_for_ai, get_positions_for_ai, get_market_data_for_ai)
+
+
+# ─── CONFLICT LOG ENDPOINTS ──────────────────────────────────────────────────
+
+@app.get("/api/ai/conflicts")
+async def get_conflicts(days_back: int = 7, limit: int = 50):
+    """Return recent conflict resolutions."""
+    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    async with async_session() as db:
+        result = await db.execute(
+            select(ConflictResolution)
+            .where(ConflictResolution.created_at >= cutoff)
+            .order_by(ConflictResolution.created_at.desc())
+            .limit(limit)
+        )
+        conflicts = result.scalars().all()
+
+    return [
+        {
+            "id": c.id,
+            "ticker": c.ticker,
+            "strategies": json.loads(c.strategies) if isinstance(c.strategies, str) else c.strategies,
+            "recommendation": c.recommendation,
+            "confidence": c.confidence,
+            "reasoning": c.reasoning,
+            "signals": c.signals,
+            "created_at": c.created_at.isoformat(),
+        }
+        for c in conflicts
+    ]
+
+
+# ─── EXISTING ENDPOINTS ──────────────────────────────────────────────────────
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
@@ -61,7 +210,6 @@ async def seed_database(secret: str):
     if secret != settings.admin_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    from sqlalchemy import select
     from app.database import async_session
     from app.models import Trader, Portfolio, PortfolioStrategy
     from app.utils.auth import generate_api_key, hash_api_key

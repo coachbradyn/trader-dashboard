@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://data.alpaca.markets"
 
+    # AI service
+    anthropic_api_key: str = ""
+
     # Price polling
     price_poll_interval_market: int = 15  # seconds during market hours
     price_poll_interval_closed: int = 60  # seconds outside market hours

@@ -5,6 +5,7 @@ from app.models.trade import Trade
 from app.models.portfolio_trade import PortfolioTrade
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.daily_stats import DailyStats
+from app.models.conflict import ConflictResolution
 
 __all__ = [
     "Trader",
@@ -14,4 +15,5 @@ __all__ = [
     "PortfolioTrade",
     "PortfolioSnapshot",
     "DailyStats",
+    "ConflictResolution",
 ]

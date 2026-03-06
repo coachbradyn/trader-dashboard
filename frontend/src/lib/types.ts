@@ -115,3 +115,46 @@ export interface PriceCache {
     timestamp: string;
   };
 }
+
+// ── AI Types ──────────────────────────────────────────────────
+
+export interface BriefingResponse {
+  briefing: string;
+  open_positions: number;
+}
+
+export interface ReviewResponse {
+  review: string;
+  trades_analyzed: number;
+}
+
+export interface QueryResponse {
+  answer: string;
+  trades_in_context: number;
+}
+
+export interface ConflictResolution {
+  id: string;
+  ticker: string;
+  strategies: string[];
+  recommendation: "LONG" | "SHORT" | "STAY_FLAT";
+  confidence: number;
+  reasoning: string;
+  signals: Array<{
+    trader: string;
+    dir: string;
+    ticker: string;
+    price: number;
+    sig: number;
+    adx: number;
+    atr: number;
+  }>;
+  created_at: string;
+}
+
+export interface QueryHistoryItem {
+  id: string;
+  question: string;
+  answer: string;
+  timestamp: Date;
+}
