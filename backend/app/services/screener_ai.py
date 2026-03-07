@@ -15,7 +15,11 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-5-20250929"
-CLIENT = anthropic.Anthropic()
+
+try:
+    CLIENT = anthropic.Anthropic()
+except Exception:
+    CLIENT = None
 
 SCREENER_SYSTEM_PROMPT = """You are Henry, an AI trading analyst embedded in a multi-strategy trading dashboard.
 You analyze indicator alerts from a real-time screener to identify high-conviction trade opportunities.
@@ -142,6 +146,9 @@ Rules:
 - Flag any tickers that overlap with current portfolio positions
 - Be specific about WHY the indicator convergence matters
 - Sort picks by confidence descending"""
+
+    if CLIENT is None:
+        return {"picks": [], "market_context": {"sector_heat": "AI unavailable", "catalysts": "ANTHROPIC_API_KEY not configured", "noise_ratio": "N/A"}}
 
     try:
         response = CLIENT.messages.create(
@@ -375,6 +382,21 @@ Rules:
 - Be specific about entry, target, stop levels using the chart data.
 - If data is insufficient for a confident call, lower confidence and say so in thesis."""
 
+    if CLIENT is None:
+        return {
+            "play_type": heuristic_play,
+            "direction": "LONG" if dominant == "bullish" else "SHORT",
+            "confidence": 0,
+            "thesis": "AI analysis unavailable — ANTHROPIC_API_KEY not configured.",
+            "entry_zone": "N/A", "price_target": "N/A", "stop_loss": "N/A", "risk_reward": "N/A",
+            "indicators_firing": indicators_firing,
+            "signal_breakdown": {"bullish": bullish, "bearish": bearish, "neutral": neutral},
+            "dominant_signal": dominant,
+            "historical_matches": [], "strategy_alignment": [],
+            "alert_timeline_summary": f"{len(alerts)} alerts in window",
+            "timeframes_represented": timeframes,
+        }
+
     try:
         response = CLIENT.messages.create(
             model=MODEL,
@@ -502,6 +524,9 @@ Write a 4-section recap:
 4. TOMORROW SETUP — 3 tickers worth watching into tomorrow
 
 Keep it under 300 words. Be direct and specific."""
+
+    if CLIENT is None:
+        return "AI summary unavailable — ANTHROPIC_API_KEY not configured."
 
     try:
         response = CLIENT.messages.create(

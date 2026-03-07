@@ -23,7 +23,11 @@ import anthropic
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
 MODEL = "claude-sonnet-4-5-20250929"  # Best balance of speed + reasoning for trade analysis
-CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env
+
+try:
+    CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env
+except Exception:
+    CLIENT = None
 
 SYSTEM_PROMPT = """You are Henry, an AI trading analyst embedded in a multi-strategy trading dashboard.
 You analyze trade data from four Pine Script strategies:
@@ -43,6 +47,8 @@ If data is insufficient to draw conclusions, say so rather than speculating."""
 
 def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
     """Single Claude API call with system prompt."""
+    if CLIENT is None:
+        return "AI analysis unavailable — ANTHROPIC_API_KEY not configured."
     response = CLIENT.messages.create(
         model=MODEL,
         max_tokens=max_tokens,
@@ -454,6 +460,8 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     async def ai_review(req: ReviewRequest):
         try:
             todays_trades = await get_trades_fn(days_back=1)
+            if not todays_trades:
+                return {"review": "No trades recorded yet. Once your strategies start sending webhooks, trade reviews will appear here.", "trades_analyzed": 0}
             recent_history = await get_trades_fn(days_back=5) if req.days_back > 1 else None
             result = nightly_review(todays_trades, recent_history)
             return {"review": result, "trades_analyzed": len(todays_trades)}
@@ -465,8 +473,12 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         try:
             positions = await get_positions_fn()
             yesterdays_trades = await get_trades_fn(days_back=1)
+
+            if not positions and not yesterdays_trades:
+                return {"briefing": "No trading activity yet. Connect your TradingView strategies via Settings to start receiving webhooks and generating briefings.", "open_positions": 0}
+
             market_data = await get_market_data_fn() if get_market_data_fn else None
-            
+
             # Build cumulative stats from longer history
             all_trades = await get_trades_fn(days_back=30)
             exits = [t for t in all_trades if t.get("signal") == "exit"]
@@ -481,7 +493,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 cumulative[trader]["total_pnl"] += t.get("pnl_pct", 0)
             for s in cumulative.values():
                 s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
-            
+
             result = morning_briefing(positions, yesterdays_trades, market_data, cumulative)
             return {"briefing": result, "open_positions": len(positions)}
         except Exception as e:
@@ -492,6 +504,8 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         try:
             all_trades = await get_trades_fn(days_back=30)
             positions = await get_positions_fn()
+            if not all_trades and not positions:
+                return {"answer": "No trading data available yet. Once webhooks start flowing in, I'll be able to answer questions about your trading performance.", "trades_in_context": 0}
             result = query_trades(req.question, all_trades, positions)
             return {"answer": result, "trades_in_context": len(all_trades)}
         except Exception as e:
