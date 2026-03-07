@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useLeaderboard } from "@/hooks/useLeaderboard";
 import LeaderboardTable from "@/components/leaderboard/LeaderboardTable";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function HomePage() {
   const [sortBy, setSortBy] = useState("total_return_pct");
@@ -17,7 +18,7 @@ export default function HomePage() {
       </div>
 
       {loading ? (
-        <div className="card animate-pulse h-64" />
+        <Skeleton className="h-64 rounded-xl" />
       ) : (
         <LeaderboardTable
           entries={entries || []}

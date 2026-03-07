@@ -11,13 +11,44 @@ from app.services.price_service import price_service
 
 
 async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
-    # 1. Validate trader and API key
+    # 1. Try to find existing trader
     result = await db.execute(select(Trader).where(Trader.trader_id == payload.trader))
     trader = result.scalar_one_or_none()
-    if not trader:
-        raise ValueError(f"Unknown trader: {payload.trader}")
-    if not verify_api_key(payload.key, trader.api_key_hash):
-        raise ValueError("Invalid API key")
+
+    if trader:
+        # Known trader — verify API key
+        if not verify_api_key(payload.key, trader.api_key_hash):
+            raise ValueError("Invalid API key")
+    else:
+        # Unknown trader — check allowlisted keys
+        from app.models.allowlisted_key import AllowlistedKey
+        result = await db.execute(
+            select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
+        )
+        unclaimed_keys = result.scalars().all()
+
+        matched_key = None
+        for ak in unclaimed_keys:
+            if verify_api_key(payload.key, ak.api_key_hash):
+                matched_key = ak
+                break
+
+        if not matched_key:
+            raise ValueError(f"Unknown trader '{payload.trader}' and no matching allowlisted key")
+
+        # Auto-create trader from allowlisted key
+        from app.utils.auth import hash_api_key
+        trader = Trader(
+            trader_id=payload.trader,
+            display_name=matched_key.label or f"Strategy ({payload.trader})",
+            api_key_hash=matched_key.api_key_hash,
+        )
+        db.add(trader)
+        await db.flush()
+        matched_key.claimed_by_id = trader.id
+
+    # Update last webhook timestamp
+    trader.last_webhook_at = datetime.utcnow()
 
     # 2. Process based on signal type
     if payload.signal == "entry":

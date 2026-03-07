@@ -6,6 +6,10 @@ from app.models.portfolio_trade import PortfolioTrade
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.daily_stats import DailyStats
 from app.models.conflict import ConflictResolution
+from app.models.indicator_alert import IndicatorAlert
+from app.models.market_summary import MarketSummary
+from app.models.screener_analysis import ScreenerAnalysis
+from app.models.allowlisted_key import AllowlistedKey
 
 __all__ = [
     "Trader",
@@ -16,4 +20,8 @@ __all__ = [
     "PortfolioSnapshot",
     "DailyStats",
     "ConflictResolution",
+    "IndicatorAlert",
+    "MarketSummary",
+    "ScreenerAnalysis",
+    "AllowlistedKey",
 ]

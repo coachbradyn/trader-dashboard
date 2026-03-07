@@ -4,6 +4,9 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import type { ReviewResponse } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const DAY_OPTIONS = [
   { label: "1D", value: 1 },
@@ -15,9 +18,10 @@ function SkeletonReview() {
   return (
     <div className="space-y-3 pt-2">
       {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-        <div
+        <Skeleton
           key={i}
-          className="ai-skeleton h-3.5 rounded"
+          variant="ai"
+          className="h-3.5 rounded"
           style={{
             width: `${50 + Math.random() * 45}%`,
             animationDelay: `${i * 0.12}s`,
@@ -61,28 +65,25 @@ export default function TradeReview() {
 
       {/* Day selector */}
       <div className="flex items-center gap-2 mb-4">
-        <div className="flex rounded-lg overflow-hidden border border-border">
-          {DAY_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setDaysBack(opt.value)}
-              className={`px-4 py-1.5 text-xs font-mono font-medium transition-colors ${
-                daysBack === opt.value
-                  ? "bg-ai-blue text-white"
-                  : "bg-surface-light/50 text-gray-400 hover:text-white hover:bg-surface-light"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          value={String(daysBack)}
+          onValueChange={(v) => setDaysBack(Number(v))}
+        >
+          <TabsList>
+            {DAY_OPTIONS.map((opt) => (
+              <TabsTrigger key={opt.value} value={String(opt.value)}>
+                {opt.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
 
-        <button
+        <Button
+          variant="ai"
+          size="sm"
           onClick={runAnalysis}
           disabled={loading}
-          className="ml-auto flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium
-                     bg-ai-blue text-white hover:bg-ai-blue/90 transition-colors
-                     disabled:opacity-50 disabled:cursor-not-allowed"
+          className="ml-auto"
         >
           {loading ? (
             <>
@@ -98,7 +99,7 @@ export default function TradeReview() {
               Run Analysis
             </>
           )}
-        </button>
+        </Button>
       </div>
 
       {/* Content area */}

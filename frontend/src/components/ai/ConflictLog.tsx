@@ -5,6 +5,11 @@ import { usePolling } from "@/hooks/usePolling";
 import { api } from "@/lib/api";
 import { formatTimeAgo, formatDateTime } from "@/lib/formatters";
 import type { ConflictResolution } from "@/lib/types";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const FILTER_OPTIONS = [
   { label: "1 Day", value: 1 },
@@ -91,117 +96,118 @@ function ConflictRow({ conflict }: { conflict: ConflictResolution }) {
   }
 
   return (
-    <div
-      className={`rounded-lg border transition-colors ${
-        expanded
-          ? "border-ai-blue/30 bg-surface-light/20"
-          : "border-border/50 hover:border-border"
-      }`}
-    >
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full px-4 py-3 text-left"
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <div
+        className={`rounded-lg border transition-colors ${
+          expanded
+            ? "border-ai-blue/30 bg-surface-light/20"
+            : "border-border/50 hover:border-border"
+        }`}
       >
-        <div className="flex items-center gap-4">
-          {/* Timestamp */}
-          <span className="text-xs text-gray-500 font-mono w-24 flex-shrink-0">
-            {isRecent
-              ? formatTimeAgo(conflict.created_at)
-              : formatDateTime(conflict.created_at)}
-          </span>
-
-          {/* Ticker */}
-          <span className="text-sm font-mono font-bold text-white w-16 flex-shrink-0">
-            {conflict.ticker}
-          </span>
-
-          {/* Strategy badges */}
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            {conflict.strategies.map((s, i) => (
-              <span key={s} className="flex items-center gap-1.5">
-                <StrategyBadge
-                  trader={s}
-                  direction={strategyDirections[s] || "long"}
-                />
-                {i < conflict.strategies.length - 1 && (
-                  <span className="text-xs text-gray-600">vs</span>
-                )}
+        <CollapsibleTrigger asChild>
+          <button className="w-full px-4 py-3 text-left">
+            <div className="flex items-center gap-4">
+              {/* Timestamp */}
+              <span className="text-xs text-gray-500 font-mono w-24 flex-shrink-0">
+                {isRecent
+                  ? formatTimeAgo(conflict.created_at)
+                  : formatDateTime(conflict.created_at)}
               </span>
-            ))}
-          </div>
 
-          {/* Confidence gauge */}
-          <div className="ml-auto flex items-center gap-4">
-            <ConfidenceGauge confidence={conflict.confidence} />
+              {/* Ticker */}
+              <span className="text-sm font-mono font-bold text-white w-16 flex-shrink-0">
+                {conflict.ticker}
+              </span>
 
-            {/* Short recommendation */}
-            <span className="text-xs text-gray-400 max-w-[240px] truncate hidden lg:block">
-              &ldquo;{conflict.reasoning.slice(0, 80)}
-              {conflict.reasoning.length > 80 ? "..." : ""}&rdquo;
-            </span>
-
-            {/* Expand arrow */}
-            <svg
-              className={`w-4 h-4 text-gray-500 transition-transform ${
-                expanded ? "rotate-180" : ""
-              }`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M19 9l-7 7-7-7"
-              />
-            </svg>
-          </div>
-        </div>
-      </button>
-
-      {/* Expanded reasoning */}
-      {expanded && (
-        <div className="px-4 pb-4 animate-fade-in">
-          <div className="rounded-lg bg-terminal p-4 mt-1 border border-border/30">
-            <p className="text-sm text-gray-300 leading-relaxed font-mono">
-              {conflict.reasoning}
-            </p>
-
-            {/* Signal details */}
-            {conflict.signals && conflict.signals.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-gray-800 space-y-1">
-                {conflict.signals.map((s, i) => (
-                  <div key={i} className="text-xs font-mono text-gray-500">
-                    {s.trader.replace("henry-", "").toUpperCase()}: {s.dir.toUpperCase()}{" "}
-                    @ ${s.price.toFixed(2)} | sig={s.sig.toFixed(1)} adx=
-                    {s.adx.toFixed(1)}
-                  </div>
+              {/* Strategy badges */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {conflict.strategies.map((s, i) => (
+                  <span key={s} className="flex items-center gap-1.5">
+                    <StrategyBadge
+                      trader={s}
+                      direction={strategyDirections[s] || "long"}
+                    />
+                    {i < conflict.strategies.length - 1 && (
+                      <span className="text-xs text-gray-600">vs</span>
+                    )}
+                  </span>
                 ))}
               </div>
-            )}
 
-            {/* Recommendation */}
-            <div className="mt-3 pt-3 border-t border-gray-800 flex items-center gap-2">
-              <span className="text-xs text-gray-500 font-mono">
-                Recommendation:
-              </span>
-              <span
-                className={`text-xs font-mono font-bold ${
-                  conflict.recommendation === "LONG"
-                    ? "text-profit"
-                    : conflict.recommendation === "SHORT"
-                      ? "text-loss"
-                      : "text-yellow-500"
-                }`}
-              >
-                {conflict.recommendation}
-              </span>
+              {/* Confidence gauge */}
+              <div className="ml-auto flex items-center gap-4">
+                <ConfidenceGauge confidence={conflict.confidence} />
+
+                {/* Short recommendation */}
+                <span className="text-xs text-gray-400 max-w-[240px] truncate hidden lg:block">
+                  &ldquo;{conflict.reasoning.slice(0, 80)}
+                  {conflict.reasoning.length > 80 ? "..." : ""}&rdquo;
+                </span>
+
+                {/* Expand arrow */}
+                <svg
+                  className={`w-4 h-4 text-gray-500 transition-transform ${
+                    expanded ? "rotate-180" : ""
+                  }`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </div>
+            </div>
+          </button>
+        </CollapsibleTrigger>
+
+        {/* Expanded reasoning */}
+        <CollapsibleContent>
+          <div className="px-4 pb-4 animate-fade-in">
+            <div className="rounded-lg bg-terminal p-4 mt-1 border border-border/30">
+              <p className="text-sm text-gray-300 leading-relaxed font-mono">
+                {conflict.reasoning}
+              </p>
+
+              {/* Signal details */}
+              {conflict.signals && conflict.signals.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-gray-800 space-y-1">
+                  {conflict.signals.map((s, i) => (
+                    <div key={i} className="text-xs font-mono text-gray-500">
+                      {s.trader.replace("henry-", "").toUpperCase()}: {s.dir.toUpperCase()}{" "}
+                      @ ${s.price.toFixed(2)} | sig={s.sig.toFixed(1)} adx=
+                      {s.adx.toFixed(1)}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Recommendation */}
+              <div className="mt-3 pt-3 border-t border-gray-800 flex items-center gap-2">
+                <span className="text-xs text-gray-500 font-mono">
+                  Recommendation:
+                </span>
+                <span
+                  className={`text-xs font-mono font-bold ${
+                    conflict.recommendation === "LONG"
+                      ? "text-profit"
+                      : conflict.recommendation === "SHORT"
+                        ? "text-loss"
+                        : "text-yellow-500"
+                  }`}
+                >
+                  {conflict.recommendation}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
   );
 }
 
@@ -227,37 +233,34 @@ export default function ConflictLog() {
           </div>
           <h3 className="text-base font-semibold text-white">Conflict Log</h3>
           {conflicts.length > 0 && (
-            <span className="ai-badge">{conflicts.length}</span>
+            <Badge variant="ai">{conflicts.length}</Badge>
           )}
         </div>
 
         {/* Filter */}
-        <div className="flex rounded-lg overflow-hidden border border-border">
-          {FILTER_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setDaysBack(opt.value)}
-              className={`px-3 py-1 text-xs font-mono transition-colors ${
-                daysBack === opt.value
-                  ? "bg-ai-blue text-white"
-                  : "bg-surface-light/50 text-gray-400 hover:text-white hover:bg-surface-light"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          value={String(daysBack)}
+          onValueChange={(v) => setDaysBack(Number(v))}
+        >
+          <TabsList>
+            {FILTER_OPTIONS.map((opt) => (
+              <TabsTrigger key={opt.value} value={String(opt.value)}>
+                {opt.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
 
       {/* Separator */}
-      <div className="border-t border-border/50 -mx-5 mb-4" />
+      <Separator className="-mx-5 mb-4" />
 
       {/* Content */}
       <div className="space-y-2">
         {loading && conflicts.length === 0 && (
           <div className="space-y-2">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="ai-skeleton h-14 rounded-lg" />
+              <Skeleton key={i} variant="ai" className="h-14 rounded-lg" />
             ))}
           </div>
         )}

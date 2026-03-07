@@ -1,6 +1,7 @@
 "use client";
 import { Performance } from "@/lib/types";
 import { formatCurrency, formatPercent, formatNumber, pnlColor } from "@/lib/formatters";
+import { Card, CardContent } from "@/components/ui/card";
 
 export default function PerformanceStats({ perf }: { perf: Performance }) {
   const stats = [
@@ -19,16 +20,18 @@ export default function PerformanceStats({ perf }: { perf: Performance }) {
   ];
 
   return (
-    <div className="card">
-      <h3 className="font-bold text-white mb-4">Performance Metrics</h3>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div className="stat-label">{s.label}</div>
-            <div className={`text-lg font-mono font-medium ${s.color}`}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-    </div>
+    <Card>
+      <CardContent>
+        <h3 className="font-bold text-white mb-4">Performance Metrics</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {stats.map((s) => (
+            <div key={s.label}>
+              <div className="stat-label">{s.label}</div>
+              <div className={`text-lg font-mono font-medium ${s.color}`}>{s.value}</div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

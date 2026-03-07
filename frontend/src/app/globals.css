@@ -2,47 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #030712;
-  --foreground: #f9fafb;
-}
-
 @property --gradient-angle {
   syntax: "<angle>";
   initial-value: 0deg;
   inherits: false;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: system-ui, -apple-system, sans-serif;
+@layer base {
+  :root {
+    /* Dark-only theme — existing palette mapped to shadcn HSL variables */
+    --background: 224 71% 3%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 215 28% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 215 28% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 91% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 28% 17%;
+    --input: 215 28% 17%;
+    --ring: 217 91% 60%;
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
 }
 
 @layer components {
-  .card {
-    @apply bg-surface border border-border rounded-xl p-5;
-  }
+  /* ── Domain-specific stats (not replaceable by shadcn) ────────── */
   .stat-value {
     @apply text-2xl font-bold tabular-nums;
   }
   .stat-label {
-    @apply text-xs text-gray-400 uppercase tracking-wider;
-  }
-  .badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
-  }
-  .badge-long {
-    @apply badge bg-profit/15 text-profit;
-  }
-  .badge-short {
-    @apply badge bg-loss/15 text-loss;
-  }
-  .badge-open {
-    @apply badge bg-accent/15 text-accent;
-  }
-  .badge-closed {
-    @apply badge bg-gray-700 text-gray-300;
+    @apply text-xs text-muted-foreground uppercase tracking-wider;
   }
 
   /* ── AI Design System ─────────────────────────────────────────── */
@@ -56,12 +63,6 @@ body {
   .ai-card:hover {
     border-color: rgba(99, 102, 241, 0.35);
     box-shadow: 0 0 30px rgba(99, 102, 241, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  }
-
-  .ai-badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium uppercase tracking-wider;
-    background: rgba(99, 102, 241, 0.12);
-    color: #a5b4fc;
   }
 
   .ai-gradient-border {
@@ -78,11 +79,7 @@ body {
     border-radius: 0.75rem;
     background: conic-gradient(
       from var(--gradient-angle, 0deg),
-      #6366f1,
-      #8b5cf6,
-      #6366f1,
-      #3b82f6,
-      #6366f1
+      #6366f1, #8b5cf6, #6366f1, #3b82f6, #6366f1
     );
     -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
@@ -129,73 +126,188 @@ body {
   }
 
   /* Confidence gauge colors */
-  .confidence-high {
-    @apply bg-profit;
-  }
-  .confidence-mid {
-    @apply bg-yellow-500;
-  }
-  .confidence-low {
-    @apply bg-loss;
-  }
+  .confidence-high { @apply bg-profit; }
+  .confidence-mid  { @apply bg-yellow-500; }
+  .confidence-low  { @apply bg-loss; }
 
-  /* Skeleton loading for AI */
+  /* AI skeleton shimmer */
   .ai-skeleton {
     @apply rounded;
-    background: linear-gradient(
-      90deg,
-      rgba(99, 102, 241, 0.08) 25%,
-      rgba(99, 102, 241, 0.15) 50%,
-      rgba(99, 102, 241, 0.08) 75%
-    );
+    background: linear-gradient(90deg, rgba(99,102,241,0.08) 25%, rgba(99,102,241,0.15) 50%, rgba(99,102,241,0.08) 75%);
     background-size: 200% 100%;
     animation: skeleton-shimmer 1.5s ease-in-out infinite;
   }
 
   @keyframes skeleton-shimmer {
-    0% { background-position: 200% 0; }
+    0%   { background-position: 200% 0; }
     100% { background-position: -200% 0; }
   }
 
-  /* Markdown rendering inside AI responses */
-  .ai-prose h2 {
-    @apply text-white font-semibold text-base mt-4 mb-2 first:mt-0;
+  /* AI markdown rendering */
+  .ai-prose h2       { @apply text-white font-semibold text-base mt-4 mb-2 first:mt-0; }
+  .ai-prose h3       { @apply text-gray-200 font-medium text-sm mt-3 mb-1; }
+  .ai-prose p        { @apply text-gray-300 text-sm leading-relaxed mb-2; }
+  .ai-prose ul       { @apply space-y-1 mb-3; }
+  .ai-prose li       { @apply text-sm text-gray-300 pl-4 relative; }
+  .ai-prose li::before { content: "•"; @apply absolute left-0 text-ai-purple; }
+  .ai-prose strong   { @apply text-white font-semibold; }
+  .ai-prose code     { @apply font-mono text-xs bg-surface-light/50 px-1.5 py-0.5 rounded text-ai-blue; }
+  .ai-prose blockquote { @apply border-l-2 border-ai-blue pl-4 py-2 my-3 bg-ai-blue/5 rounded-r-lg; }
+  .ai-prose blockquote p { @apply text-gray-200 italic; }
+
+  /* ── Screener Design System ────────────────────────────────── */
+
+  .screener-card {
+    @apply bg-surface rounded-xl relative overflow-hidden transition-all duration-500;
+    border: 1px solid rgba(251, 191, 36, 0.15);
   }
 
-  .ai-prose h3 {
-    @apply text-gray-200 font-medium text-sm mt-3 mb-1;
+  .screener-card:hover {
+    border-color: rgba(251, 191, 36, 0.3);
+    box-shadow: 0 0 30px rgba(251, 191, 36, 0.06);
   }
 
-  .ai-prose p {
-    @apply text-gray-300 text-sm leading-relaxed mb-2;
+  .screener-card-hot {
+    border-color: rgba(251, 191, 36, 0.4);
+    box-shadow: 0 0 40px rgba(251, 191, 36, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    animation: screener-pulse 3s ease-in-out infinite;
   }
 
-  .ai-prose ul {
-    @apply space-y-1 mb-3;
+  @keyframes screener-pulse {
+    0%, 100% { box-shadow: 0 0 40px rgba(251, 191, 36, 0.1); }
+    50% { box-shadow: 0 0 60px rgba(251, 191, 36, 0.18); }
   }
 
-  .ai-prose li {
-    @apply text-sm text-gray-300 pl-4 relative;
+  .screener-card-grow {
+    animation: card-grow 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
   }
 
-  .ai-prose li::before {
-    content: "•";
-    @apply absolute left-0 text-ai-purple;
+  @keyframes card-grow {
+    from { transform: scale(0.97); opacity: 0.8; }
+    to { transform: scale(1); opacity: 1; }
   }
 
-  .ai-prose strong {
-    @apply text-white font-semibold;
+  /* Settings panel styling */
+  .settings-panel {
+    @apply bg-surface rounded-xl border border-border;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
-  .ai-prose code {
-    @apply font-mono text-xs bg-surface-light/50 px-1.5 py-0.5 rounded text-ai-blue;
+  /* Candlestick chart theme */
+  .chart-container {
+    @apply rounded-lg overflow-hidden;
+    background: linear-gradient(180deg, #0d1117 0%, #0a0e14 100%);
   }
 
-  .ai-prose blockquote {
-    @apply border-l-2 border-ai-blue pl-4 py-2 my-3 bg-ai-blue/5 rounded-r-lg;
+  /* ── Heatmap Card System ──────────────────────────────────── */
+
+  .heatmap-card {
+    @apply bg-surface rounded-xl relative overflow-hidden transition-all duration-700;
+    border: 1px solid rgba(251, 191, 36, 0.08);
+    will-change: transform, box-shadow;
   }
 
-  .ai-prose blockquote p {
-    @apply text-gray-200 italic;
+  .heatmap-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(251, 191, 36, 0.35);
+  }
+
+  .heatmap-card[data-heat="cold"] {
+    border-color: rgba(251, 191, 36, 0.08);
+  }
+  .heatmap-card[data-heat="cold"]:hover {
+    box-shadow: 0 0 20px rgba(251, 191, 36, 0.04);
+  }
+
+  .heatmap-card[data-heat="warm"] {
+    border-color: rgba(251, 191, 36, 0.2);
+    box-shadow: 0 0 20px rgba(251, 191, 36, 0.06);
+    animation: heat-glow-warm 4s ease-in-out infinite;
+  }
+
+  .heatmap-card[data-heat="hot"] {
+    border-color: rgba(251, 191, 36, 0.4);
+    box-shadow: 0 0 40px rgba(251, 191, 36, 0.12);
+    animation: heat-glow-hot 3s ease-in-out infinite;
+  }
+
+  .heatmap-card[data-heat="fire"] {
+    border-color: rgba(251, 191, 36, 0.6);
+    box-shadow: 0 0 60px rgba(251, 191, 36, 0.2), 0 0 100px rgba(251, 191, 36, 0.08);
+    animation: heat-glow-hot 2s ease-in-out infinite, breathe 4s ease-in-out infinite;
+  }
+
+  .heatmap-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    opacity: var(--heat-intensity, 0);
+    background: radial-gradient(
+      ellipse at 50% 0%,
+      rgba(251, 191, 36, 0.06) 0%,
+      transparent 70%
+    );
+    transition: opacity 0.5s ease;
+  }
+
+  .heatmap-card-grow {
+    animation: card-grow 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  .heatmap-card[data-selected="true"] {
+    border-color: rgba(99, 102, 241, 0.6) !important;
+    box-shadow: 0 0 40px rgba(99, 102, 241, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+    animation: none !important;
+  }
+
+  /* ── Analysis Panel ───────────────────────────────────────── */
+
+  .analysis-panel {
+    @apply bg-surface rounded-xl relative overflow-hidden;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    box-shadow: 0 0 40px rgba(99, 102, 241, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .play-badge-daily {
+    @apply px-3 py-1 rounded-md text-xs font-bold uppercase;
+    letter-spacing: 0.15em;
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(251, 191, 36, 0.3);
+  }
+
+  .play-badge-weekly {
+    @apply px-3 py-1 rounded-md text-xs font-bold uppercase;
+    letter-spacing: 0.15em;
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+  }
+
+  .strategy-agrees {
+    @apply bg-profit/10 text-profit;
+    border: 1px solid rgba(34, 197, 94, 0.25);
+  }
+  .strategy-disagrees {
+    @apply bg-loss/10 text-loss;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+  }
+  .strategy-neutral {
+    @apply bg-gray-700/30 text-gray-400;
+    border: 1px solid rgba(107, 114, 128, 0.2);
+  }
+
+  .analysis-skeleton {
+    @apply rounded;
+    background: linear-gradient(
+      90deg,
+      rgba(99, 102, 241, 0.05) 25%,
+      rgba(99, 102, 241, 0.12) 50%,
+      rgba(99, 102, 241, 0.05) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-load 2s ease-in-out infinite;
   }
 }

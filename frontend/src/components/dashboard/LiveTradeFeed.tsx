@@ -1,6 +1,8 @@
 "use client";
 import { useTrades } from "@/hooks/useTrades";
 import TradeCard from "./TradeCard";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface Props {
   portfolioId?: string;
@@ -17,18 +19,30 @@ export default function LiveTradeFeed({ portfolioId, limit = 50 }: Props) {
     return (
       <div className="space-y-3">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="card animate-pulse h-20" />
+          <Skeleton key={i} className="h-20 rounded-xl" />
         ))}
       </div>
     );
   }
 
   if (error) {
-    return <div className="card text-loss text-center py-8">Failed to load trades</div>;
+    return (
+      <Card>
+        <CardContent className="text-loss text-center py-8">
+          Failed to load trades
+        </CardContent>
+      </Card>
+    );
   }
 
   if (!trades || trades.length === 0) {
-    return <div className="card text-gray-500 text-center py-8">No trades yet — waiting for signals</div>;
+    return (
+      <Card>
+        <CardContent className="text-gray-500 text-center py-8">
+          No trades yet — waiting for signals
+        </CardContent>
+      </Card>
+    );
   }
 
   return (

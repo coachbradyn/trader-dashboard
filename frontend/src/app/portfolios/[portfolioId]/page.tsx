@@ -10,6 +10,8 @@ import EquityCurve from "@/components/portfolio/EquityCurve";
 import DrawdownChart from "@/components/portfolio/DrawdownChart";
 import MonthlyHeatmap from "@/components/portfolio/MonthlyHeatmap";
 import TradeHistory from "@/components/portfolio/TradeHistory";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 
 export default function PortfolioDetailPage({ params }: { params: Promise<{ portfolioId: string }> }) {
   const { portfolioId } = use(params);
@@ -24,14 +26,20 @@ export default function PortfolioDetailPage({ params }: { params: Promise<{ port
   if (loadingPortfolio) {
     return (
       <div className="space-y-4">
-        <div className="card animate-pulse h-32" />
-        <div className="card animate-pulse h-64" />
+        <Skeleton className="h-32 rounded-xl" />
+        <Skeleton className="h-64 rounded-xl" />
       </div>
     );
   }
 
   if (!portfolio) {
-    return <div className="card text-loss text-center py-12">Portfolio not found</div>;
+    return (
+      <Card>
+        <CardContent className="text-loss text-center py-12">
+          Portfolio not found
+        </CardContent>
+      </Card>
+    );
   }
 
   return (

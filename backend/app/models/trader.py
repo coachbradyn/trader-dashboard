@@ -18,6 +18,7 @@ class Trader(Base):
     api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_webhook_at: Mapped[datetime | None] = mapped_column()
 
     trades: Mapped[list["Trade"]] = relationship(back_populates="trader")
     portfolio_strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="trader")

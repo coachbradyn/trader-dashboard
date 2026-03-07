@@ -158,3 +158,159 @@ export interface QueryHistoryItem {
   answer: string;
   timestamp: Date;
 }
+
+// ── Settings Types ──────────────────────────────────────────
+export interface PortfolioSettings {
+  id: string;
+  name: string;
+  description: string | null;
+  initial_capital: number;
+  cash: number;
+  status: "active" | "archived";
+  max_pct_per_trade: number | null;
+  max_open_positions: number | null;
+  max_drawdown_pct: number | null;
+  created_at: string;
+  strategies: Array<{
+    trader_id: string;
+    trader_slug: string;
+    display_name: string;
+    direction_filter: string | null;
+  }>;
+}
+
+export interface TraderSettings {
+  id: string;
+  trader_id: string;
+  display_name: string;
+  strategy_name: string | null;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+  last_webhook_at: string | null;
+  portfolio_count: number;
+  trade_count: number;
+  portfolios: Array<{
+    portfolio_id: string;
+    portfolio_name: string;
+    direction_filter: string | null;
+  }>;
+}
+
+export interface AllowlistedKey {
+  id: string;
+  label: string | null;
+  claimed_by_id: string | null;
+  created_at: string;
+}
+
+// ── Screener Types ──────────────────────────────────────────
+export interface IndicatorAlert {
+  id: string;
+  ticker: string;
+  indicator: string;
+  value: number;
+  signal: "bullish" | "bearish" | "neutral";
+  timeframe: string | null;
+  created_at: string;
+}
+
+export interface TickerAggregation {
+  ticker: string;
+  alert_count: number;
+  latest_signal: string;
+  indicators: string[];
+  latest_alert_at: string;
+  alerts: Array<{
+    id: string;
+    indicator: string;
+    value: number;
+    signal: string;
+    timeframe: string | null;
+    created_at: string;
+  }>;
+}
+
+export interface ChartDataPoint {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface ScreenerAnalysis {
+  id: string;
+  picks: Array<{
+    ticker: string;
+    direction: "LONG" | "SHORT";
+    entry_zone: string;
+    price_target: string;
+    stop_loss: string;
+    confidence: number;
+    thesis: string;
+    indicators: string[];
+  }> | null;
+  market_context: {
+    sector_heat: string;
+    catalysts: string;
+    noise_ratio: string;
+  } | null;
+  alerts_analyzed: number;
+  generated_at: string;
+}
+
+export interface MarketSummary {
+  id: string;
+  summary_type: "morning" | "nightly" | "alert_digest";
+  scope: string;
+  content: string;
+  tickers_analyzed: string[] | null;
+  generated_at: string;
+}
+
+// ── Per-Ticker Analysis Types ────────────────────────────────
+
+export interface HistoricalMatch {
+  pattern: string;
+  occurrences: number;
+  avg_return_pct: number;
+  win_rate: number;
+  avg_bars_held: number;
+  sample_dates: string[];
+}
+
+export interface StrategyAlignment {
+  strategy_name: string;
+  strategy_id: string;
+  has_active_position: boolean;
+  position_direction: string | null;
+  latest_signal: string | null;
+  signal_agrees: boolean;
+  notes: string;
+}
+
+export interface TickerAnalysis {
+  ticker: string;
+  play_type: "DAILY" | "WEEKLY";
+  direction: "LONG" | "SHORT";
+  confidence: number;
+  thesis: string;
+  entry_zone: string;
+  price_target: string;
+  stop_loss: string;
+  risk_reward: string;
+
+  indicators_firing: string[];
+  signal_breakdown: { bullish: number; bearish: number; neutral: number };
+  dominant_signal: "bullish" | "bearish";
+
+  historical_matches: HistoricalMatch[];
+  strategy_alignment: StrategyAlignment[];
+
+  alert_timeline_summary: string;
+  timeframes_represented: string[];
+
+  generated_at: string;
+}

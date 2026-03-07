@@ -10,16 +10,22 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.api import webhooks, trades, traders, portfolios, leaderboard
+from app.api import settings as settings_router, screener as screener_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
+from app.models.market_summary import MarketSummary
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start background price poller
     task = asyncio.create_task(price_service.run())
+    # Start scheduler for summaries
+    from app.services.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
     yield
+    stop_scheduler()
     task.cancel()
     try:
         await task
@@ -38,7 +44,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.origins_list,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -48,6 +54,8 @@ app.include_router(trades.router, prefix="/api", tags=["trades"])
 app.include_router(traders.router, prefix="/api", tags=["traders"])
 app.include_router(portfolios.router, prefix="/api", tags=["portfolios"])
 app.include_router(leaderboard.router, prefix="/api", tags=["leaderboard"])
+app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+app.include_router(screener_router.router, prefix="/api", tags=["screener"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────
@@ -189,6 +197,41 @@ async def get_conflicts(days_back: int = 7, limit: int = 50):
         }
         for c in conflicts
     ]
+
+
+# ─── MARKET SUMMARIES ───────────────────────────────────────────────────
+
+@app.get("/api/ai/summaries")
+async def get_summaries(limit: int = 10):
+    """Return recent market summaries."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(MarketSummary)
+            .order_by(MarketSummary.generated_at.desc())
+            .limit(limit)
+        )
+        summaries = result.scalars().all()
+
+    return [
+        {
+            "id": s.id,
+            "summary_type": s.summary_type,
+            "scope": s.scope,
+            "content": s.content,
+            "tickers_analyzed": s.tickers_analyzed,
+            "generated_at": s.generated_at.isoformat(),
+        }
+        for s in summaries
+    ]
+
+
+@app.post("/api/ai/summaries/generate")
+async def force_generate_summary():
+    """Manually trigger summary generation."""
+    from app.services.scheduler import _generate_morning_summary
+    import asyncio
+    asyncio.create_task(_generate_morning_summary())
+    return {"status": "generating", "message": "Summary generation started in background"}
 
 
 # ─── EXISTING ENDPOINTS ──────────────────────────────────────────────────────

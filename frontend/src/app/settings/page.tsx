@@ -1,0 +1,476 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { api } from "@/lib/api";
+import { formatCurrency, formatTimeAgo, formatDate } from "@/lib/formatters";
+import type { PortfolioSettings, TraderSettings, AllowlistedKey } from "@/lib/types";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
+const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
+
+function FontLoader() {
+  return (
+    // eslint-disable-next-line @next/next/no-head-element
+    <head>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    </head>
+  );
+}
+
+function Toast({ message, type }: { message: string; type: "success" | "error" }) {
+  const colors = type === "success" ? "bg-profit/15 text-profit border-profit/30" : "bg-loss/15 text-loss border-loss/30";
+  return (
+    <div className="fixed bottom-6 right-6 z-50 animate-fade-in" style={FONT_OUTFIT}>
+      <div className={`px-5 py-3 rounded-lg text-sm font-medium shadow-2xl backdrop-blur-md border ${colors}`}>{message}</div>
+    </div>
+  );
+}
+
+function DirectionControl({ value, onChange, disabled }: { value: string | null; onChange: (v: string | null) => void; disabled?: boolean }) {
+  const opts: [string, string | null][] = [["All", null], ["Long", "long"], ["Short", "short"]];
+  return (
+    <div className={`inline-flex rounded-md border border-border overflow-hidden ${disabled ? "opacity-30 pointer-events-none" : ""}`}>
+      {opts.map(([label, val]) => (
+        <button key={label} type="button" onClick={() => onChange(val)}
+          className={`px-3 py-1 text-[11px] font-mono font-medium transition-all ${value === val ? "bg-primary text-white" : "bg-surface-light/40 text-gray-500 hover:text-gray-300"}`}
+        >{label}</button>
+      ))}
+    </div>
+  );
+}
+
+function RangeField({ label, value, onChange, min, max, step, suffix }: {
+  label: string; value: number; onChange: (n: number) => void; min: number; max: number; step: number; suffix: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-400 font-medium" style={FONT_OUTFIT}>{label}</span>
+        <span className="text-sm font-mono text-white tabular-nums">{value}{suffix}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-surface-light accent-primary" />
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-sm font-semibold text-white tracking-wide uppercase" style={FONT_OUTFIT}>{children}</h3>;
+}
+
+function EmptyPanel({ icon, text }: { icon: React.ReactNode; text: string }) {
+  return (
+    <div className="settings-panel p-12 flex flex-col items-center justify-center text-center min-h-[400px]">
+      <div className="w-16 h-16 rounded-2xl bg-surface-light/50 flex items-center justify-center mb-4">{icon}</div>
+      <p className="text-gray-500 text-sm">{text}</p>
+    </div>
+  );
+}
+
+function RevealedKeyBox({ apiKey, onCopy }: { apiKey: string; onCopy: (s: string) => void }) {
+  return (
+    <div className="p-4 rounded-lg border border-screener-amber/40 bg-screener-amber/5">
+      <div className="flex items-center gap-2 mb-2">
+        <svg className="w-4 h-4 text-screener-amber" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+        </svg>
+        <span className="text-xs text-screener-amber font-semibold uppercase tracking-wider">Copy now -- will not be shown again</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 text-sm bg-black/40 px-3 py-2 rounded border border-screener-amber/20 text-white select-all break-all" style={FONT_MONO}>{apiKey}</code>
+        <Button size="sm" variant="secondary" onClick={() => onCopy(apiKey)}>Copy</Button>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================= */
+export default function SettingsPage() {
+  const [tab, setTab] = useState("portfolios");
+  const [portfolios, setPortfolios] = useState<PortfolioSettings[]>([]);
+  const [portfoliosLoading, setPortfoliosLoading] = useState(true);
+  const [selectedPortfolio, setSelectedPortfolio] = useState<string | null>(null);
+  const [isCreatingPf, setIsCreatingPf] = useState(false);
+  const [pfName, setPfName] = useState(""); const [pfDesc, setPfDesc] = useState("");
+  const [pfCapital, setPfCapital] = useState(10000);
+  const [pfMaxPct, setPfMaxPct] = useState(5); const [pfMaxPos, setPfMaxPos] = useState(10); const [pfMaxDD, setPfMaxDD] = useState(20);
+  const [pfStrats, setPfStrats] = useState<Record<string, { assigned: boolean; direction: string | null }>>({});
+
+  const [traders, setTraders] = useState<TraderSettings[]>([]);
+  const [tradersLoading, setTradersLoading] = useState(true);
+  const [keys, setKeys] = useState<AllowlistedKey[]>([]);
+  const [selectedTrader, setSelectedTrader] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [trName, setTrName] = useState(""); const [trDesc, setTrDesc] = useState("");
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const flash = useCallback((msg: string, type: "success" | "error" = "success") => {
+    setToast({ message: msg, type }); setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  const fetchPortfolios = useCallback(async () => {
+    try { setPortfolios(await api.getSettingsPortfolios()); }
+    catch { flash("Failed to load portfolios", "error"); }
+    finally { setPortfoliosLoading(false); }
+  }, [flash]);
+
+  const fetchTraders = useCallback(async () => {
+    try { const [t, k] = await Promise.all([api.getSettingsTraders(), api.getKeys()]); setTraders(t); setKeys(k); }
+    catch { flash("Failed to load strategies", "error"); }
+    finally { setTradersLoading(false); }
+  }, [flash]);
+
+  useEffect(() => { fetchPortfolios(); fetchTraders(); }, [fetchPortfolios, fetchTraders]);
+
+  // Populate portfolio form on selection
+  useEffect(() => {
+    if (isCreatingPf) {
+      setPfName(""); setPfDesc(""); setPfCapital(10000); setPfMaxPct(5); setPfMaxPos(10); setPfMaxDD(20);
+      const init: Record<string, { assigned: boolean; direction: string | null }> = {};
+      traders.forEach((t) => { init[t.trader_id] = { assigned: false, direction: null }; });
+      setPfStrats(init); return;
+    }
+    const pf = portfolios.find((p) => p.id === selectedPortfolio);
+    if (!pf) return;
+    setPfName(pf.name); setPfDesc(pf.description || ""); setPfCapital(pf.initial_capital);
+    setPfMaxPct(pf.max_pct_per_trade ?? 5); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
+    const s: Record<string, { assigned: boolean; direction: string | null }> = {};
+    traders.forEach((t) => {
+      const m = pf.strategies.find((st) => st.trader_id === t.trader_id);
+      s[t.trader_id] = m ? { assigned: true, direction: m.direction_filter } : { assigned: false, direction: null };
+    });
+    setPfStrats(s);
+  }, [selectedPortfolio, isCreatingPf, portfolios, traders]);
+
+  // Populate trader form on selection
+  useEffect(() => {
+    const tr = traders.find((t) => t.trader_id === selectedTrader);
+    if (!tr) { setTrName(""); setTrDesc(""); return; }
+    setTrName(tr.display_name || ""); setTrDesc(tr.description || ""); setRevealedKey(null);
+  }, [selectedTrader, traders]);
+
+  // ── Handlers
+  const handleSavePf = async () => {
+    if (!pfName.trim()) { flash("Portfolio name is required", "error"); return; }
+    setSaving(true);
+    try {
+      const stratList = Object.entries(pfStrats).filter(([, v]) => v.assigned).map(([tid, v]) => ({ trader_id: tid, direction_filter: v.direction }));
+      if (isCreatingPf) {
+        const c = await api.createPortfolio({ name: pfName, description: pfDesc || undefined, initial_capital: pfCapital, max_pct_per_trade: pfMaxPct, max_open_positions: pfMaxPos, max_drawdown_pct: pfMaxDD });
+        if (stratList.length) await api.updatePortfolio(c.id, { strategies: stratList });
+        setIsCreatingPf(false); setSelectedPortfolio(c.id); flash("Portfolio created");
+      } else if (selectedPortfolio) {
+        await api.updatePortfolio(selectedPortfolio, { portfolio: { name: pfName, description: pfDesc, max_pct_per_trade: pfMaxPct, max_open_positions: pfMaxPos, max_drawdown_pct: pfMaxDD }, strategies: stratList });
+        flash("Portfolio updated");
+      }
+      await fetchPortfolios();
+    } catch { flash("Save failed", "error"); }
+    finally { setSaving(false); }
+  };
+
+  const handleArchivePf = async () => {
+    if (!selectedPortfolio) return; setSaving(true);
+    try { await api.archivePortfolio(selectedPortfolio); setSelectedPortfolio(null); flash("Portfolio archived"); await fetchPortfolios(); }
+    catch { flash("Archive failed", "error"); } finally { setSaving(false); }
+  };
+
+  const handleSaveTrader = async () => {
+    if (!selectedTrader) return; setSaving(true);
+    try { await api.updateTrader(selectedTrader, { display_name: trName, description: trDesc }); flash("Strategy updated"); await fetchTraders(); }
+    catch { flash("Save failed", "error"); } finally { setSaving(false); }
+  };
+
+  const handleRotateKey = async () => {
+    if (!selectedTrader) return; setSaving(true);
+    try { const r = await api.rotateTraderKey(selectedTrader); setRevealedKey(r.api_key); flash("Key rotated - copy it now"); }
+    catch { flash("Rotate failed", "error"); } finally { setSaving(false); }
+  };
+
+  const handleGenKey = async () => {
+    setSaving(true);
+    try { const r = await api.generateKey(); setRevealedKey(r.api_key); setSelectedKey(r.id); setSelectedTrader(null); flash("Key generated - copy it now"); await fetchTraders(); }
+    catch { flash("Generate failed", "error"); } finally { setSaving(false); }
+  };
+
+  const handleRevokeKey = async (id: string) => {
+    setSaving(true);
+    try { await api.revokeKey(id); setSelectedKey(null); flash("Key revoked"); await fetchTraders(); }
+    catch { flash("Revoke failed", "error"); } finally { setSaving(false); }
+  };
+
+  const copyClip = (t: string) => { navigator.clipboard.writeText(t); flash("Copied to clipboard"); };
+
+  const activePfs = portfolios.filter((p) => p.status === "active");
+  const archivedPfs = portfolios.filter((p) => p.status === "archived");
+  const unclaimedKeys = keys.filter((k) => !k.claimed_by_id);
+  const editing = isCreatingPf || selectedPortfolio !== null;
+  const curPf = portfolios.find((p) => p.id === selectedPortfolio);
+  const curTrader = traders.find((t) => t.trader_id === selectedTrader);
+  const curKey = keys.find((k) => k.id === selectedKey);
+
+  const folderIcon = <svg className="w-8 h-8 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" /></svg>;
+  const userIcon = <svg className="w-8 h-8 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" /></svg>;
+
+  return (
+    <>
+      <FontLoader />
+      <div style={FONT_OUTFIT}>
+        {/* Page header */}
+        <div className="mb-8 opacity-0 animate-fade-in">
+          <div className="flex items-center gap-3 mb-1">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+              <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white">Settings</h1>
+              <p className="text-xs text-gray-500">Manage portfolios, strategies, and API keys</p>
+            </div>
+          </div>
+        </div>
+
+        <Tabs value={tab} onValueChange={setTab} className="opacity-0 animate-fade-in" style={{ animationDelay: "80ms" }}>
+          <TabsList>
+            <TabsTrigger value="portfolios">Portfolios</TabsTrigger>
+            <TabsTrigger value="strategies">Strategies</TabsTrigger>
+          </TabsList>
+
+          {/* ═══ PORTFOLIOS TAB ═══ */}
+          <TabsContent value="portfolios">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-4">
+              {/* Left: list */}
+              <div className="lg:col-span-1 space-y-3 opacity-0 animate-fade-in" style={{ animationDelay: "160ms" }}>
+                <Button variant="outline" size="sm" className="w-full border-dashed border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => { setIsCreatingPf(true); setSelectedPortfolio(null); }}>
+                  + New Portfolio
+                </Button>
+                {portfoliosLoading ? [0,1,2].map(i => <Skeleton key={i} className="h-20 rounded-xl" style={{ animationDelay: `${i*80}ms` }} />) : (
+                  <>
+                    {activePfs.map((pf, i) => (
+                      <button key={pf.id} onClick={() => { setSelectedPortfolio(pf.id); setIsCreatingPf(false); }}
+                        className={`w-full text-left settings-panel p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedPortfolio === pf.id ? "border-primary/60 bg-primary/5" : ""}`}
+                        style={{ animationDelay: `${200 + i * 60}ms` }}>
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="font-semibold text-sm text-white">{pf.name}</span>
+                          <Badge className="bg-profit/15 text-profit text-[10px]">active</Badge>
+                        </div>
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                          <span className="font-mono">{formatCurrency(pf.cash)}</span>
+                          <span>{pf.strategies.length} strat{pf.strategies.length !== 1 ? "s" : ""}</span>
+                        </div>
+                      </button>
+                    ))}
+                    {archivedPfs.length > 0 && (
+                      <div className="pt-2">
+                        <span className="text-[10px] uppercase tracking-widest text-gray-600 font-mono">Archived</span>
+                        {archivedPfs.map((pf) => (
+                          <button key={pf.id} onClick={() => { setSelectedPortfolio(pf.id); setIsCreatingPf(false); }}
+                            className={`w-full text-left settings-panel p-4 mt-2 opacity-50 hover:opacity-70 transition-all ${selectedPortfolio === pf.id ? "border-gray-500/40" : ""}`}>
+                            <div className="flex items-start justify-between">
+                              <span className="text-sm text-gray-400">{pf.name}</span>
+                              <Badge variant="closed" className="text-[10px]">archived</Badge>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Right: editor */}
+              <div className="lg:col-span-2 opacity-0 animate-fade-in" style={{ animationDelay: "240ms" }}>
+                {!editing ? <EmptyPanel icon={folderIcon} text="Select a portfolio to edit or create a new one" /> : (
+                  <div className="space-y-5">
+                    {/* General */}
+                    <Card><CardContent className="space-y-4">
+                      <SectionTitle>General</SectionTitle>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div><label className="text-xs text-gray-400 mb-1.5 block">Name</label>
+                          <Input value={pfName} onChange={(e) => setPfName(e.target.value)} placeholder="Portfolio name" /></div>
+                        <div><label className="text-xs text-gray-400 mb-1.5 block">Initial Capital</label>
+                          <Input type="number" value={pfCapital} onChange={(e) => setPfCapital(parseFloat(e.target.value) || 0)} disabled={!isCreatingPf} className="font-mono" /></div>
+                      </div>
+                      <div><label className="text-xs text-gray-400 mb-1.5 block">Description</label>
+                        <Input value={pfDesc} onChange={(e) => setPfDesc(e.target.value)} placeholder="Optional description..." /></div>
+                    </CardContent></Card>
+
+                    {/* Risk & Sizing */}
+                    <Card><CardContent className="space-y-5">
+                      <SectionTitle>Risk &amp; Sizing</SectionTitle>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <RangeField label="Max % Per Trade" value={pfMaxPct} onChange={setPfMaxPct} min={0.5} max={25} step={0.5} suffix="%" />
+                        <RangeField label="Max Drawdown %" value={pfMaxDD} onChange={setPfMaxDD} min={1} max={50} step={1} suffix="%" />
+                      </div>
+                      <div className="max-w-[200px]"><label className="text-xs text-gray-400 mb-1.5 block">Max Open Positions</label>
+                        <Input type="number" value={pfMaxPos} onChange={(e) => setPfMaxPos(parseInt(e.target.value) || 1)} min={1} max={100} className="font-mono" /></div>
+                    </CardContent></Card>
+
+                    {/* Strategy Assignments */}
+                    <Card><CardContent className="space-y-4">
+                      <SectionTitle>Strategy Assignments</SectionTitle>
+                      {traders.length === 0 ? <p className="text-xs text-gray-500">No strategies available. Generate an API key first.</p> : (
+                        <div className="space-y-2">
+                          {traders.map((tr) => {
+                            const s = pfStrats[tr.trader_id]; const on = s?.assigned ?? false;
+                            return (
+                              <div key={tr.trader_id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${on ? "border-primary/30 bg-primary/5" : "border-border/50 opacity-40 hover:opacity-60"}`}>
+                                <div className="flex items-center gap-3">
+                                  <input type="checkbox" checked={on} onChange={(e) => setPfStrats((p) => ({ ...p, [tr.trader_id]: { ...p[tr.trader_id], assigned: e.target.checked } }))}
+                                    className="w-4 h-4 rounded border-gray-600 accent-primary bg-surface" />
+                                  <div>
+                                    <span className="text-sm text-white font-medium">{tr.display_name || "Unnamed Strategy"}</span>
+                                    <span className="text-[11px] text-gray-500 font-mono ml-2">{tr.trader_id}</span>
+                                  </div>
+                                </div>
+                                <DirectionControl value={s?.direction ?? null} onChange={(d) => setPfStrats((p) => ({ ...p, [tr.trader_id]: { ...p[tr.trader_id], direction: d } }))} disabled={!on} />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </CardContent></Card>
+
+                    <div className="flex items-center gap-3 pt-1">
+                      <Button onClick={handleSavePf} disabled={saving} className="min-w-[120px]">{saving ? "Saving..." : isCreatingPf ? "Create Portfolio" : "Save Changes"}</Button>
+                      {!isCreatingPf && curPf?.status === "active" && <Button variant="destructive" size="sm" onClick={handleArchivePf} disabled={saving}>Archive</Button>}
+                      <Button variant="ghost" size="sm" onClick={() => { setSelectedPortfolio(null); setIsCreatingPf(false); }}>Cancel</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ═══ STRATEGIES TAB ═══ */}
+          <TabsContent value="strategies">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-4">
+              {/* Left: list */}
+              <div className="lg:col-span-1 space-y-3 opacity-0 animate-fade-in" style={{ animationDelay: "160ms" }}>
+                <Button variant="outline" size="sm" className="w-full border-dashed border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={handleGenKey} disabled={saving}>
+                  + Generate Key
+                </Button>
+                {tradersLoading ? [0,1,2].map(i => <Skeleton key={i} className="h-20 rounded-xl" style={{ animationDelay: `${i*80}ms` }} />) : (
+                  <>
+                    {traders.map((tr, i) => (
+                      <button key={tr.trader_id} onClick={() => { setSelectedTrader(tr.trader_id); setSelectedKey(null); }}
+                        className={`w-full text-left settings-panel p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedTrader === tr.trader_id ? "border-primary/60 bg-primary/5" : ""}`}
+                        style={{ animationDelay: `${200 + i * 60}ms` }}>
+                        <div className="flex items-start justify-between mb-1.5">
+                          <span className="font-semibold text-sm text-white">{tr.display_name || "Unnamed Strategy"}</span>
+                          {tr.portfolio_count > 0 && <Badge variant="default" className="text-[10px]">{tr.portfolio_count} pf</Badge>}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mb-1.5 truncate" style={FONT_MONO}>{tr.trader_id}</div>
+                        <span className="text-[11px] text-gray-600">{tr.trade_count} trades</span>
+                      </button>
+                    ))}
+                    {unclaimedKeys.length > 0 && (
+                      <div className="pt-2">
+                        <span className="text-[10px] uppercase tracking-widest text-gray-600 font-mono">Unclaimed Keys</span>
+                        {unclaimedKeys.map((k) => (
+                          <button key={k.id} onClick={() => { setSelectedKey(k.id); setSelectedTrader(null); }}
+                            className={`w-full text-left p-4 mt-2 rounded-xl border border-dashed transition-all hover:border-primary/40 ${selectedKey === k.id ? "border-primary/50 bg-primary/5" : "border-gray-700 bg-surface/50"}`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm text-gray-400">{k.label || "Unlabeled Key"}</span>
+                              <Badge variant="outline" className="text-[10px] text-gray-500">pending</Badge>
+                            </div>
+                            <div className="text-[11px] text-gray-600 mt-1" style={FONT_MONO}>{k.id.slice(0, 12)}...</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Right: detail */}
+              <div className="lg:col-span-2 opacity-0 animate-fade-in" style={{ animationDelay: "240ms" }}>
+                {!selectedTrader && !selectedKey ? <EmptyPanel icon={userIcon} text="Select a strategy or generate a new API key" /> : selectedTrader && curTrader ? (
+                  <div className="space-y-5">
+                    {/* Identity */}
+                    <Card><CardContent className="space-y-4">
+                      <SectionTitle>Identity</SectionTitle>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div><label className="text-xs text-gray-400 mb-1.5 block">Display Name</label>
+                          <Input value={trName} onChange={(e) => setTrName(e.target.value)} placeholder="Strategy display name" /></div>
+                        <div><label className="text-xs text-gray-400 mb-1.5 block">Trader ID</label>
+                          <div className="h-9 flex items-center px-3 rounded-lg border border-border bg-surface-light/30 text-sm text-gray-400 select-all cursor-default" style={FONT_MONO}>{curTrader.trader_id}</div></div>
+                      </div>
+                      <div><label className="text-xs text-gray-400 mb-1.5 block">Description</label>
+                        <Input value={trDesc} onChange={(e) => setTrDesc(e.target.value)} placeholder="Strategy description..." /></div>
+                    </CardContent></Card>
+
+                    {/* API Key Status */}
+                    <Card><CardContent className="space-y-4">
+                      <SectionTitle>API Key Status</SectionTitle>
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <Badge className="bg-profit/15 text-profit text-[11px]">{curTrader.is_active ? "Active" : "Inactive"}</Badge>
+                        {curTrader.last_webhook_at && <span className="text-xs text-gray-500">Last webhook: {formatTimeAgo(curTrader.last_webhook_at)}</span>}
+                        <Button variant="outline" size="sm" onClick={handleRotateKey} disabled={saving} className="ml-auto">Rotate Key</Button>
+                      </div>
+                      {revealedKey && <RevealedKeyBox apiKey={revealedKey} onCopy={copyClip} />}
+                    </CardContent></Card>
+
+                    {/* Portfolio Links */}
+                    {curTrader.portfolios.length > 0 && (
+                      <Card><CardContent className="space-y-3">
+                        <SectionTitle>Portfolio Links</SectionTitle>
+                        {curTrader.portfolios.map((pl) => (
+                          <div key={pl.portfolio_id} className="flex items-center justify-between p-3 rounded-lg border border-border/50 bg-surface-light/20">
+                            <span className="text-sm text-gray-300">{pl.portfolio_name}</span>
+                            <Badge variant={pl.direction_filter === "long" ? "long" : pl.direction_filter === "short" ? "short" : "outline"} className="text-[10px]">{pl.direction_filter || "All"}</Badge>
+                          </div>
+                        ))}
+                      </CardContent></Card>
+                    )}
+
+                    <div className="flex items-center gap-3 pt-1">
+                      <Button onClick={handleSaveTrader} disabled={saving} className="min-w-[120px]">{saving ? "Saving..." : "Save Changes"}</Button>
+                      <Button variant="ghost" size="sm" onClick={() => setSelectedTrader(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : selectedKey && curKey ? (
+                  <div className="space-y-5">
+                    <Card><CardContent className="space-y-4">
+                      <SectionTitle>Unclaimed API Key</SectionTitle>
+                      <Separator />
+                      <div className="grid grid-cols-2 gap-4">
+                        <div><span className="stat-label">Label</span><div className="text-sm text-white mt-1">{curKey.label || "None"}</div></div>
+                        <div><span className="stat-label">Created</span><div className="text-sm text-white mt-1">{formatDate(curKey.created_at)}</div></div>
+                      </div>
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-surface-light/30 border border-border/50">
+                        <div className="w-2 h-2 rounded-full bg-screener-amber animate-pulse" />
+                        <span className="text-xs text-gray-400">Waiting for first webhook to claim this key</span>
+                      </div>
+                      {revealedKey && <RevealedKeyBox apiKey={revealedKey} onCopy={copyClip} />}
+                    </CardContent></Card>
+                    <div className="flex items-center gap-3 pt-1">
+                      <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(curKey.id)} disabled={saving}>{saving ? "Revoking..." : "Revoke Key"}</Button>
+                      <Button variant="ghost" size="sm" onClick={() => setSelectedKey(null)}>Cancel</Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+      {toast && <Toast message={toast.message} type={toast.type} />}
+    </>
+  );
+}

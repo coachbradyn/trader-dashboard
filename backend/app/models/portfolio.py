@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Float, Boolean, Text
+from sqlalchemy import String, Float, Boolean, Text, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,6 +16,10 @@ class Portfolio(Base):
     initial_capital: Mapped[float] = mapped_column(Float, default=10000.0)
     cash: Mapped[float] = mapped_column(Float, default=10000.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    max_pct_per_trade: Mapped[float | None] = mapped_column(Float)
+    max_open_positions: Mapped[int | None] = mapped_column(Integer)
+    max_drawdown_pct: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # "active" / "archived"
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")

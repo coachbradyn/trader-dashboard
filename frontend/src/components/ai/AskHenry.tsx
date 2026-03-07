@@ -4,6 +4,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { renderMarkdown } from "@/lib/markdown";
 import type { QueryHistoryItem } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 const SUGGESTIONS = [
   "Which strategy has the best Sharpe?",
@@ -174,7 +176,7 @@ export default function AskHenry() {
         <span className="text-ai-purple font-mono text-sm select-none whitespace-nowrap">
           henry &gt;
         </span>
-        <input
+        <Input
           ref={inputRef}
           type="text"
           value={input}
@@ -182,21 +184,19 @@ export default function AskHenry() {
           onKeyDown={handleKeyDown}
           placeholder="Ask about your trades..."
           disabled={loading}
-          className="flex-1 bg-transparent text-sm font-mono text-gray-200 placeholder:text-gray-600
-                     focus:outline-none disabled:opacity-50"
+          className="flex-1 bg-transparent font-mono text-gray-200 placeholder:text-gray-600 border-0 focus-visible:ring-0 h-auto p-0"
         />
-        <button
+        <Button
+          variant="ai-ghost"
+          size="sm"
           onClick={() => submitQuery(input)}
           disabled={loading || !input.trim()}
-          className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium
-                     bg-ai-blue/15 text-ai-blue hover:bg-ai-blue/25 transition-colors
-                     disabled:opacity-30 disabled:cursor-not-allowed"
         >
           Submit
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
           </svg>
-        </button>
+        </Button>
       </div>
     </div>
   );

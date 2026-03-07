@@ -34,6 +34,16 @@ function Navbar() {
             </span>
             AI Analysis
           </Link>
+          <Link href="/screener" className="hover:text-white transition flex items-center gap-1.5">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" />
+            </span>
+            Screener
+          </Link>
+          <Link href="/settings" className="hover:text-white transition">
+            Settings
+          </Link>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-profit animate-pulse" />
