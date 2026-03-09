@@ -9,10 +9,10 @@ export default function PortfolioHeader({ portfolio }: { portfolio: Portfolio })
       <CardContent>
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-white">{portfolio.name}</h1>
+            <h1 className="text-xl sm:text-2xl font-bold text-white">{portfolio.name}</h1>
             <p className="text-sm text-gray-400 mt-1">{portfolio.description}</p>
           </div>
-          <div className="flex gap-6">
+          <div className="grid grid-cols-2 sm:flex gap-3 sm:gap-6">
             <div className="text-right">
               <div className="stat-label">Total Return</div>
               <div className={`stat-value ${pnlColor(portfolio.total_return_pct)}`}>

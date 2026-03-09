@@ -11,7 +11,7 @@ export default function LeaderboardPage() {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Strategy Leaderboard</h1>
+        <h1 className="text-xl sm:text-2xl font-bold">Strategy Leaderboard</h1>
         <p className="text-gray-400 mt-1 text-sm">
           Real-time multi-strategy performance ranking
         </p>

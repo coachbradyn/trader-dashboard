@@ -90,12 +90,12 @@ function useHeatmapLayout(tickers: TickerAggregation[]): HeatmapItem[] {
       // Scale typography and chart size with heat
       const tickerSize =
         heat === "fire"
-          ? "text-3xl"
+          ? "text-2xl sm:text-3xl"
           : heat === "hot"
-          ? "text-2xl"
+          ? "text-xl sm:text-2xl"
           : heat === "warm"
-          ? "text-xl"
-          : "text-lg";
+          ? "text-lg sm:text-xl"
+          : "text-base sm:text-lg";
       const sparklineHeight =
         heat === "fire" ? 72 : heat === "hot" ? 56 : heat === "warm" ? 44 : 36;
       const maxIndicators =
@@ -180,7 +180,7 @@ function CandlestickChart({
 }) {
   if (!data || data.length < 2) {
     return (
-      <div className="chart-container flex items-center justify-center h-[300px] text-gray-500 text-sm font-mono">
+      <div className="chart-container flex items-center justify-center h-[200px] sm:h-[300px] text-gray-500 text-sm font-mono">
         No chart data
       </div>
     );
@@ -211,7 +211,7 @@ function CandlestickChart({
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full"
-        style={{ height: H }}
+        style={{ aspectRatio: `${W}/${H}`, height: "auto", maxHeight: H }}
       >
         {yTicks.map((t) => (
           <g key={t}>
@@ -512,13 +512,13 @@ function HeatmapCard({
 // ── Analysis Loading Skeleton ────────────────────────────────────────────
 function AnalysisLoadingSkeleton() {
   return (
-    <div className="analysis-panel p-6 space-y-6 animate-slide-up-panel">
+    <div className="analysis-panel p-4 sm:p-6 space-y-6 animate-slide-up-panel">
       {/* Header */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <div className="analysis-skeleton h-7 w-24 rounded-md" />
         <div className="analysis-skeleton h-8 w-20 rounded-md" />
         <div className="analysis-skeleton h-6 w-16 rounded-md" />
-        <div className="analysis-skeleton h-5 w-48 ml-auto rounded-md" />
+        <div className="analysis-skeleton h-5 w-48 sm:ml-auto rounded-md" />
       </div>
       {/* Thesis */}
       <div className="space-y-2">
@@ -526,7 +526,7 @@ function AnalysisLoadingSkeleton() {
         <div className="analysis-skeleton h-4 w-3/4 rounded" />
       </div>
       {/* Levels */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
@@ -536,9 +536,9 @@ function AnalysisLoadingSkeleton() {
         ))}
       </div>
       {/* Chart */}
-      <div className="analysis-skeleton h-[300px] w-full rounded-lg" />
+      <div className="analysis-skeleton h-[200px] sm:h-[300px] w-full rounded-lg" />
       {/* Strategy grid */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[0, 1, 2, 3].map((i) => (
           <div
             key={i}
@@ -582,13 +582,13 @@ function AnalysisPanel({
       style={{ fontFamily: "'Outfit', sans-serif" }}
     >
       <div className="ai-gradient-border">
-        <div className="analysis-panel p-6 space-y-6">
+        <div className="analysis-panel p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* ── Header ─────────────────────────────── */}
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               <span className={playBadgeClass}>{analysis.play_type} Play</span>
               <h2
-                className="text-2xl font-extrabold tracking-tight text-white"
+                className="text-xl sm:text-2xl font-extrabold tracking-tight text-white"
                 style={{ fontFamily: "'JetBrains Mono', monospace" }}
               >
                 {analysis.ticker}
@@ -603,13 +603,13 @@ function AnalysisPanel({
                 {analysis.direction}
               </Badge>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 sm:gap-4">
               {/* Confidence gauge */}
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">
+              <div className="flex items-center gap-2 sm:gap-3">
+                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold hidden sm:inline">
                   Confidence
                 </span>
-                <div className="w-32 h-2 bg-surface-light rounded-full overflow-hidden">
+                <div className="w-20 sm:w-32 h-2 bg-surface-light rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full ${confidenceColor(analysis.confidence)} animate-gauge-fill`}
                     style={
@@ -652,7 +652,7 @@ function AnalysisPanel({
           </p>
 
           {/* ── Signal breakdown strip ─────────────── */}
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs">
             <span className="text-gray-500 uppercase tracking-wider font-semibold text-[10px]">
               Signals
             </span>
@@ -725,11 +725,11 @@ function AnalysisPanel({
 
           {/* ── Candlestick Chart ──────────────────── */}
           {chartLoading ? (
-            <Skeleton className="h-[300px] w-full rounded-lg" />
+            <Skeleton className="h-[200px] sm:h-[300px] w-full rounded-lg" />
           ) : chartData && chartData.length > 0 ? (
             <CandlestickChart data={chartData} alerts={tickerData.alerts} />
           ) : (
-            <div className="chart-container h-[300px] flex items-center justify-center text-gray-600 text-sm">
+            <div className="chart-container h-[200px] sm:h-[300px] flex items-center justify-center text-gray-600 text-sm">
               Chart data unavailable
             </div>
           )}
@@ -753,7 +753,7 @@ function AnalysisPanel({
                     <p className="text-xs font-mono text-amber-300/70 leading-relaxed">
                       {match.pattern}
                     </p>
-                    <div className="grid grid-cols-4 gap-2 text-center">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
                       <div>
                         <p className="stat-label text-[9px]">Occurrences</p>
                         <p
@@ -876,7 +876,20 @@ function AnalysisPanel({
                 ))}
               </div>
             </div>
-            <div className="rounded-lg border border-border overflow-hidden">
+            {/* Mobile: compact card list */}
+            <div className="md:hidden space-y-2">
+              {tickerData.alerts.map((a) => (
+                <div key={a.id} className="flex items-center gap-2 text-xs py-2 px-3 rounded-lg bg-surface-light/20">
+                  <span className="font-mono text-amber-300/80 w-24 truncate shrink-0">{a.indicator}</span>
+                  <span className="font-mono tabular-nums text-gray-200">{a.value.toFixed(2)}</span>
+                  <Badge className={`${signalBg(a.signal)} text-[10px] px-1.5 py-0`}>{a.signal}</Badge>
+                  {a.timeframe && <span className="text-gray-600 text-[10px]">{a.timeframe}</span>}
+                  <span className="text-gray-600 ml-auto text-[10px] font-mono shrink-0">{formatTimeAgo(a.created_at)}</span>
+                </div>
+              ))}
+            </div>
+            {/* Desktop: full table */}
+            <div className="hidden md:block rounded-lg border border-border overflow-hidden">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-surface-light/30">
@@ -986,7 +999,7 @@ function FilterBar({
           </TabsList>
         </Tabs>
 
-        <div className="relative ml-auto w-56">
+        <div className="relative w-full sm:ml-auto sm:w-56">
           <svg
             className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500"
             fill="none"
@@ -1019,9 +1032,8 @@ function LoadingSkeleton() {
         <Skeleton className="h-8 w-56 ml-auto" />
       </div>
       <div
-        className="grid gap-3"
+        className="grid gap-3 grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
         style={{
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
           gridAutoRows: "minmax(120px, auto)",
         }}
       >
@@ -1304,10 +1316,8 @@ export default function ScreenerPage() {
           <>
             {/* Heatmap Grid */}
             <div
-              className="grid gap-3"
+              className="grid gap-3 grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
               style={{
-                gridTemplateColumns:
-                  "repeat(auto-fill, minmax(280px, 1fr))",
                 gridAutoRows: "minmax(120px, auto)",
                 gridAutoFlow: "dense",
               }}

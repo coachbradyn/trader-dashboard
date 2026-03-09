@@ -27,7 +27,7 @@ export default function AIAnalysisPage() {
       <MorningBriefing />
 
       {/* Middle row: Trade Review (40%) + Ask Henry (60%) */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 lg:gap-6">
         <div className="lg:col-span-2">
           <TradeReview />
         </div>

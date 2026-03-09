@@ -310,4 +310,26 @@
     background-size: 200% 100%;
     animation: shimmer-load 2s ease-in-out infinite;
   }
+
+  /* ── Mobile Responsive Overrides ─────────────────────── */
+
+  @media (max-width: 640px) {
+    .stat-value {
+      @apply text-lg;
+    }
+
+    .stat-label {
+      @apply text-[10px];
+    }
+
+    .analysis-panel {
+      @apply p-4;
+    }
+
+    .heatmap-card {
+      grid-column: span 1 !important;
+      grid-row: span 1 !important;
+      min-height: 140px !important;
+    }
+  }
 }
