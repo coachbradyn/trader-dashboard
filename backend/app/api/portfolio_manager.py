@@ -395,41 +395,48 @@ async def list_holdings(
 
 @router.post("/holdings", response_model=HoldingResponse)
 async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)):
-    holding = PortfolioHolding(
-        portfolio_id=body.portfolio_id,
-        ticker=body.ticker.upper(),
-        direction=body.direction,
-        entry_price=body.entry_price,
-        qty=body.qty,
-        entry_date=body.entry_date,
-        strategy_name=body.strategy_name,
-        notes=body.notes,
-    )
-    db.add(holding)
-    await db.commit()
-    await db.refresh(holding)
+    logger = logging.getLogger(__name__)
+    try:
+        holding = PortfolioHolding(
+            portfolio_id=body.portfolio_id,
+            ticker=body.ticker.upper(),
+            direction=body.direction,
+            entry_price=body.entry_price,
+            qty=body.qty,
+            entry_date=body.entry_date,
+            strategy_name=body.strategy_name,
+            notes=body.notes,
+            is_active=True,
+            created_at=datetime.utcnow(),
+        )
+        db.add(holding)
+        await db.commit()
+        await db.refresh(holding)
 
-    # Register ticker for price tracking
-    price_service.add_ticker(holding.ticker)
+        # Register ticker for price tracking
+        price_service.add_ticker(holding.ticker)
 
-    return HoldingResponse(
-        id=holding.id,
-        portfolio_id=holding.portfolio_id,
-        trade_id=None,
-        ticker=holding.ticker,
-        direction=holding.direction,
-        entry_price=holding.entry_price,
-        qty=holding.qty,
-        entry_date=holding.entry_date,
-        strategy_name=holding.strategy_name,
-        notes=holding.notes,
-        is_active=holding.is_active,
-        source="manual",
-        current_price=None,
-        unrealized_pnl=None,
-        unrealized_pnl_pct=None,
-        created_at=holding.created_at,
-    )
+        return HoldingResponse(
+            id=holding.id,
+            portfolio_id=holding.portfolio_id,
+            trade_id=None,
+            ticker=holding.ticker,
+            direction=holding.direction,
+            entry_price=holding.entry_price,
+            qty=holding.qty,
+            entry_date=holding.entry_date,
+            strategy_name=holding.strategy_name,
+            notes=holding.notes,
+            is_active=holding.is_active,
+            source="manual",
+            current_price=None,
+            unrealized_pnl=None,
+            unrealized_pnl_pct=None,
+            created_at=holding.created_at,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create holding: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/holdings/{holding_id}", response_model=HoldingResponse)
