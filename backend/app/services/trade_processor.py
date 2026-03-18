@@ -59,6 +59,32 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
         raise ValueError(f"Unknown signal type: {payload.signal}")
 
     await db.commit()
+
+    # Portfolio manager hooks (non-blocking)
+    try:
+        from app.services.portfolio_analysis import evaluate_signal, link_trade_to_holding
+        if payload.signal == "entry":
+            await link_trade_to_holding(trade, db)
+            await evaluate_signal(trade, db)
+            await db.commit()
+        elif payload.signal == "exit":
+            from app.services.portfolio_analysis import track_action_outcome
+            await track_action_outcome(trade, db)
+            # Mark linked holdings as inactive
+            from app.models import PortfolioHolding
+            result = await db.execute(
+                select(PortfolioHolding).where(
+                    PortfolioHolding.trade_id == trade.id,
+                    PortfolioHolding.is_active == True,
+                )
+            )
+            for h in result.scalars().all():
+                h.is_active = False
+            await db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Portfolio manager hook failed (non-blocking): {e}")
+
     return trade
 
 

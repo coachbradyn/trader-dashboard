@@ -10,6 +10,10 @@ from app.models.indicator_alert import IndicatorAlert
 from app.models.market_summary import MarketSummary
 from app.models.screener_analysis import ScreenerAnalysis
 from app.models.allowlisted_key import AllowlistedKey
+from app.models.portfolio_action import PortfolioAction
+from app.models.backtest_import import BacktestImport
+from app.models.backtest_trade import BacktestTrade
+from app.models.portfolio_holding import PortfolioHolding
 
 __all__ = [
     "Trader",
@@ -24,4 +28,8 @@ __all__ = [
     "MarketSummary",
     "ScreenerAnalysis",
     "AllowlistedKey",
+    "PortfolioAction",
+    "BacktestImport",
+    "BacktestTrade",
+    "PortfolioHolding",
 ]

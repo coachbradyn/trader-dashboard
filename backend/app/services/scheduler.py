@@ -260,6 +260,32 @@ async def _refresh_screener_analysis():
         logger.error(f"Screener analysis refresh failed: {e}")
 
 
+async def _run_threshold_checks():
+    """Hourly lightweight portfolio threshold checks (no Claude call)."""
+    logger.info("Running portfolio threshold checks...")
+    try:
+        from app.database import async_session
+        from app.services.portfolio_analysis import evaluate_thresholds
+
+        async with async_session() as db:
+            await evaluate_thresholds(db)
+    except Exception as e:
+        logger.error(f"Threshold checks failed: {e}")
+
+
+async def _run_daily_portfolio_review():
+    """Daily deep portfolio review by Henry (Claude call)."""
+    logger.info("Running daily portfolio review...")
+    try:
+        from app.database import async_session
+        from app.services.portfolio_analysis import scheduled_review
+
+        async with async_session() as db:
+            await scheduled_review(db)
+    except Exception as e:
+        logger.error(f"Daily portfolio review failed: {e}")
+
+
 def start_scheduler():
     """Start the APScheduler with all jobs."""
     # Morning summary at 9:30 AM ET (13:30 UTC)
@@ -286,8 +312,28 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Portfolio threshold checks every hour during market hours (14:30-21:00 UTC)
+    scheduler.add_job(
+        _run_threshold_checks,
+        CronTrigger(hour="14-20", minute=0, timezone="UTC", day_of_week="mon-fri"),
+        id="portfolio_thresholds",
+        replace_existing=True,
+    )
+
+    # Daily portfolio review at 10:00 AM ET (14:00 UTC) — after market opens and settles
+    scheduler.add_job(
+        _run_daily_portfolio_review,
+        CronTrigger(hour=14, minute=0, timezone="UTC", day_of_week="mon-fri"),
+        id="portfolio_daily_review",
+        replace_existing=True,
+    )
+
     scheduler.start()
-    logger.info("Scheduler started: morning (13:30 UTC), nightly (20:15 UTC), screener (every 30m)")
+    logger.info(
+        "Scheduler started: morning (13:30 UTC), nightly (20:15 UTC), "
+        "screener (every 30m), thresholds (hourly M-F 14-20 UTC), "
+        "portfolio review (daily 14:00 UTC)"
+    )
 
 
 def stop_scheduler():

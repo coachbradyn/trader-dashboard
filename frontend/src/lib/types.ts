@@ -270,6 +270,98 @@ export interface MarketSummary {
   generated_at: string;
 }
 
+// ── Portfolio Manager Types ─────────────────────────────────
+
+export interface PortfolioHolding {
+  id: string;
+  portfolio_id: string;
+  trade_id: string | null;
+  ticker: string;
+  direction: "long" | "short";
+  entry_price: number;
+  qty: number;
+  entry_date: string;
+  strategy_name: string | null;
+  notes: string | null;
+  is_active: boolean;
+  source: string;
+  current_price: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  created_at: string;
+}
+
+export interface PortfolioAction {
+  id: string;
+  portfolio_id: string;
+  ticker: string;
+  direction: string;
+  action_type: "BUY" | "SELL" | "TRIM" | "ADD" | "CLOSE" | "REBALANCE";
+  suggested_qty: number | null;
+  suggested_price: number | null;
+  current_price: number | null;
+  confidence: number;
+  reasoning: string;
+  trigger_type: "SIGNAL" | "THRESHOLD" | "SCHEDULED_REVIEW";
+  trigger_ref: string | null;
+  priority_score: number;
+  status: "pending" | "approved" | "rejected" | "expired";
+  expires_at: string | null;
+  resolved_at: string | null;
+  reject_reason: string | null;
+  outcome_pnl: number | null;
+  outcome_correct: boolean | null;
+  created_at: string;
+}
+
+export interface ActionStats {
+  pending_count: number;
+  approved_today: number;
+  rejected_today: number;
+  total_approved: number;
+  hit_rate: number | null;
+  hit_rate_high_confidence: number | null;
+}
+
+export interface BacktestImportData {
+  id: string;
+  strategy_name: string;
+  strategy_version: string | null;
+  exchange: string | null;
+  ticker: string;
+  filename: string;
+  trade_count: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  avg_gain_pct: number | null;
+  avg_loss_pct: number | null;
+  max_drawdown_pct: number | null;
+  max_adverse_excursion_pct: number | null;
+  avg_hold_days: number | null;
+  total_pnl_pct: number | null;
+  imported_at: string;
+}
+
+export interface BacktestTradeData {
+  id: string;
+  trade_number: number;
+  type: string;
+  direction: string;
+  signal: string | null;
+  price: number;
+  qty: number | null;
+  position_value: number | null;
+  net_pnl: number | null;
+  net_pnl_pct: number | null;
+  favorable_excursion: number | null;
+  favorable_excursion_pct: number | null;
+  adverse_excursion: number | null;
+  adverse_excursion_pct: number | null;
+  cumulative_pnl: number | null;
+  cumulative_pnl_pct: number | null;
+  trade_date: string;
+}
+
 // ── Per-Ticker Analysis Types ────────────────────────────────
 
 export interface HistoricalMatch {

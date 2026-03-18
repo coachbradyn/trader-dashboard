@@ -18,6 +18,11 @@ const NAV_LINKS = [
     label: "Screener",
     dot: "bg-amber-500",
   },
+  {
+    href: "/portfolio-manager",
+    label: "Manager",
+    dot: "bg-ai-blue",
+  },
   { href: "/settings", label: "Settings" },
 ];
 

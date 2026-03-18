@@ -127,4 +127,62 @@ export const api = {
   getSummaries: () => fetchApi<import("./types").MarketSummary[]>("/ai/summaries"),
   generateSummary: () =>
     fetchApi("/ai/summaries/generate", { method: "POST" }),
+
+  // Portfolio Manager - Holdings
+  getHoldings: (portfolioId?: string, activeOnly?: boolean) => {
+    const sp = new URLSearchParams();
+    if (portfolioId) sp.set("portfolio_id", portfolioId);
+    if (activeOnly !== undefined) sp.set("active_only", String(activeOnly));
+    const qs = sp.toString();
+    return fetchApi<import("./types").PortfolioHolding[]>("/portfolio-manager/holdings" + (qs ? "?" + qs : ""));
+  },
+  createHolding: (data: { portfolio_id: string; ticker: string; direction: string; entry_price: number; qty: number; entry_date: string; strategy_name?: string; notes?: string }) =>
+    fetchApi<import("./types").PortfolioHolding>("/portfolio-manager/holdings", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateHolding: (id: string, data: Record<string, unknown>) =>
+    fetchApi<import("./types").PortfolioHolding>("/portfolio-manager/holdings/" + id, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteHolding: (id: string) =>
+    fetchApi("/portfolio-manager/holdings/" + id, { method: "DELETE" }),
+
+  // Portfolio Manager - Actions
+  getActions: (status?: string, portfolioId?: string) => {
+    const sp = new URLSearchParams();
+    if (status) sp.set("status", status);
+    if (portfolioId) sp.set("portfolio_id", portfolioId);
+    const qs = sp.toString();
+    return fetchApi<import("./types").PortfolioAction[]>("/portfolio-manager/actions" + (qs ? "?" + qs : ""));
+  },
+  getActionStats: () =>
+    fetchApi<import("./types").ActionStats>("/portfolio-manager/actions/stats"),
+  approveAction: (id: string) =>
+    fetchApi("/portfolio-manager/actions/" + id + "/approve", { method: "POST" }),
+  rejectAction: (id: string, reason?: string) =>
+    fetchApi("/portfolio-manager/actions/" + id + "/reject", {
+      method: "POST",
+      body: JSON.stringify({ reason: reason || null }),
+    }),
+
+  // Portfolio Manager - Backtest Imports
+  getBacktestImports: () =>
+    fetchApi<import("./types").BacktestImportData[]>("/portfolio-manager/imports"),
+  getBacktestTrades: (importId: string) =>
+    fetchApi<import("./types").BacktestTradeData[]>("/portfolio-manager/imports/" + importId + "/trades"),
+  deleteBacktestImport: (id: string) =>
+    fetchApi("/portfolio-manager/imports/" + id, { method: "DELETE" }),
+  uploadBacktests: async (files: File[]) => {
+    const formData = new FormData();
+    files.forEach((f) => formData.append("files", f));
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+    const res = await fetch(`${API_URL}/portfolio-manager/import`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    return res.json() as Promise<import("./types").BacktestImportData[]>;
+  },
 };
