@@ -26,7 +26,7 @@ export default function EquityCurve({ data }: { data: EquityPoint[] }) {
 
   const chartData = data.map((d) => ({
     ...d,
-    date: new Date(d.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
   }));
 
   return (

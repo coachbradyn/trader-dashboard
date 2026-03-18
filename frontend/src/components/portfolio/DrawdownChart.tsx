@@ -16,7 +16,7 @@ export default function DrawdownChart({ data }: { data: EquityPoint[] }) {
   if (data.length === 0) return null;
 
   const chartData = data.map((d) => ({
-    date: new Date(d.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
     drawdown: -Math.abs(d.drawdown_pct),
   }));
 

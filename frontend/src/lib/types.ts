@@ -26,19 +26,19 @@ export interface Position {
 }
 
 export interface Performance {
-  total_return_pct: number;
+  portfolio_id: string;
+  portfolio_name: string;
+  total_trades: number;
+  wins: number;
+  losses: number;
   win_rate: number;
   profit_factor: number;
-  sharpe_ratio: number;
-  max_drawdown_pct: number;
-  total_trades: number;
-  winning_trades: number;
-  losing_trades: number;
-  avg_win_pct: number;
-  avg_loss_pct: number;
+  avg_win: number;
+  avg_loss: number;
   total_pnl: number;
-  best_trade_pct: number;
-  worst_trade_pct: number;
+  total_return_pct: number;
+  max_drawdown_pct: number;
+  sharpe_ratio: number;
   current_streak: number;
 }
 
@@ -76,22 +76,19 @@ export interface Trader {
 }
 
 export interface EquityPoint {
-  timestamp: string;
+  time: string;
   equity: number;
   drawdown_pct: number;
 }
 
 export interface DailyStats {
   date: string;
-  starting_equity: number;
-  ending_equity: number;
   daily_pnl: number;
   daily_pnl_pct: number;
-  trades_opened: number;
   trades_closed: number;
   wins: number;
   losses: number;
-  max_drawdown_pct: number;
+  ending_equity: number;
 }
 
 export interface LeaderboardEntry {

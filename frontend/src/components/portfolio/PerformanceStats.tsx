@@ -11,19 +11,17 @@ export default function PerformanceStats({ perf }: { perf: Performance }) {
     { label: "Sharpe Ratio", value: formatNumber(perf.sharpe_ratio), color: perf.sharpe_ratio >= 1 ? "text-profit" : "text-gray-300" },
     { label: "Max Drawdown", value: formatPercent(-Math.abs(perf.max_drawdown_pct)), color: "text-loss" },
     { label: "Total P&L", value: formatCurrency(perf.total_pnl), color: pnlColor(perf.total_pnl) },
-    { label: "Avg Win", value: formatPercent(perf.avg_win_pct), color: "text-profit" },
-    { label: "Avg Loss", value: formatPercent(-Math.abs(perf.avg_loss_pct)), color: "text-loss" },
+    { label: "Avg Win", value: formatCurrency(perf.avg_win), color: "text-profit" },
+    { label: "Avg Loss", value: formatCurrency(perf.avg_loss), color: "text-loss" },
     { label: "Total Trades", value: String(perf.total_trades), color: "text-white" },
-    { label: "Win / Loss", value: `${perf.winning_trades} / ${perf.losing_trades}`, color: "text-gray-300" },
-    { label: "Best Trade", value: formatPercent(perf.best_trade_pct), color: "text-profit" },
-    { label: "Worst Trade", value: formatPercent(perf.worst_trade_pct), color: "text-loss" },
+    { label: "Win / Loss", value: `${perf.wins} / ${perf.losses}`, color: "text-gray-300" },
   ];
 
   return (
     <Card>
       <CardContent>
         <h3 className="font-bold text-white mb-4">Performance Metrics</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           {stats.map((s) => (
             <div key={s.label}>
               <div className="stat-label">{s.label}</div>
