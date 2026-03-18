@@ -2,6 +2,8 @@ from datetime import datetime
 from pydantic import BaseModel
 
 class ScreenerWebhookPayload(BaseModel):
+    model_config = {"extra": "ignore"}  # Ignore extra fields from Pine Script
+
     key: str
     ticker: str
     indicator: str

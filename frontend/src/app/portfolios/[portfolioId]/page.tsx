@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
 import { formatCurrency, formatPercent, formatDate, formatTimeAgo, pnlColor } from "@/lib/formatters";
@@ -494,9 +494,9 @@ function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════
 
-export default function PortfolioDetailPage({ params }: { params: Promise<{ portfolioId: string }> }) {
+export default function PortfolioDetailPage({ params }: { params: { portfolioId: string } }) {
   useFonts();
-  const { portfolioId } = use(params);
+  const { portfolioId } = params;
 
   const { data: portfolio, loading: loadingPortfolio } = usePolling(() => api.getPortfolio(portfolioId), 15000);
   const { data: performance } = usePolling(() => api.getPerformance(portfolioId), 60000);

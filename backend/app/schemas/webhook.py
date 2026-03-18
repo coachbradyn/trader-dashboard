@@ -1,7 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class WebhookPayload(BaseModel):
+    model_config = {"extra": "ignore"}  # Ignore extra fields from Pine Script
+
     key: str
     trader: str  # trader_id slug
     signal: str  # "entry" or "exit"
@@ -19,3 +21,15 @@ class WebhookPayload(BaseModel):
     tf: str | None = None  # timeframe
     time: int | None = None  # unix timestamp ms
     profile: str | None = None
+
+    @field_validator("time", mode="before")
+    @classmethod
+    def coerce_time(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return int(float(v))
+            except (ValueError, TypeError):
+                return None
+        return v
