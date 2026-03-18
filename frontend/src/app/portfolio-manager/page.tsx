@@ -260,20 +260,26 @@ function HoldingsTab({ portfolios, onToast }: { portfolios: PortfolioSettings[];
     portfolio_id: "", ticker: "", direction: "long", entry_price: "", qty: "", entry_date: "", strategy_name: "", notes: "",
   });
 
+  // Filter to only active portfolios
+  const activePortfolios = portfolios.filter((p) => p.status === "active");
+
   useEffect(() => {
-    if (portfolios.length > 0 && !selectedPortfolio) {
-      setSelectedPortfolio(portfolios[0].id);
+    if (activePortfolios.length > 0 && !selectedPortfolio) {
+      setSelectedPortfolio(activePortfolios[0].id);
     }
-  }, [portfolios, selectedPortfolio]);
+  }, [activePortfolios, selectedPortfolio]);
+
+  // Keep form portfolio_id in sync
+  const effectivePortfolioId = form.portfolio_id || selectedPortfolio || (activePortfolios[0]?.id ?? "");
 
   const handleSubmit = async () => {
-    if (!form.portfolio_id || !form.ticker || !form.entry_price || !form.qty || !form.entry_date) {
+    if (!effectivePortfolioId || !form.ticker || !form.entry_price || !form.qty || !form.entry_date) {
       onToast("Fill in required fields", "error");
       return;
     }
     try {
       await api.createHolding({
-        portfolio_id: form.portfolio_id,
+        portfolio_id: effectivePortfolioId,
         ticker: form.ticker.toUpperCase(),
         direction: form.direction,
         entry_price: parseFloat(form.entry_price),
@@ -313,9 +319,9 @@ function HoldingsTab({ portfolios, onToast }: { portfolios: PortfolioSettings[];
           className="bg-surface-light border border-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-ai-blue"
           style={FONT_MONO}>
           <option value="">All Portfolios</option>
-          {portfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {activePortfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <Button size="sm" onClick={() => { setShowForm(!showForm); setForm({ ...form, portfolio_id: selectedPortfolio || (portfolios[0]?.id ?? "") }); }}
+        <Button size="sm" onClick={() => { setShowForm(!showForm); setForm({ ...form, portfolio_id: selectedPortfolio || (activePortfolios[0]?.id ?? "") }); }}
           className="bg-ai-blue/20 text-ai-blue hover:bg-ai-blue/30 border border-ai-blue/30 text-xs h-9 px-4">
           {showForm ? "Cancel" : "+ Add Holding"}
         </Button>
@@ -353,9 +359,9 @@ function HoldingsTab({ portfolios, onToast }: { portfolios: PortfolioSettings[];
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               <div>
                 <label className="text-[10px] text-gray-500 mb-1 block" style={FONT_OUTFIT}>Portfolio</label>
-                <select value={form.portfolio_id} onChange={(e) => setForm({ ...form, portfolio_id: e.target.value })}
+                <select value={effectivePortfolioId} onChange={(e) => setForm({ ...form, portfolio_id: e.target.value })}
                   className="w-full bg-surface border border-border rounded-md px-2 py-1.5 text-xs text-white" style={FONT_MONO}>
-                  {portfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {activePortfolios.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
               <div>
