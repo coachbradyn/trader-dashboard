@@ -22,8 +22,9 @@ import anthropic
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
-MODEL = "claude-sonnet-4-5-20250514"  # Best balance of speed + reasoning for trade analysis
-MODEL_FALLBACK = "claude-3-5-sonnet-20241022"  # Fallback if primary model unavailable
+MODEL = "claude-sonnet-4-5-20250514"  # Primary — best reasoning for trade analysis
+MODEL_FALLBACK = "claude-3-5-sonnet-latest"  # Fallback — uses latest available Sonnet 3.5
+MODEL_LAST_RESORT = "claude-3-haiku-20240307"  # Last resort — cheap and fast
 
 try:
     CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env
@@ -54,26 +55,30 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
     logger = logging.getLogger(__name__)
 
     last_error = None
-    for model in [MODEL, MODEL_FALLBACK]:
+    for model in [MODEL, MODEL_FALLBACK, MODEL_LAST_RESORT]:
         try:
             response = CLIENT.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
-                timeout=25.0,
+                timeout=30.0,
             )
+            if model != MODEL:
+                logger.info(f"Used fallback model: {model}")
             return response.content[0].text
-        except anthropic.BadRequestError as e:
-            last_error = f"BadRequest ({model}): {str(e)[:200]}"
-            logger.warning(f"Claude API BadRequest with model {model}: {e}")
-            continue  # Try fallback model
+        except (anthropic.BadRequestError, anthropic.NotFoundError) as e:
+            last_error = f"{type(e).__name__} ({model}): {str(e)[:200]}"
+            logger.warning(f"Claude API {type(e).__name__} with model {model}: {e}")
+            continue  # Try next model
+        except anthropic.AuthenticationError as e:
+            return f"AI analysis unavailable — invalid API key. Check ANTHROPIC_API_KEY in Railway."
         except Exception as e:
             last_error = f"{type(e).__name__} ({model}): {str(e)[:200]}"
             logger.error(f"Claude API call failed with model {model}: {e}")
-            return f"AI analysis temporarily unavailable. {last_error}"
+            continue  # Try next model
 
-    return f"AI analysis temporarily unavailable. {last_error or 'All models failed.'}"
+    return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:

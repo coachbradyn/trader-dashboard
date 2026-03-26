@@ -14,7 +14,7 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5-20250929"
+MODEL = "claude-3-5-sonnet-latest"  # Use latest available Sonnet
 
 try:
     CLIENT = anthropic.Anthropic()
