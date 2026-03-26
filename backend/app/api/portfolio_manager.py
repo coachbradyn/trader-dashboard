@@ -640,3 +640,74 @@ async def reject_action(action_id: str, body: ActionReject | None = None, db: As
     await db.commit()
 
     return {"status": "rejected", "action_id": action_id}
+
+
+# ── Debug / Seed ─────────────────────────────────────────────────────
+
+@router.post("/actions/seed")
+async def seed_actions(portfolio_id: str, db: AsyncSession = Depends(get_db)):
+    """Seed sample actions for testing the action queue UI."""
+    import uuid
+    samples = [
+        {
+            "ticker": "NVDA", "direction": "long", "action_type": "BUY",
+            "suggested_qty": 2.0, "suggested_price": 120.50, "current_price": 119.80,
+            "confidence": 9,
+            "reasoning": "S1 fired a long entry on NVDA at $120.50. Backtest data shows S1 has a 100% win rate on NVDA across 9 trades with avg gain of 4.07%. Portfolio currently has 0.292 shares — room to add. Max adverse excursion averaged -4.4% so set stops accordingly.",
+            "trigger_type": "SIGNAL", "priority_score": 18.0,
+        },
+        {
+            "ticker": "TSLA", "direction": "long", "action_type": "TRIM",
+            "suggested_qty": 1.5, "suggested_price": 285.00, "current_price": 288.40,
+            "confidence": 7,
+            "reasoning": "TSLA position is up 17.3% from entry and approaching the 95th percentile of S1 historical gains on this ticker. Average winning trade for S1 on TSLA closes at +12.8%. Consider trimming 40% to lock in profits while keeping exposure.",
+            "trigger_type": "SCHEDULED", "priority_score": 7.0,
+        },
+        {
+            "ticker": "PLTR", "direction": "long", "action_type": "CLOSE",
+            "suggested_qty": 8.0, "suggested_price": 72.10, "current_price": 71.85,
+            "confidence": 6,
+            "reasoning": "PLTR has been in this position for 64 days — well beyond S2's average hold time of 28 days on this ticker. The trend has flattened and ADX is declining. S2 historically loses money on holds exceeding 45 days for PLTR.",
+            "trigger_type": "SCHEDULED", "priority_score": 6.0,
+        },
+        {
+            "ticker": "AMD", "direction": "long", "action_type": "ADD",
+            "suggested_qty": 3.0, "suggested_price": 158.30, "current_price": 157.90,
+            "confidence": 8,
+            "reasoning": "S3 impulse breakout just confirmed on AMD 4h chart. You already hold 6.2 shares from S3 at $162.40. This pullback entry at $158.30 lowers your avg cost. S3 has 68% win rate on AMD with profit factor 1.85.",
+            "trigger_type": "SIGNAL", "priority_score": 16.0,
+        },
+        {
+            "ticker": "AAPL", "direction": "long", "action_type": "REBALANCE",
+            "suggested_qty": None, "suggested_price": None, "current_price": 225.40,
+            "confidence": 5,
+            "reasoning": "AAPL currently represents 28.3% of portfolio value — above the 25% concentration threshold. Consider trimming to bring allocation below 25%. All other metrics are healthy.",
+            "trigger_type": "THRESHOLD", "priority_score": 15.0,
+        },
+    ]
+
+    created = []
+    for s in samples:
+        action = PortfolioAction(
+            id=str(uuid.uuid4()),
+            portfolio_id=portfolio_id,
+            ticker=s["ticker"],
+            direction=s["direction"],
+            action_type=s["action_type"],
+            suggested_qty=s["suggested_qty"],
+            suggested_price=s["suggested_price"],
+            current_price=s["current_price"],
+            confidence=s["confidence"],
+            reasoning=s["reasoning"],
+            trigger_type=s["trigger_type"],
+            trigger_ref=None,
+            priority_score=s["priority_score"],
+            status="pending",
+            expires_at=datetime.utcnow() + timedelta(hours=4 if s["trigger_type"] == "SIGNAL" else 24),
+            created_at=datetime.utcnow(),
+        )
+        db.add(action)
+        created.append(s["ticker"])
+
+    await db.commit()
+    return {"status": "seeded", "actions": created}
