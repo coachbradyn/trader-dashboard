@@ -22,9 +22,9 @@ import anthropic
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
-MODEL = "claude-sonnet-4-5-20250514"  # Primary — best reasoning for trade analysis
-MODEL_FALLBACK = "claude-3-5-sonnet-latest"  # Fallback — uses latest available Sonnet 3.5
-MODEL_LAST_RESORT = "claude-3-haiku-20240307"  # Last resort — cheap and fast
+MODEL = "claude-sonnet-4-5-20250929"  # Primary — best balance of speed + reasoning
+MODEL_FALLBACK = "claude-sonnet-4-6"  # Fallback — latest Sonnet
+MODEL_LAST_RESORT = "claude-haiku-4-5-20251001"  # Last resort — cheap and fast
 
 try:
     CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env

@@ -279,11 +279,9 @@ async def debug_ai():
 
     # Try each model
     test_models = [
-        "claude-sonnet-4-5-20250514",
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-latest",
-        "claude-3-haiku-20240307",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
     ]
     for model in test_models:
         try:
