@@ -15,6 +15,10 @@ class Trader(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     strategy_name: Mapped[str | None] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text)
+    # Rich strategy description for Henry's analysis — explain the strategy's
+    # philosophy, entry/exit logic, ideal market conditions, known weaknesses.
+    # This replaces the hardcoded S1-S4 descriptions in the system prompt.
+    strategy_description: Mapped[str | None] = mapped_column(Text)
     api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

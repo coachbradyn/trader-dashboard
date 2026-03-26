@@ -83,7 +83,7 @@ async def evaluate_signal(trade: Trade, db: AsyncSession):
     portfolio actions based on backtest data and current holdings.
     """
     try:
-        from app.services.ai_service import _call_claude
+        from app.services.ai_service import _call_claude_async, extract_and_save_memories
 
         ticker = trade.ticker
         direction = trade.direction
@@ -192,7 +192,7 @@ Based on the backtest data and current holdings, should the portfolio:
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"action_type": "BUY" or "ADD" or "TRIM" or "CLOSE" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences max", "suggested_qty": number_or_null}}"""
 
-        raw = _call_claude(prompt, max_tokens=500)
+        raw = await _call_claude_async(prompt, max_tokens=500)
 
         try:
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -427,7 +427,7 @@ async def scheduled_review(db: AsyncSession):
     strategy performance, and market context.
     """
     try:
-        from app.services.ai_service import _call_claude
+        from app.services.ai_service import _call_claude_async, extract_and_save_memories
 
         # Get all active portfolios with holdings
         result = await db.execute(
@@ -542,7 +542,7 @@ Respond with a JSON array of recommended actions (or empty array if none needed)
 Each action: {{"action_type": "BUY|SELL|TRIM|ADD|CLOSE|REBALANCE", "ticker": "X", "direction": "long|short", "confidence": 1-10, "reasoning": "2-3 sentences", "suggested_qty": number_or_null}}
 No markdown, no backticks. Just the JSON array."""
 
-            raw = _call_claude(prompt, max_tokens=1500)
+            raw = await _call_claude_async(prompt, max_tokens=1500)
 
             try:
                 clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -574,6 +574,10 @@ No markdown, no backticks. Just the JSON array."""
 
         await db.commit()
         logger.info("Scheduled portfolio review complete")
+
+        # Extract and save memories from the review (non-blocking)
+        import asyncio
+        asyncio.create_task(extract_and_save_memories(raw, source="scheduled_review"))
 
     except Exception as e:
         logger.error(f"Scheduled review failed: {e}")

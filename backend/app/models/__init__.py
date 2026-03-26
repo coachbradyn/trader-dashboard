@@ -14,6 +14,7 @@ from app.models.portfolio_action import PortfolioAction
 from app.models.backtest_import import BacktestImport
 from app.models.backtest_trade import BacktestTrade
 from app.models.portfolio_holding import PortfolioHolding
+from app.models.henry_memory import HenryMemory
 
 __all__ = [
     "Trader",
@@ -32,4 +33,5 @@ __all__ = [
     "BacktestImport",
     "BacktestTrade",
     "PortfolioHolding",
+    "HenryMemory",
 ]

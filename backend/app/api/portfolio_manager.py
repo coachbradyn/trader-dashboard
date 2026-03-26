@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import PortfolioAction, BacktestImport, BacktestTrade, PortfolioHolding
+from app.models import PortfolioAction, BacktestImport, BacktestTrade, PortfolioHolding, HenryMemory, Trader
 from app.schemas.portfolio_manager import (
     HoldingCreate, HoldingUpdate, HoldingResponse,
     ActionResponse, ActionReject, ActionStats,
@@ -399,10 +399,75 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
     try:
         # Strip timezone info — DB column is TIMESTAMP WITHOUT TIME ZONE
         entry_date = body.entry_date.replace(tzinfo=None) if body.entry_date.tzinfo else body.entry_date
+        ticker = body.ticker.upper()
 
+        # Check for existing active holding with same ticker+direction+portfolio
+        # If found, merge: average the entry price, sum the qty
+        result = await db.execute(
+            select(PortfolioHolding).where(
+                PortfolioHolding.portfolio_id == body.portfolio_id,
+                PortfolioHolding.ticker == ticker,
+                PortfolioHolding.direction == body.direction,
+                PortfolioHolding.is_active == True,
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            # Merge: weighted average entry price, sum qty
+            old_cost = existing.entry_price * existing.qty
+            new_cost = body.entry_price * body.qty
+            total_qty = existing.qty + body.qty
+            avg_price = (old_cost + new_cost) / total_qty if total_qty > 0 else body.entry_price
+
+            existing.entry_price = round(avg_price, 4)
+            existing.qty = round(total_qty, 6)
+            # Keep the earlier entry date
+            if entry_date < existing.entry_date:
+                existing.entry_date = entry_date
+            # Append notes if provided
+            if body.notes:
+                existing.notes = f"{existing.notes or ''}\n{body.notes}".strip()
+
+            await db.commit()
+            await db.refresh(existing)
+
+            current_price = price_service.get_price(existing.ticker)
+            unrealized = None
+            unrealized_pct = None
+            if current_price is not None:
+                if existing.direction == "long":
+                    unrealized = (current_price - existing.entry_price) * existing.qty
+                else:
+                    unrealized = (existing.entry_price - current_price) * existing.qty
+                position_value = existing.entry_price * existing.qty
+                unrealized_pct = (unrealized / position_value * 100) if position_value > 0 else 0.0
+
+            source = "manual" if existing.trade_id is None else (existing.strategy_name or "webhook")
+
+            return HoldingResponse(
+                id=existing.id,
+                portfolio_id=existing.portfolio_id,
+                trade_id=existing.trade_id,
+                ticker=existing.ticker,
+                direction=existing.direction,
+                entry_price=existing.entry_price,
+                qty=existing.qty,
+                entry_date=existing.entry_date,
+                strategy_name=existing.strategy_name,
+                notes=existing.notes,
+                is_active=existing.is_active,
+                source=source,
+                current_price=current_price,
+                unrealized_pnl=round(unrealized, 2) if unrealized is not None else None,
+                unrealized_pnl_pct=round(unrealized_pct, 2) if unrealized_pct is not None else None,
+                created_at=existing.created_at,
+            )
+
+        # No existing holding — create new
         holding = PortfolioHolding(
             portfolio_id=body.portfolio_id,
-            ticker=body.ticker.upper(),
+            ticker=ticker,
             direction=body.direction,
             entry_price=body.entry_price,
             qty=body.qty,
@@ -711,3 +776,127 @@ async def seed_actions(portfolio_id: str, db: AsyncSession = Depends(get_db)):
 
     await db.commit()
     return {"status": "seeded", "actions": created}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HENRY MEMORY ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/memory")
+async def list_memories(
+    memory_type: str | None = None,
+    strategy_id: str | None = None,
+    ticker: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """List Henry's memory entries, optionally filtered."""
+    query = select(HenryMemory).order_by(HenryMemory.importance.desc(), HenryMemory.updated_at.desc())
+
+    if memory_type:
+        query = query.where(HenryMemory.memory_type == memory_type)
+    if strategy_id:
+        query = query.where(HenryMemory.strategy_id == strategy_id)
+    if ticker:
+        query = query.where(HenryMemory.ticker == ticker.upper())
+
+    query = query.limit(limit)
+    result = await db.execute(query)
+    memories = result.scalars().all()
+
+    return [
+        {
+            "id": m.id,
+            "memory_type": m.memory_type,
+            "strategy_id": m.strategy_id,
+            "ticker": m.ticker,
+            "content": m.content,
+            "importance": m.importance,
+            "reference_count": m.reference_count,
+            "validated": m.validated,
+            "source": m.source,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+        }
+        for m in memories
+    ]
+
+
+@router.post("/memory")
+async def add_memory(
+    content: str,
+    memory_type: str = "preference",
+    strategy_id: str | None = None,
+    ticker: str | None = None,
+    importance: int = 7,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually add a memory entry (e.g., user preferences, manual observations)."""
+    memory = HenryMemory(
+        memory_type=memory_type,
+        strategy_id=strategy_id,
+        ticker=ticker.upper() if ticker else None,
+        content=content,
+        importance=importance,
+        source="user",
+    )
+    db.add(memory)
+    await db.commit()
+    await db.refresh(memory)
+    return {"status": "saved", "id": memory.id}
+
+
+@router.delete("/memory/{memory_id}")
+async def delete_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(HenryMemory).where(HenryMemory.id == memory_id))
+    memory = result.scalar_one_or_none()
+    if not memory:
+        raise HTTPException(404, "Memory not found")
+    await db.delete(memory)
+    await db.commit()
+    return {"status": "deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# STRATEGY DESCRIPTION ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/strategies")
+async def list_strategies_with_descriptions(db: AsyncSession = Depends(get_db)):
+    """List all strategies with their descriptions for Henry's reference."""
+    result = await db.execute(
+        select(Trader).where(Trader.is_active == True).order_by(Trader.created_at)
+    )
+    traders = result.scalars().all()
+
+    return [
+        {
+            "id": t.id,
+            "trader_id": t.trader_id,
+            "display_name": t.display_name,
+            "strategy_name": t.strategy_name,
+            "description": t.description,
+            "strategy_description": t.strategy_description,
+        }
+        for t in traders
+    ]
+
+
+@router.put("/strategies/{trader_id}/description")
+async def update_strategy_description(
+    trader_id: str,
+    description: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a strategy's rich description that Henry uses for analysis."""
+    result = await db.execute(
+        select(Trader).where(Trader.trader_id == trader_id)
+    )
+    trader = result.scalar_one_or_none()
+    if not trader:
+        raise HTTPException(404, f"Strategy '{trader_id}' not found")
+
+    trader.strategy_description = description
+    await db.commit()
+
+    return {"status": "updated", "trader_id": trader_id}

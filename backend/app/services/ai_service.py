@@ -31,28 +31,98 @@ try:
 except Exception:
     CLIENT = None
 
-SYSTEM_PROMPT = """You are Henry, an AI trading analyst embedded in a multi-strategy trading dashboard.
-You analyze trade data from four Pine Script strategies:
-  - S1 (LMA Momentum): Log-weighted moving average + Kalman filter trend following
-  - S2 (Regime Trend): 200 SMA + ADX trend detection as entry signals
-  - S3 (Impulse Breakout): Volume spike + candle expansion breakouts with time decay
-  - S4 (Kalman Reversion): Mean reversion when price stretches from Kalman filter
+BASE_SYSTEM_PROMPT = """You are Henry, an AI trading analyst and portfolio manager embedded in a multi-strategy trading dashboard.
+
+You are objective and data-driven. You analyze each strategy on its own merits against its stated description and goals — not with bias toward any particular approach. When a strategy underperforms its own benchmarks, you say so. When it outperforms, you acknowledge it.
 
 You speak concisely and directly. No fluff. Use numbers to back up every claim.
 When you identify a pattern, explain WHY it matters for tomorrow's trading.
 Format currency as $X.XX. Format percentages as X.X%.
 Use bullet points sparingly — prefer short paragraphs.
-If data is insufficient to draw conclusions, say so rather than speculating."""
+If data is insufficient to draw conclusions, say so rather than speculating.
+
+You maintain a memory of past decisions and their outcomes. When you reference a past observation or lesson, cite it. When you notice a new pattern, flag it as something to remember."""
+
+
+async def _build_system_prompt() -> str:
+    """
+    Build a dynamic system prompt that includes strategy descriptions
+    from the database and relevant memories from Henry's log.
+    """
+    from app.database import async_session
+    from app.models import Trader, HenryMemory
+    from sqlalchemy import select
+
+    sections = [BASE_SYSTEM_PROMPT]
+
+    # Pull strategy descriptions dynamically
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Trader).where(Trader.is_active == True)
+            )
+            traders = result.scalars().all()
+
+            if traders:
+                strat_lines = []
+                for t in traders:
+                    desc = t.strategy_description or t.description or "No description provided."
+                    strat_lines.append(f"  - {t.trader_id} ({t.display_name}): {desc}")
+                sections.append(
+                    "STRATEGIES YOU ANALYZE:\n" + "\n".join(strat_lines)
+                )
+
+            # Pull recent high-importance memories
+            result = await db.execute(
+                select(HenryMemory)
+                .where(HenryMemory.importance >= 6)
+                .order_by(HenryMemory.importance.desc(), HenryMemory.updated_at.desc())
+                .limit(20)
+            )
+            memories = result.scalars().all()
+
+            if memories:
+                mem_lines = []
+                for m in memories:
+                    prefix = f"[{m.memory_type.upper()}]"
+                    scope = ""
+                    if m.strategy_id:
+                        scope += f" ({m.strategy_id})"
+                    if m.ticker:
+                        scope += f" [{m.ticker}]"
+                    validated = " ✓" if m.validated else (" ✗" if m.validated is False else "")
+                    mem_lines.append(f"  {prefix}{scope}{validated}: {m.content}")
+
+                    # Increment reference count
+                    m.reference_count += 1
+
+                sections.append(
+                    "YOUR MEMORY LOG (past observations & lessons — reference these in analysis):\n"
+                    + "\n".join(mem_lines)
+                )
+
+                await db.commit()
+
+    except Exception:
+        pass  # If DB fails, fall back to base prompt only
+
+    return "\n\n".join(sections)
+
+
+# Synchronous wrapper for backward compatibility
+SYSTEM_PROMPT = BASE_SYSTEM_PROMPT  # Fallback for sync calls
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
+def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = None) -> str:
     """Single Claude API call with system prompt. Falls back to older model on BadRequest."""
     if CLIENT is None:
         return "AI analysis unavailable — ANTHROPIC_API_KEY not configured."
     import logging
     logger = logging.getLogger(__name__)
+
+    system = system_override or SYSTEM_PROMPT
 
     last_error = None
     for model in [MODEL, MODEL_FALLBACK, MODEL_LAST_RESORT]:
@@ -60,7 +130,7 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
             response = CLIENT.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=SYSTEM_PROMPT,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30.0,
             )
@@ -79,6 +149,75 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
             continue  # Try next model
 
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
+
+
+async def _call_claude_async(prompt: str, max_tokens: int = 1500) -> str:
+    """Async wrapper that builds the dynamic system prompt with strategy descriptions and memory."""
+    system = await _build_system_prompt()
+    return _call_claude(prompt, max_tokens=max_tokens, system_override=system)
+
+
+async def save_memory(
+    content: str,
+    memory_type: str = "observation",
+    strategy_id: str = None,
+    ticker: str = None,
+    importance: int = 5,
+    source: str = "system",
+) -> None:
+    """Save a memory entry for Henry to reference in future analysis."""
+    try:
+        from app.database import async_session
+        from app.models import HenryMemory
+
+        async with async_session() as db:
+            memory = HenryMemory(
+                memory_type=memory_type,
+                strategy_id=strategy_id,
+                ticker=ticker,
+                content=content,
+                importance=importance,
+                source=source,
+            )
+            db.add(memory)
+            await db.commit()
+    except Exception:
+        pass  # Non-blocking
+
+
+async def extract_and_save_memories(analysis_text: str, source: str = "briefing") -> None:
+    """
+    After Henry generates analysis, ask Claude to extract key observations
+    worth remembering for future analysis. Cheap call with Haiku.
+    """
+    if CLIENT is None:
+        return
+
+    try:
+        response = CLIENT.messages.create(
+            model=MODEL_LAST_RESORT,  # Use cheapest model for extraction
+            max_tokens=500,
+            system="Extract 1-3 key observations from this trading analysis that would be useful to remember for future decisions. Return a JSON array of objects with keys: content (1 sentence), memory_type (observation|lesson|strategy_note), strategy_id (null or strategy slug), ticker (null or ticker symbol), importance (1-10).",
+            messages=[{"role": "user", "content": analysis_text}],
+            timeout=15.0,
+        )
+
+        import json
+        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        memories = json.loads(raw)
+
+        if isinstance(memories, list):
+            for m in memories[:3]:  # Cap at 3 memories per analysis
+                await save_memory(
+                    content=m.get("content", ""),
+                    memory_type=m.get("memory_type", "observation"),
+                    strategy_id=m.get("strategy_id"),
+                    ticker=m.get("ticker"),
+                    importance=m.get("importance", 5),
+                    source=source,
+                )
+    except Exception:
+        pass  # Non-blocking
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:
@@ -290,7 +429,7 @@ def _format_market_intel(intel: dict) -> str:
     return "\n\n".join(sections) if sections else "Market data unavailable."
 
 
-def morning_briefing(
+async def morning_briefing(
     open_positions: list[dict],
     yesterdays_trades: list[dict],
     market_intel: dict = None,
@@ -299,13 +438,7 @@ def morning_briefing(
 ) -> str:
     """
     Generate enhanced morning briefing with full market intelligence.
-
-    Args:
-        open_positions: Currently open positions across all strategies
-        yesterdays_trades: Yesterday's full trade log
-        market_intel: Rich market data from gather_market_intel()
-        cumulative_stats: Running totals per strategy
-        holdings_context: Text summary of manual holdings
+    Now async — builds dynamic system prompt with strategy descriptions + memory.
     """
     positions_text = _format_positions_for_prompt(open_positions)
     yesterday_text = _format_trades_for_prompt(yesterdays_trades)
@@ -331,6 +464,7 @@ def morning_briefing(
 
     prompt = f"""Generate a comprehensive morning briefing for today's trading session.
 You have access to real-time market data, news, sector rotation, and portfolio context.
+Reference your memory log where relevant — if you've seen patterns before on these tickers or strategies, call them out.
 
 {intel_text}
 
@@ -352,16 +486,23 @@ Write a 5-section briefing:
 
 2. **NEWS & EVENTS** — Key headlines affecting your portfolio or watchlist. Flag any earnings within the week for held tickers. Mention sector rotation (what's leading/lagging) and whether your holdings are in favorable sectors.
 
-3. **PORTFOLIO STATUS** — Open positions P&L, manual holdings status, any positions approaching stops or with extended hold times. Total exposure and concentration risk.
+3. **PORTFOLIO STATUS** — Open positions P&L, manual holdings status, any positions approaching stops or with extended hold times. Total exposure and concentration risk. Evaluate each strategy against its stated description — is it performing as designed?
 
-4. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson.
+4. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson. If this confirms or contradicts a previous memory/observation, say so.
 
 5. **TODAY'S GAME PLAN** — Specific levels to watch on held tickers, which strategies are in favorable conditions given today's VIX/trend, any trades to be cautious about. If earnings are upcoming for a held ticker, flag the risk.
 
 Be specific. Use dollar amounts and percentages. Reference actual headlines and sector data. No generic advice like "stay disciplined" — give me actionable intelligence.
 Keep it under 500 words."""
 
-    return _call_claude(prompt, max_tokens=2500)
+    # Use async call that includes strategy descriptions + memory
+    result = await _call_claude_async(prompt, max_tokens=2500)
+
+    # Extract and save key observations from the briefing (non-blocking, cheap)
+    import asyncio
+    asyncio.create_task(extract_and_save_memories(result, source="briefing"))
+
+    return result
 
 
 # ─── FEATURE 3: NATURAL LANGUAGE QUERY ───────────────────────────────────────
@@ -709,8 +850,8 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         for s in cumulative.values():
             s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
 
-        # Generate briefing with full context
-        result = morning_briefing(
+        # Generate briefing with full context (now async — includes strategy descriptions + memory)
+        result = await morning_briefing(
             positions,
             yesterdays_trades,
             market_intel=market_intel,
