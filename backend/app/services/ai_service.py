@@ -49,13 +49,19 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
     """Single Claude API call with system prompt."""
     if CLIENT is None:
         return "AI analysis unavailable — ANTHROPIC_API_KEY not configured."
-    response = CLIENT.messages.create(
-        model=MODEL,
-        max_tokens=max_tokens,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.content[0].text
+    try:
+        response = CLIENT.messages.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=25.0,
+        )
+        return response.content[0].text
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Claude API call failed: {e}")
+        return f"AI analysis temporarily unavailable. Error: {type(e).__name__}"
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:
@@ -497,7 +503,9 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             result = morning_briefing(positions, yesterdays_trades, market_data, cumulative)
             return {"briefing": result, "open_positions": len(positions)}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            import logging
+            logging.getLogger(__name__).error(f"Briefing generation failed: {e}", exc_info=True)
+            return {"briefing": f"Briefing temporarily unavailable: {type(e).__name__}. Try again in a moment.", "open_positions": 0}
     
     @app.post("/api/ai/query")
     async def ai_query(req: QueryRequest):

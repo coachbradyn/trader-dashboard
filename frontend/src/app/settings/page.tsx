@@ -139,7 +139,7 @@ export default function SettingsPage() {
     if (isCreatingPf) {
       setPfName(""); setPfDesc(""); setPfCapital(10000); setPfMaxPct(5); setPfMaxPos(10); setPfMaxDD(20);
       const init: Record<string, { assigned: boolean; direction: string | null }> = {};
-      traders.forEach((t) => { init[t.trader_id] = { assigned: false, direction: null }; });
+      traders.forEach((t) => { init[t.id] = { assigned: false, direction: null }; });
       setPfStrats(init); return;
     }
     const pf = portfolios.find((p) => p.id === selectedPortfolio);
@@ -148,8 +148,8 @@ export default function SettingsPage() {
     setPfMaxPct(pf.max_pct_per_trade ?? 5); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
     const s: Record<string, { assigned: boolean; direction: string | null }> = {};
     traders.forEach((t) => {
-      const m = pf.strategies.find((st) => st.trader_id === t.trader_id);
-      s[t.trader_id] = m ? { assigned: true, direction: m.direction_filter } : { assigned: false, direction: null };
+      const m = pf.strategies.find((st) => st.trader_id === t.id);
+      s[t.id] = m ? { assigned: true, direction: m.direction_filter } : { assigned: false, direction: null };
     });
     setPfStrats(s);
   }, [selectedPortfolio, isCreatingPf, portfolios, traders]);
@@ -326,18 +326,18 @@ export default function SettingsPage() {
                       {traders.length === 0 ? <p className="text-xs text-gray-500">No strategies available. Generate an API key first.</p> : (
                         <div className="space-y-2">
                           {traders.map((tr) => {
-                            const s = pfStrats[tr.trader_id]; const on = s?.assigned ?? false;
+                            const s = pfStrats[tr.id]; const on = s?.assigned ?? false;
                             return (
-                              <div key={tr.trader_id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${on ? "border-primary/30 bg-primary/5" : "border-border/50 opacity-40 hover:opacity-60"}`}>
+                              <div key={tr.id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${on ? "border-primary/30 bg-primary/5" : "border-border/50 opacity-40 hover:opacity-60"}`}>
                                 <div className="flex items-center gap-3">
-                                  <input type="checkbox" checked={on} onChange={(e) => setPfStrats((p) => ({ ...p, [tr.trader_id]: { ...p[tr.trader_id], assigned: e.target.checked } }))}
+                                  <input type="checkbox" checked={on} onChange={(e) => setPfStrats((p) => ({ ...p, [tr.id]: { ...p[tr.id], assigned: e.target.checked } }))}
                                     className="w-4 h-4 rounded border-gray-600 accent-primary bg-surface" />
                                   <div>
                                     <span className="text-sm text-white font-medium">{tr.display_name || "Unnamed Strategy"}</span>
                                     <span className="text-[11px] text-gray-500 font-mono ml-2">{tr.trader_id}</span>
                                   </div>
                                 </div>
-                                <DirectionControl value={s?.direction ?? null} onChange={(d) => setPfStrats((p) => ({ ...p, [tr.trader_id]: { ...p[tr.trader_id], direction: d } }))} disabled={!on} />
+                                <DirectionControl value={s?.direction ?? null} onChange={(d) => setPfStrats((p) => ({ ...p, [tr.id]: { ...p[tr.id], direction: d } }))} disabled={!on} />
                               </div>
                             );
                           })}
