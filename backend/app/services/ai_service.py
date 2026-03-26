@@ -22,7 +22,7 @@ import anthropic
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
-MODEL = "claude-sonnet-4-5-20250929"  # Best balance of speed + reasoning for trade analysis
+MODEL = "claude-sonnet-4-5-20250514"  # Best balance of speed + reasoning for trade analysis
 
 try:
     CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env
