@@ -23,6 +23,7 @@ import anthropic
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
 MODEL = "claude-sonnet-4-5-20250514"  # Best balance of speed + reasoning for trade analysis
+MODEL_FALLBACK = "claude-3-5-sonnet-20241022"  # Fallback if primary model unavailable
 
 try:
     CLIENT = anthropic.Anthropic()  # Reads ANTHROPIC_API_KEY from env
@@ -46,22 +47,30 @@ If data is insufficient to draw conclusions, say so rather than speculating."""
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
-    """Single Claude API call with system prompt."""
+    """Single Claude API call with system prompt. Falls back to older model on BadRequest."""
     if CLIENT is None:
         return "AI analysis unavailable — ANTHROPIC_API_KEY not configured."
-    try:
-        response = CLIENT.messages.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=25.0,
-        )
-        return response.content[0].text
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Claude API call failed: {e}")
-        return f"AI analysis temporarily unavailable. Error: {type(e).__name__}"
+    import logging
+    logger = logging.getLogger(__name__)
+
+    for model in [MODEL, MODEL_FALLBACK]:
+        try:
+            response = CLIENT.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=25.0,
+            )
+            return response.content[0].text
+        except anthropic.BadRequestError as e:
+            logger.warning(f"Claude API BadRequest with model {model}: {e}")
+            continue  # Try fallback model
+        except Exception as e:
+            logger.error(f"Claude API call failed with model {model}: {e}")
+            return f"AI analysis temporarily unavailable. Error: {type(e).__name__}: {str(e)[:200]}"
+
+    return "AI analysis temporarily unavailable. Both primary and fallback models failed."
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:
