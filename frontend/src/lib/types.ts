@@ -118,6 +118,8 @@ export interface PriceCache {
 export interface BriefingResponse {
   briefing: string;
   open_positions: number;
+  generated_at?: string;
+  cached?: boolean;
 }
 
 export interface ReviewResponse {

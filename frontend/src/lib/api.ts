@@ -47,6 +47,7 @@ export const api = {
 
   // AI Analysis
   getBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing"),
+  refreshBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing/refresh", { method: "POST" }),
   postReview: (daysBack: number) =>
     fetchApi<import("./types").ReviewResponse>("/ai/review", {
       method: "POST",

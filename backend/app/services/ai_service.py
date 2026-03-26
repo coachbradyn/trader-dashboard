@@ -195,37 +195,122 @@ Keep it under 300 words. Lead with the most important finding."""
     return _call_claude(prompt, max_tokens=1500)
 
 
-# ─── FEATURE 2: MORNING BRIEFING ────────────────────────────────────────────
+# ─── FEATURE 2: MORNING BRIEFING (ENHANCED) ────────────────────────────────
+
+def _format_market_intel(intel: dict) -> str:
+    """Convert market intel dict into a rich text block for the prompt."""
+    sections = []
+
+    # SPY & VIX
+    spy = intel.get("spy", {})
+    vix = intel.get("vix", {})
+    if spy or vix:
+        market_lines = []
+        if spy:
+            market_lines.append(
+                f"  SPY: ${spy.get('price', 0)} ({spy.get('change_pct', 0):+.2f}%) | "
+                f"5d range: ${spy.get('5d_low', 0)}-${spy.get('5d_high', 0)} | "
+                f"vol: {spy.get('volume', 0):,}"
+            )
+        if vix:
+            market_lines.append(
+                f"  VIX: {vix.get('current', 0)} ({vix.get('change', 0):+.1f} from prev) | "
+                f"regime: {vix.get('regime', '?')} | 5d trend: {vix.get('5d_trend', '?')} | "
+                f"week ago: {vix.get('week_ago', 0)}"
+            )
+        sections.append("MARKET OVERVIEW:\n" + "\n".join(market_lines))
+
+    # Pre-market gaps
+    gaps = intel.get("premarket_gaps", [])
+    if gaps:
+        gap_lines = [f"  {g['ticker']}: {g['gap_pct']:+.2f}% gap (prev ${g['prev_close']} → ${g['current']})" for g in gaps[:8]]
+        sections.append("PRE-MARKET GAPS (held tickers):\n" + "\n".join(gap_lines))
+
+    # Sector performance
+    sectors = intel.get("sectors", [])
+    if sectors:
+        top3 = sectors[:3]
+        bottom3 = sectors[-3:] if len(sectors) > 3 else []
+        sect_lines = ["  LEADING: " + " | ".join(f"{s['sector']} {s['change_pct']:+.2f}%" for s in top3)]
+        if bottom3:
+            sect_lines.append("  LAGGING: " + " | ".join(f"{s['sector']} {s['change_pct']:+.2f}%" for s in bottom3))
+        sections.append("SECTOR ROTATION:\n" + "\n".join(sect_lines))
+
+    # Volume movers
+    movers = intel.get("movers", {})
+    gainers = movers.get("gainers", [])[:3]
+    losers = movers.get("losers", [])[:3]
+    if gainers or losers:
+        mover_lines = []
+        if gainers:
+            mover_lines.append("  TOP MOVERS: " + " | ".join(f"{m['symbol']} ({m.get('change_pct', 0):+.1f}%)" for m in gainers))
+        sections.append("VOLUME & MOVERS:\n" + "\n".join(mover_lines))
+
+    # Earnings calendar
+    earnings = intel.get("earnings", [])
+    if earnings:
+        earn_lines = [f"  ⚠ {e['ticker']} reports in {e['days_away']}d ({e['earnings_date']})" for e in earnings]
+        sections.append("EARNINGS WATCH (held tickers):\n" + "\n".join(earn_lines))
+
+    # News — portfolio-relevant
+    news_portfolio = intel.get("news_portfolio", [])
+    if news_portfolio:
+        news_lines = [f"  [{a.get('source', '?')}] {a['headline']}" for a in news_portfolio[:6]]
+        sections.append("NEWS (your tickers):\n" + "\n".join(news_lines))
+
+    # News — general market
+    news_general = intel.get("news_general", [])
+    if news_general:
+        # Deduplicate against portfolio news
+        portfolio_headlines = {a["headline"] for a in news_portfolio}
+        general_unique = [a for a in news_general if a["headline"] not in portfolio_headlines][:5]
+        if general_unique:
+            news_lines = [f"  [{a.get('source', '?')}] {a['headline']}" for a in general_unique]
+            sections.append("MARKET NEWS:\n" + "\n".join(news_lines))
+
+    # Position snapshots (current prices for held tickers)
+    snapshots = intel.get("snapshots", {})
+    if snapshots:
+        snap_lines = []
+        for ticker, snap in list(snapshots.items())[:15]:
+            if ticker in ("SPY", "QQQ"):
+                continue  # Already shown above
+            snap_lines.append(
+                f"  {ticker}: ${snap['price']} ({snap['change_pct']:+.2f}%) | "
+                f"vol: {snap['volume']:,}"
+            )
+        if snap_lines:
+            sections.append("HELD TICKER SNAPSHOTS:\n" + "\n".join(snap_lines))
+
+    return "\n\n".join(sections) if sections else "Market data unavailable."
+
 
 def morning_briefing(
     open_positions: list[dict],
     yesterdays_trades: list[dict],
-    market_data: dict = None,
-    cumulative_stats: dict = None
+    market_intel: dict = None,
+    cumulative_stats: dict = None,
+    holdings_context: str = None,
 ) -> str:
     """
-    Generate morning briefing before market open.
-    
+    Generate enhanced morning briefing with full market intelligence.
+
     Args:
         open_positions: Currently open positions across all strategies
         yesterdays_trades: Yesterday's full trade log
-        market_data: Optional dict with keys like spy_change, vix, futures, etc.
-        cumulative_stats: Optional dict with running totals per strategy
+        market_intel: Rich market data from gather_market_intel()
+        cumulative_stats: Running totals per strategy
+        holdings_context: Text summary of manual holdings
     """
     positions_text = _format_positions_for_prompt(open_positions)
     yesterday_text = _format_trades_for_prompt(yesterdays_trades)
-    
-    market_context = "Not available."
-    if market_data:
-        parts = []
-        if "spy_change" in market_data:
-            parts.append(f"SPY: {market_data['spy_change']:+.2f}%")
-        if "vix" in market_data:
-            parts.append(f"VIX: {market_data['vix']:.1f}")
-        if "futures" in market_data:
-            parts.append(f"ES Futures: {market_data['futures']:+.2f}%")
-        market_context = " | ".join(parts) if parts else "Not available."
-    
+
+    # Format rich market intel
+    if market_intel:
+        intel_text = _format_market_intel(market_intel)
+    else:
+        intel_text = "Market data unavailable."
+
     stats_text = "Not available."
     if cumulative_stats:
         stats_lines = []
@@ -236,29 +321,42 @@ def morning_briefing(
                 f"net {s.get('total_pnl',0):.2f}%"
             )
         stats_text = "\n".join(stats_lines)
-    
-    prompt = f"""Generate a concise morning briefing for today's trading session.
 
-MARKET CONTEXT:
-  {market_context}
+    holdings_text = holdings_context or "No manual holdings."
 
-OPEN POSITIONS (carrying over):
+    prompt = f"""Generate a comprehensive morning briefing for today's trading session.
+You have access to real-time market data, news, sector rotation, and portfolio context.
+
+{intel_text}
+
+OPEN STRATEGY POSITIONS (carrying over):
 {positions_text}
+
+MANUAL HOLDINGS:
+{holdings_text}
 
 YESTERDAY'S ACTIVITY:
 {yesterday_text}
 
-CUMULATIVE STRATEGY PERFORMANCE:
+CUMULATIVE STRATEGY PERFORMANCE (30 days):
 {stats_text}
 
-Write a 3-section briefing:
-1. OVERNIGHT & OPEN POSITIONS — What happened, what's still live, immediate risk
-2. YESTERDAY'S TAKEAWAY — One key lesson from yesterday's results
-3. TODAY'S FOCUS — What to watch, which strategies are in favorable conditions
+Write a 5-section briefing:
 
-Keep it under 250 words. Be direct and specific. No generic advice."""
+1. **MARKET OVERVIEW** — What happened overnight, where are futures/indices, VIX regime, any gap risks on held tickers. Reference specific numbers.
 
-    return _call_claude(prompt, max_tokens=1200)
+2. **NEWS & EVENTS** — Key headlines affecting your portfolio or watchlist. Flag any earnings within the week for held tickers. Mention sector rotation (what's leading/lagging) and whether your holdings are in favorable sectors.
+
+3. **PORTFOLIO STATUS** — Open positions P&L, manual holdings status, any positions approaching stops or with extended hold times. Total exposure and concentration risk.
+
+4. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson.
+
+5. **TODAY'S GAME PLAN** — Specific levels to watch on held tickers, which strategies are in favorable conditions given today's VIX/trend, any trades to be cautious about. If earnings are upcoming for a held ticker, flag the risk.
+
+Be specific. Use dollar amounts and percentages. Reference actual headlines and sector data. No generic advice like "stay disciplined" — give me actionable intelligence.
+Keep it under 500 words."""
+
+    return _call_claude(prompt, max_tokens=2500)
 
 
 # ─── FEATURE 3: NATURAL LANGUAGE QUERY ───────────────────────────────────────
@@ -488,36 +586,152 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     
     @app.get("/api/ai/briefing")
     async def ai_briefing():
+        """Return today's cached briefing, or generate if none exists."""
+        import logging
+        from datetime import date
+        from sqlalchemy import select
+        from app.database import async_session
+        from app.models.market_summary import MarketSummary
+
+        logger = logging.getLogger(__name__)
+
         try:
-            positions = await get_positions_fn()
-            yesterdays_trades = await get_trades_fn(days_back=1)
+            # Check cache: has today's briefing already been generated?
+            today_str = date.today().isoformat()
+            async with async_session() as db:
+                result = await db.execute(
+                    select(MarketSummary)
+                    .where(
+                        MarketSummary.summary_type == "daily_briefing",
+                        MarketSummary.generated_at >= datetime.utcnow().replace(hour=0, minute=0, second=0),
+                    )
+                    .order_by(MarketSummary.generated_at.desc())
+                    .limit(1)
+                )
+                cached = result.scalar_one_or_none()
 
-            if not positions and not yesterdays_trades:
-                return {"briefing": "No trading activity yet. Connect your TradingView strategies via Settings to start receiving webhooks and generating briefings.", "open_positions": 0}
+            if cached:
+                positions = await get_positions_fn()
+                return {
+                    "briefing": cached.content,
+                    "open_positions": len(positions),
+                    "generated_at": cached.generated_at.isoformat(),
+                    "cached": True,
+                }
 
-            market_data = await get_market_data_fn() if get_market_data_fn else None
+            # No cache — generate fresh briefing
+            return await _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger)
 
-            # Build cumulative stats from longer history
-            all_trades = await get_trades_fn(days_back=30)
-            exits = [t for t in all_trades if t.get("signal") == "exit"]
-            cumulative = {}
-            for t in exits:
-                trader = t.get("trader", "unknown")
-                if trader not in cumulative:
-                    cumulative[trader] = {"total_trades": 0, "wins": 0, "total_pnl": 0}
-                cumulative[trader]["total_trades"] += 1
-                if t.get("pnl_pct", 0) > 0:
-                    cumulative[trader]["wins"] += 1
-                cumulative[trader]["total_pnl"] += t.get("pnl_pct", 0)
-            for s in cumulative.values():
-                s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
-
-            result = morning_briefing(positions, yesterdays_trades, market_data, cumulative)
-            return {"briefing": result, "open_positions": len(positions)}
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Briefing generation failed: {e}", exc_info=True)
+            logger.error(f"Briefing failed: {e}", exc_info=True)
             return {"briefing": f"Briefing temporarily unavailable: {type(e).__name__}. Try again in a moment.", "open_positions": 0}
+
+    @app.post("/api/ai/briefing/refresh")
+    async def ai_briefing_refresh():
+        """Force-regenerate today's briefing (manual refresh button)."""
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            return await _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger, force=True)
+        except Exception as e:
+            logger.error(f"Briefing refresh failed: {e}", exc_info=True)
+            return {"briefing": f"Refresh failed: {type(e).__name__}", "open_positions": 0}
+
+    async def _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger, force=False):
+        """Generate a fresh briefing with full market intelligence and cache it."""
+        from sqlalchemy import select
+        from app.database import async_session
+        from app.models.market_summary import MarketSummary
+        from app.models.portfolio_holding import PortfolioHolding
+        from app.services.market_intel import gather_market_intel
+        from app.services.price_service import price_service
+
+        positions = await get_positions_fn()
+        yesterdays_trades = await get_trades_fn(days_back=1)
+
+        if not positions and not yesterdays_trades:
+            return {
+                "briefing": "No trading activity yet. Connect your TradingView strategies via Settings to start receiving webhooks and generating briefings.",
+                "open_positions": 0,
+                "cached": False,
+            }
+
+        # Collect all held tickers (strategy positions + manual holdings)
+        held_tickers = list(set(
+            [p.get("ticker", "") for p in positions]
+        ))
+
+        # Add manual holdings tickers
+        async with async_session() as db:
+            result = await db.execute(
+                select(PortfolioHolding).where(PortfolioHolding.is_active == True)
+            )
+            holdings = result.scalars().all()
+            for h in holdings:
+                if h.ticker not in held_tickers:
+                    held_tickers.append(h.ticker)
+
+            # Build holdings context string
+            holdings_context_lines = []
+            for h in holdings:
+                current_price = price_service.get_price(h.ticker) or h.entry_price
+                if h.direction == "long":
+                    pnl = (current_price - h.entry_price) / h.entry_price * 100
+                else:
+                    pnl = (h.entry_price - current_price) / h.entry_price * 100
+                holdings_context_lines.append(
+                    f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "
+                    f"current ${current_price:.2f} | {pnl:+.2f}% | strategy: {h.strategy_name or 'manual'}"
+                )
+            holdings_context = "\n".join(holdings_context_lines) if holdings_context_lines else None
+
+        # Gather all market intelligence in parallel
+        logger.info(f"Gathering market intel for {len(held_tickers)} tickers: {held_tickers}")
+        market_intel = await gather_market_intel(held_tickers)
+
+        # Build cumulative stats from 30-day history
+        all_trades = await get_trades_fn(days_back=30)
+        exits = [t for t in all_trades if t.get("signal") == "exit"]
+        cumulative = {}
+        for t in exits:
+            trader = t.get("trader", "unknown")
+            if trader not in cumulative:
+                cumulative[trader] = {"total_trades": 0, "wins": 0, "total_pnl": 0}
+            cumulative[trader]["total_trades"] += 1
+            if t.get("pnl_pct", 0) > 0:
+                cumulative[trader]["wins"] += 1
+            cumulative[trader]["total_pnl"] += t.get("pnl_pct", 0)
+        for s in cumulative.values():
+            s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
+
+        # Generate briefing with full context
+        result = morning_briefing(
+            positions,
+            yesterdays_trades,
+            market_intel=market_intel,
+            cumulative_stats=cumulative,
+            holdings_context=holdings_context,
+        )
+
+        # Cache in database
+        async with async_session() as db:
+            summary = MarketSummary(
+                summary_type="daily_briefing",
+                scope="combined",
+                content=result,
+                tickers_analyzed=held_tickers,
+            )
+            db.add(summary)
+            await db.commit()
+
+            logger.info("Daily briefing generated and cached")
+
+        return {
+            "briefing": result,
+            "open_positions": len(positions),
+            "generated_at": datetime.utcnow().isoformat(),
+            "cached": False,
+        }
     
     @app.post("/api/ai/query")
     async def ai_query(req: QueryRequest):

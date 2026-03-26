@@ -39,7 +39,9 @@ export default function MorningBriefing() {
       else setLoading(true);
 
       setError(null);
-      const result = await api.getBriefing();
+      // Refresh = force regenerate with fresh market data (POST)
+      // Normal load = return cached if available (GET)
+      const result = isRefresh ? await api.refreshBriefing() : await api.getBriefing();
       setData(result);
       setVisibleSections(0);
     } catch (e) {
@@ -99,14 +101,23 @@ export default function MorningBriefing() {
               Today&apos;s Briefing
             </h2>
             {data && (
-              <Badge variant="ai">
-                {data.open_positions} open position{data.open_positions !== 1 ? "s" : ""}
-              </Badge>
+              <>
+                <Badge variant="ai">
+                  {data.open_positions} open position{data.open_positions !== 1 ? "s" : ""}
+                </Badge>
+                {data.cached && (
+                  <Badge variant="outline" className="text-[10px] text-gray-500 border-gray-700">
+                    cached
+                  </Badge>
+                )}
+              </>
             )}
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-gray-500 font-mono">
-              {dateStr} &middot; {timeStr}
+              {data?.generated_at
+                ? `Generated ${new Date(data.generated_at).toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZoneName: "short" })}`
+                : `${dateStr} · ${timeStr}`}
             </span>
             <Button
               variant="ai-ghost"
