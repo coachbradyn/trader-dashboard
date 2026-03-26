@@ -243,6 +243,26 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/debug/ai")
+async def debug_ai():
+    """Quick test of Claude API connectivity."""
+    import anthropic as anth
+    import os
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    key_preview = f"{key[:12]}...{key[-4:]}" if len(key) > 16 else ("SET but short" if key else "NOT SET")
+    try:
+        client = anth.Anthropic()
+        resp = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=20,
+            messages=[{"role": "user", "content": "Say hello in 3 words"}],
+            timeout=15.0,
+        )
+        return {"status": "ok", "key_preview": key_preview, "response": resp.content[0].text}
+    except Exception as e:
+        return {"status": "error", "key_preview": key_preview, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+
 @app.get("/api/prices")
 async def get_prices():
     return price_service.cache

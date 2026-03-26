@@ -53,6 +53,7 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
     import logging
     logger = logging.getLogger(__name__)
 
+    last_error = None
     for model in [MODEL, MODEL_FALLBACK]:
         try:
             response = CLIENT.messages.create(
@@ -64,13 +65,15 @@ def _call_claude(prompt: str, max_tokens: int = 1500) -> str:
             )
             return response.content[0].text
         except anthropic.BadRequestError as e:
+            last_error = f"BadRequest ({model}): {str(e)[:200]}"
             logger.warning(f"Claude API BadRequest with model {model}: {e}")
             continue  # Try fallback model
         except Exception as e:
+            last_error = f"{type(e).__name__} ({model}): {str(e)[:200]}"
             logger.error(f"Claude API call failed with model {model}: {e}")
-            return f"AI analysis temporarily unavailable. Error: {type(e).__name__}: {str(e)[:200]}"
+            return f"AI analysis temporarily unavailable. {last_error}"
 
-    return "AI analysis temporarily unavailable. Both primary and fallback models failed."
+    return f"AI analysis temporarily unavailable. {last_error or 'All models failed.'}"
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:
