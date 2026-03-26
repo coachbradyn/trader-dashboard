@@ -253,7 +253,7 @@ async def debug_ai():
     try:
         client = anth.Anthropic()
         resp = client.messages.create(
-            model="claude-3-5-sonnet-latest",
+            model="claude-3-haiku-20240307",
             max_tokens=20,
             messages=[{"role": "user", "content": "Say hello in 3 words"}],
             timeout=15.0,
