@@ -17,12 +17,13 @@ from app.services.price_service import price_service
 router = APIRouter()
 
 
-async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[float, float, int]:
-    """Calculate total market value, unrealized P&L, and count from portfolio holdings.
+async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[float, float, float, int]:
+    """Calculate holdings metrics for portfolio display.
 
-    Returns (holdings_value, holdings_unrealized_pnl, holdings_count).
-    holdings_value = sum of (current_price * qty) for all active holdings.
-    holdings_unrealized_pnl = sum of per-holding unrealized P&L.
+    Returns (holdings_cost_basis, holdings_unrealized_pnl, holdings_market_value, holdings_count).
+    - holdings_cost_basis = sum of (entry_price * qty) — capital deployed, NOT a gain.
+    - holdings_unrealized_pnl = sum of per-holding unrealized P&L — actual performance.
+    - holdings_market_value = sum of (current_price * qty) — for display purposes.
     """
     result = await db.execute(
         select(PortfolioHolding)
@@ -31,18 +32,18 @@ async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[flo
     holdings = result.scalars().all()
 
     if not holdings:
-        return 0.0, 0.0, 0
+        return 0.0, 0.0, 0.0, 0
 
-    total_value = 0.0
+    total_cost_basis = 0.0
+    total_market_value = 0.0
     total_unrealized = 0.0
     count = 0
 
     for h in holdings:
         current_price = price_service.get_price(h.ticker)
         if current_price is None:
-            # Fall back to entry price if no live price yet
             current_price = h.entry_price
-            price_service.add_ticker(h.ticker)  # Register for next poll
+            price_service.add_ticker(h.ticker)
 
         position_value = current_price * h.qty
         cost_basis = h.entry_price * h.qty
@@ -52,11 +53,12 @@ async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[flo
         else:
             unrealized = cost_basis - position_value
 
-        total_value += position_value
+        total_cost_basis += cost_basis
+        total_market_value += position_value
         total_unrealized += unrealized
         count += 1
 
-    return total_value, total_unrealized, count
+    return total_cost_basis, total_unrealized, total_market_value, count
 
 
 async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> PortfolioResponse:
@@ -75,23 +77,23 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
     snap_positions = latest.open_positions if latest else 0
 
     # Holdings-based data (from manual entries + portfolio manager)
-    holdings_value, holdings_unrealized, holdings_count = await _calc_holdings_value(p.id, db)
+    holdings_cost_basis, holdings_unrealized, holdings_market_value, holdings_count = await _calc_holdings_value(p.id, db)
 
-    # Combine: total equity = cash + snapshot equity gains + holdings market value
-    # If no snapshots and no holdings, show initial capital
+    # Equity = cash + holdings market value + any webhook-trade gains
+    # Performance % = only unrealized P&L / total capital deployed (NOT inflated by adding holdings)
     if not latest and holdings_count == 0:
         equity = p.initial_capital
         unrealized = 0.0
         open_pos = 0
     else:
-        # Holdings value is the market value of manually tracked positions
-        # Snapshot equity tracks webhook-driven trade P&L
-        # Combine both sources
-        equity = p.cash + holdings_value + (snap_equity - p.initial_capital if latest else 0.0)
+        equity = p.cash + holdings_market_value + (snap_equity - p.initial_capital if latest else 0.0)
         unrealized = snap_unrealized + holdings_unrealized
         open_pos = snap_positions + holdings_count
 
-    total_return = ((equity - p.initial_capital) / p.initial_capital * 100) if p.initial_capital > 0 else 0.0
+    # Return % based on gains only, not deployed capital
+    # Total capital deployed = initial_capital + holdings cost basis
+    total_capital = p.initial_capital + holdings_cost_basis
+    total_return = (unrealized / total_capital * 100) if total_capital > 0 else 0.0
 
     return PortfolioResponse(
         id=p.id,
