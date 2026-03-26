@@ -245,22 +245,61 @@ async def health():
 
 @app.get("/api/debug/ai")
 async def debug_ai():
-    """Quick test of Claude API connectivity."""
+    """Test Claude API with multiple models and show full diagnostics."""
     import anthropic as anth
     import os
+    import httpx
+
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     key_preview = f"{key[:12]}...{key[-4:]}" if len(key) > 16 else ("SET but short" if key else "NOT SET")
+    key_len = len(key)
+
+    results = {"key_preview": key_preview, "key_length": key_len, "models": {}}
+
+    # Test listing models via REST (to see what's available)
     try:
-        client = anth.Anthropic()
-        resp = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=20,
-            messages=[{"role": "user", "content": "Say hello in 3 words"}],
-            timeout=15.0,
-        )
-        return {"status": "ok", "key_preview": key_preview, "response": resp.content[0].text}
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(
+                "https://api.anthropic.com/v1/models",
+                headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                },
+                timeout=10,
+            )
+            results["models_api_status"] = resp.status_code
+            if resp.status_code == 200:
+                data = resp.json()
+                model_ids = [m.get("id", "?") for m in data.get("data", [])]
+                results["available_models"] = model_ids[:20]
+            else:
+                results["models_api_error"] = resp.text[:300]
     except Exception as e:
-        return {"status": "error", "key_preview": key_preview, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+        results["models_api_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+
+    # Try each model
+    test_models = [
+        "claude-sonnet-4-5-20250514",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-latest",
+        "claude-3-haiku-20240307",
+    ]
+    for model in test_models:
+        try:
+            client = anth.Anthropic()
+            resp = client.messages.create(
+                model=model,
+                max_tokens=10,
+                messages=[{"role": "user", "content": "Hi"}],
+                timeout=10.0,
+            )
+            results["models"][model] = {"status": "ok", "response": resp.content[0].text}
+            break  # Found a working model, no need to test more
+        except Exception as e:
+            results["models"][model] = {"status": "error", "error": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    return results
 
 
 @app.get("/api/prices")
