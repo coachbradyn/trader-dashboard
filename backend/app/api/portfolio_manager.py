@@ -397,13 +397,16 @@ async def list_holdings(
 async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)):
     logger = logging.getLogger(__name__)
     try:
+        # Strip timezone info — DB column is TIMESTAMP WITHOUT TIME ZONE
+        entry_date = body.entry_date.replace(tzinfo=None) if body.entry_date.tzinfo else body.entry_date
+
         holding = PortfolioHolding(
             portfolio_id=body.portfolio_id,
             ticker=body.ticker.upper(),
             direction=body.direction,
             entry_price=body.entry_price,
             qty=body.qty,
-            entry_date=body.entry_date,
+            entry_date=entry_date,
             strategy_name=body.strategy_name,
             notes=body.notes,
             is_active=True,
