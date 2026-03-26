@@ -49,13 +49,15 @@ async def _build_system_prompt() -> str:
     Build a dynamic system prompt that includes strategy descriptions
     from the database and relevant memories from Henry's log.
     """
+    import logging
+    logger = logging.getLogger(__name__)
     from app.database import async_session
-    from app.models import Trader, HenryMemory
+    from app.models import Trader
     from sqlalchemy import select
 
     sections = [BASE_SYSTEM_PROMPT]
 
-    # Pull strategy descriptions dynamically
+    # Pull strategy descriptions dynamically — separate session to isolate errors
     try:
         async with async_session() as db:
             result = await db.execute(
@@ -66,13 +68,18 @@ async def _build_system_prompt() -> str:
             if traders:
                 strat_lines = []
                 for t in traders:
-                    desc = t.strategy_description or t.description or "No description provided."
+                    desc = getattr(t, 'strategy_description', None) or t.description or "No description provided."
                     strat_lines.append(f"  - {t.trader_id} ({t.display_name}): {desc}")
                 sections.append(
                     "STRATEGIES YOU ANALYZE:\n" + "\n".join(strat_lines)
                 )
+    except Exception as e:
+        logger.debug(f"Failed to load strategy descriptions: {e}")
 
-            # Pull recent high-importance memories
+    # Pull recent high-importance memories — separate session to isolate errors
+    try:
+        from app.models import HenryMemory
+        async with async_session() as db:
             result = await db.execute(
                 select(HenryMemory)
                 .where(HenryMemory.importance >= 6)
@@ -103,8 +110,8 @@ async def _build_system_prompt() -> str:
 
                 await db.commit()
 
-    except Exception:
-        pass  # If DB fails, fall back to base prompt only
+    except Exception as e:
+        logger.debug(f"Failed to load memories: {e}")
 
     return "\n\n".join(sections)
 
