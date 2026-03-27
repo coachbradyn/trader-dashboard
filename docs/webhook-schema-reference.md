@@ -75,57 +75,98 @@ Used by Pine Script **indicators** (alert signals for the screener heatmap). Doe
 |-------------|--------|--------------------------------------|----------------------|
 | `key`       | string | Your API key (from Settings page)    | `"abc123..."`        |
 | `ticker`    | string | Ticker symbol                        | `"NVDA"`             |
-| `indicator` | string | Indicator name (your label)          | `"KALMAN_BREAKOUT"`  |
-| `value`     | number | Indicator value (NO quotes)          | `225.5`              |
+
+That's it. Only `key` and `ticker` are truly required. Everything else has sensible defaults.
 
 ### Optional Fields
 
-| Field      | Type   | Description                          | Example              |
-|------------|--------|--------------------------------------|----------------------|
-| `signal`   | string | `"bullish"`, `"bearish"`, `"neutral"`| `"bullish"`          |
-| `tf`       | string | Timeframe                            | `"240"`              |
-| `time`     | number | Unix timestamp in ms                 | `1773768600000`      |
-| `metadata` | object | Any extra data (freeform JSON)       | `{"source":"TV"}`    |
+| Field       | Type           | Default     | Description                                  | Example              |
+|-------------|----------------|-------------|----------------------------------------------|----------------------|
+| `indicator` | string         | `"UNKNOWN"` | Indicator name (your label)                  | `"KALMAN_BREAKOUT"`  |
+| `value`     | number or null | `null`      | Indicator value — can be number, string, or omitted | `225.5`        |
+| `signal`    | string         | `"neutral"` | Signal direction (see normalization below)   | `"bullish"`          |
+| `tf`        | string         | `null`      | Timeframe — auto-normalized (see below)      | `"240"` → `"4h"`    |
+| `time`      | number/string  | `null`      | Unix timestamp ms — accepts string or number | `1773768600000`      |
+| `metadata`  | object         | `null`      | Any extra data (freeform JSON)               | `{"source":"TV"}`    |
 
-> **Extra fields are silently ignored.**
+> **Extra fields are silently ignored.** Send anything from Pine Script — it won't break.
 
-### Indicator Alert Template (copy into TradingView)
+### Auto-Normalization (you don't have to worry about formatting)
+
+**Ticker:** `"NASDAQ:NVDA"` → `"NVDA"`. Exchange prefixes are automatically stripped.
+
+**Signal:** These all work — the backend normalizes them:
+| You Send | Backend Stores |
+|----------|---------------|
+| `"bullish"`, `"bull"`, `"long"`, `"buy"`, `"up"`, `"1"`, `"true"` | `"bullish"` |
+| `"bearish"`, `"bear"`, `"short"`, `"sell"`, `"down"`, `"-1"`, `"false"` | `"bearish"` |
+| anything else / omitted | `"neutral"` |
+
+**Timeframe:** TradingView sends minutes as strings. Auto-mapped:
+| You Send | Backend Stores |
+|----------|---------------|
+| `"1"` | `"1m"` |
+| `"5"` | `"5m"` |
+| `"15"` | `"15m"` |
+| `"60"` | `"1h"` |
+| `"240"` | `"4h"` |
+| `"D"` or `"1D"` | `"1D"` |
+| anything else | kept as-is |
+
+**Value:** Can be a number, a string (`"225.5"`), empty string, `null`, or completely omitted. All are fine.
+
+**Time:** Can be a number (`1773768600000`) or string (`"1773768600000"`). Both work.
+
+### Minimal Alert Template (just the basics)
+
+```json
+{"key":"YOUR_API_KEY","ticker":"{{ticker}}","signal":"bullish"}
+```
+
+### Standard Alert Template (recommended)
 
 ```json
 {"key":"YOUR_API_KEY","ticker":"{{ticker}}","indicator":"YOUR_INDICATOR_NAME","value":{{close}},"signal":"bullish","tf":"{{interval}}","time":{{timenow}}}
 ```
 
-### Example with metadata
+### Full Alert Template (with metadata)
 
 ```json
 {"key":"YOUR_API_KEY","ticker":"{{ticker}}","indicator":"LMA_MOMENTUM","value":{{close}},"signal":"bullish","tf":"{{interval}}","time":{{timenow}},"metadata":{"source":"TradingView","condition":"LMA crossover confirmed"}}
 ```
 
+### Pine Script `alert()` Example
+
+```pinescript
+// In your indicator code:
+if bullishCondition
+    alert('{"key":"YOUR_API_KEY","ticker":"' + syminfo.ticker + '","indicator":"MY_INDICATOR","value":' + str.tostring(close) + ',"signal":"bullish","tf":"' + timeframe.period + '"}', alert.freq_once_per_bar)
+```
+
+### Pine Script `alertcondition()` Example
+
+```pinescript
+// Define the condition:
+alertcondition(bullishCondition, title="Bullish Signal", message='{"key":"YOUR_API_KEY","ticker":"{{ticker}}","indicator":"MY_INDICATOR","value":{{close}},"signal":"bullish","tf":"{{interval}}","time":{{timenow}}}')
+```
+
+Then in TradingView: create alert → select the condition → check "Webhook URL" → paste your Railway URL → the message auto-fills from `alertcondition()`.
+
 ---
 
 ## Common Gotchas
 
-### 1. Unquoted numbers
-`{{close}}`, `{{timenow}}`, and `{{strategy.order.contracts}}` resolve to **numbers**. Do NOT wrap them in quotes:
+### 1. Numbers vs strings — be relaxed
+The backend now coerces types automatically. `"value":"225.5"` and `"value":225.5` both work. `"time":"1773768600000"` and `"time":1773768600000` both work. Don't stress about quoting.
 
-```
-CORRECT:  "price":{{close}}
-WRONG:    "price":"{{close}}"
-```
-
-### 2. Quoted strings
-`{{ticker}}` and `{{interval}}` resolve to **strings**. They MUST be inside quotes:
-
-```
-CORRECT:  "ticker":"{{ticker}}"
-WRONG:    "ticker":{{ticker}}
-```
+### 2. `{{ticker}}` may include exchange
+TradingView's `{{ticker}}` resolves to `"NVDA"` but `syminfo.tickerid` includes the exchange like `"NASDAQ:NVDA"`. **Both work** — the backend strips the exchange prefix automatically.
 
 ### 3. `{{interval}}` returns minutes
-TradingView returns the interval in minutes as a string. 4h = `"240"`, 1h = `"60"`, 1D = `"1D"`.
+TradingView returns the interval in minutes as a string. 4h = `"240"`, 1h = `"60"`, 1D = `"1D"`. The backend auto-converts to human-readable: `"240"` → `"4h"`.
 
 ### 4. `{{timenow}}` is milliseconds
-Returns Unix timestamp in milliseconds (e.g., `1773768600000`). The backend accepts both number and string format.
+Returns Unix timestamp in milliseconds (e.g., `1773768600000`). Accepts both number and string.
 
 ### 5. Indicators vs Strategies — available placeholders
 Both indicators and strategies support: `{{ticker}}`, `{{close}}`, `{{open}}`, `{{high}}`, `{{low}}`, `{{volume}}`, `{{interval}}`, `{{timenow}}`, `{{exchange}}`.
@@ -133,13 +174,13 @@ Both indicators and strategies support: `{{ticker}}`, `{{close}}`, `{{open}}`, `
 **Only strategies** support: `{{strategy.order.action}}`, `{{strategy.order.contracts}}`, `{{strategy.order.price}}`, `{{strategy.position_size}}`.
 
 ### 6. Extra fields are OK
-Both endpoints use `extra = "ignore"`. Send whatever you want from Pine Script — unknown fields are silently dropped. You will NOT get a 422 for extra fields.
+Both endpoints use `extra = "ignore"`. Send `win_pct`, `total_trades`, `profit_factor`, or any other fields from Pine Script — they're silently dropped. No 422 errors.
 
 ### 7. Two different endpoints
 - Strategy trades → `POST /api/webhook`
 - Indicator alerts → `POST /api/screener/webhook`
 
-Do NOT send indicator alerts to `/api/webhook` or strategy trades to `/api/screener/webhook`. The schemas are different and you'll get a 422.
+Do NOT send indicator alerts to `/api/webhook` or strategy trades to `/api/screener/webhook`.
 
 ---
 
@@ -152,11 +193,18 @@ curl -X POST https://trader-dashboard-production-02bd.up.railway.app/api/webhook
   -d '{"key":"YOUR_KEY","trader":"YOUR_SLUG","signal":"entry","dir":"long","ticker":"AAPL","price":225.50,"tf":"240","time":1773768600000}'
 ```
 
-### Test screener webhook
+### Test screener webhook (minimal)
 ```bash
 curl -X POST https://trader-dashboard-production-02bd.up.railway.app/api/screener/webhook \
   -H "Content-Type: application/json" \
-  -d '{"key":"YOUR_KEY","ticker":"AAPL","indicator":"TEST","value":225.50,"signal":"bullish","tf":"240"}'
+  -d '{"key":"YOUR_KEY","ticker":"AAPL","signal":"bullish"}'
 ```
 
-Both should return a JSON response with `"status":"ok"`. If you get a 422, check that required fields are present and number fields are not quoted.
+### Test screener webhook (full)
+```bash
+curl -X POST https://trader-dashboard-production-02bd.up.railway.app/api/screener/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"key":"YOUR_KEY","ticker":"NASDAQ:AAPL","indicator":"TEST","value":"225.50","signal":"bull","tf":"240"}'
+```
+
+All should return `{"status":"ok",...}`. The screener webhook now only requires `key` + `ticker` — everything else is optional or auto-normalized.
