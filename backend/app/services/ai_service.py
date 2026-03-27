@@ -68,15 +68,16 @@ async def _build_system_prompt() -> str:
             if traders:
                 strat_lines = []
                 for t in traders:
-                    desc = getattr(t, 'strategy_description', None) or t.description or "No description provided."
+                    # Safely access strategy_description — column may not exist yet
+                    desc = getattr(t, "strategy_description", None) or t.description or "No description provided."
                     strat_lines.append(f"  - {t.trader_id} ({t.display_name}): {desc}")
                 sections.append(
                     "STRATEGIES YOU ANALYZE:\n" + "\n".join(strat_lines)
                 )
-    except Exception as e:
-        logger.debug(f"Failed to load strategy descriptions: {e}")
+    except Exception:
+        pass  # Strategy query failed — continue without it
 
-    # Pull recent high-importance memories — separate session to isolate errors
+    # Pull memories in a separate session so strategy failure doesn't block this
     try:
         from app.models import HenryMemory
         async with async_session() as db:
@@ -110,8 +111,8 @@ async def _build_system_prompt() -> str:
 
                 await db.commit()
 
-    except Exception as e:
-        logger.debug(f"Failed to load memories: {e}")
+    except Exception:
+        pass  # Memory table may not exist yet — continue without it
 
     return "\n\n".join(sections)
 
