@@ -103,7 +103,7 @@ export default function SettingsPage() {
   const [isCreatingPf, setIsCreatingPf] = useState(false);
   const [pfName, setPfName] = useState(""); const [pfDesc, setPfDesc] = useState("");
   const [pfCapital, setPfCapital] = useState(10000);
-  const [pfMaxPct, setPfMaxPct] = useState(5); const [pfMaxPos, setPfMaxPos] = useState(10); const [pfMaxDD, setPfMaxDD] = useState(20);
+  const [pfMaxPct, setPfMaxPct] = useState(25); const [pfMaxPos, setPfMaxPos] = useState(10); const [pfMaxDD, setPfMaxDD] = useState(20);
   const [pfStrats, setPfStrats] = useState<Record<string, { assigned: boolean; direction: string | null }>>({});
 
   const [traders, setTraders] = useState<TraderSettings[]>([]);
@@ -137,7 +137,7 @@ export default function SettingsPage() {
   // Populate portfolio form on selection
   useEffect(() => {
     if (isCreatingPf) {
-      setPfName(""); setPfDesc(""); setPfCapital(10000); setPfMaxPct(5); setPfMaxPos(10); setPfMaxDD(20);
+      setPfName(""); setPfDesc(""); setPfCapital(10000); setPfMaxPct(25); setPfMaxPos(10); setPfMaxDD(20);
       const init: Record<string, { assigned: boolean; direction: string | null }> = {};
       traders.forEach((t) => { init[t.id] = { assigned: false, direction: null }; });
       setPfStrats(init); return;
@@ -145,7 +145,7 @@ export default function SettingsPage() {
     const pf = portfolios.find((p) => p.id === selectedPortfolio);
     if (!pf) return;
     setPfName(pf.name); setPfDesc(pf.description || ""); setPfCapital(pf.initial_capital);
-    setPfMaxPct(pf.max_pct_per_trade ?? 5); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
+    setPfMaxPct(pf.max_pct_per_trade ?? 25); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
     const s: Record<string, { assigned: boolean; direction: string | null }> = {};
     traders.forEach((t) => {
       const m = pf.strategies.find((st) => st.trader_id === t.id);
@@ -313,7 +313,7 @@ export default function SettingsPage() {
                     <Card><CardContent className="space-y-5">
                       <SectionTitle>Risk &amp; Sizing</SectionTitle>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <RangeField label="Max % Per Trade" value={pfMaxPct} onChange={setPfMaxPct} min={0.5} max={25} step={0.5} suffix="%" />
+                        <RangeField label="Max % Per Ticker" value={pfMaxPct} onChange={setPfMaxPct} min={5} max={100} step={5} suffix="%" />
                         <RangeField label="Max Drawdown %" value={pfMaxDD} onChange={setPfMaxDD} min={1} max={50} step={1} suffix="%" />
                       </div>
                       <div className="max-w-[200px]"><label className="text-xs text-gray-400 mb-1.5 block">Max Open Positions</label>
