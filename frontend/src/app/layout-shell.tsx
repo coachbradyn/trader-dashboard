@@ -5,14 +5,17 @@ import { usePathname } from "next/navigation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 
 const NAV_LINKS = [
-  { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/feed", label: "Live Feed" },
-  { href: "/portfolios", label: "Portfolios" },
   {
     href: "/ai",
-    label: "AI Analysis",
+    label: "Home",
     dot: "bg-ai-blue",
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955a1.126 1.126 0 011.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+      </svg>
+    ),
   },
+  { href: "/portfolios", label: "Portfolios" },
   {
     href: "/screener",
     label: "Screener",
@@ -49,7 +52,9 @@ function Navbar() {
               key={link.href}
               href={link.href}
               className={`hover:text-white transition flex items-center gap-1.5 ${
-                pathname === link.href ? "text-white" : ""
+                pathname === link.href || (link.href === "/ai" && pathname === "/")
+                  ? "text-white"
+                  : ""
               }`}
             >
               {link.dot && (
@@ -95,7 +100,7 @@ function Navbar() {
                   href={link.href}
                   onClick={() => setOpen(false)}
                   className={`flex items-center gap-3 px-5 py-3 text-sm transition ${
-                    pathname === link.href
+                    pathname === link.href || (link.href === "/ai" && pathname === "/")
                       ? "text-white bg-surface-light/40"
                       : "text-gray-400 hover:text-white hover:bg-surface-light/20"
                   }`}
