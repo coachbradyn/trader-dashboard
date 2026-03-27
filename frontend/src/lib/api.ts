@@ -205,6 +205,30 @@ export const api = {
   getStrategies: () =>
     fetchApi<import("./types").StrategyInfo[]>("/watchlist/strategies/list"),
 
+  // AI Portfolio
+  getAIPortfolioStatus: () =>
+    fetchApi<import("./types").AIPortfolioStatus>("/ai-portfolio/status"),
+  createAIPortfolio: (data?: { name?: string; initial_capital?: number }) =>
+    fetchApi<{ id: string; name: string; initial_capital: number; status: string }>("/ai-portfolio/create", {
+      method: "POST",
+      body: JSON.stringify(data || {}),
+    }),
+  resetAIPortfolio: () =>
+    fetchApi<{ status: string; equity: number }>("/ai-portfolio/reset", { method: "POST" }),
+  getAIPortfolioComparison: () =>
+    fetchApi<import("./types").AIPortfolioComparison>("/ai-portfolio/compare"),
+  getAIPortfolioEquityHistory: (days?: number) =>
+    fetchApi<import("./types").EquityPoint[]>("/ai-portfolio/equity-history" + (days ? "?days=" + days : "")),
+  getAIPortfolioDecisions: (filter?: string, limit?: number) => {
+    const sp = new URLSearchParams();
+    if (filter) sp.set("filter", filter);
+    if (limit) sp.set("limit", String(limit));
+    const qs = sp.toString();
+    return fetchApi<import("./types").AIPortfolioDecision[]>("/ai-portfolio/decisions" + (qs ? "?" + qs : ""));
+  },
+  getAIPortfolioHoldings: () =>
+    fetchApi<import("./types").AIPortfolioHolding[]>("/ai-portfolio/holdings"),
+
   // Analytics
   runMonteCarlo: (params: import("./types").MonteCarloRequest) =>
     fetchApi<import("./types").MonteCarloResponse>("/analytics/monte-carlo", {

@@ -141,6 +141,24 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
         from app.services.watchlist_ai import check_and_regenerate_if_stale
         asyncio.create_task(check_and_regenerate_if_stale(payload.ticker))
 
+        # Route signal to AI portfolio (background, non-blocking)
+        try:
+            from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
+            # Need the trader object
+            trader_result = await db.execute(
+                select(Trader).where(Trader.trader_id == payload.trader)
+            )
+            trader_obj = trader_result.scalar_one_or_none()
+            if trader_obj:
+                if payload.signal == "entry":
+                    asyncio.create_task(evaluate_signal_for_ai_portfolio(
+                        trade, trader_obj, payload.model_dump()
+                    ))
+                elif payload.signal == "exit":
+                    asyncio.create_task(process_exit_for_ai_portfolio(trade, trader_obj))
+        except Exception as e:
+            logger.warning(f"AI portfolio routing failed (non-blocking): {e}")
+
         return {
             "status": "ok",
             "trade_id": trade.id,

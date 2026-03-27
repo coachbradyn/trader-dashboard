@@ -19,6 +19,7 @@ class Portfolio(Base):
     max_pct_per_trade: Mapped[float | None] = mapped_column(Float)
     max_open_positions: Mapped[int | None] = mapped_column(Integer)
     max_drawdown_pct: Mapped[float | None] = mapped_column(Float)
+    is_ai_managed: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="active")  # "active" / "archived"
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 

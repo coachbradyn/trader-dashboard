@@ -27,6 +27,11 @@ const NAV_LINKS = [
     dot: "bg-ai-blue",
   },
   {
+    href: "/ai-portfolio",
+    label: "AI Portfolio",
+    dot: "bg-ai-blue",
+  },
+  {
     href: "/monte-carlo",
     label: "Monte Carlo",
     dot: "bg-amber-500",

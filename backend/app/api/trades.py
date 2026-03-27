@@ -19,7 +19,7 @@ async def get_trades(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Trade).options(selectinload(Trade.trader))
+    query = select(Trade).options(selectinload(Trade.trader)).where(Trade.is_simulated == False)
 
     if trader_id:
         query = query.join(Trader).where(Trader.trader_id == trader_id)

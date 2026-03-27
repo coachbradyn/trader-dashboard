@@ -37,7 +37,7 @@ async def _generate_morning_summary():
             result = await db.execute(
                 select(Trade)
                 .options(selectinload(Trade.trader))
-                .where(Trade.status == "open")
+                .where(Trade.status == "open", Trade.is_simulated == False)
             )
             open_trades = result.scalars().all()
 
@@ -57,7 +57,7 @@ async def _generate_morning_summary():
             # Get yesterday's trades
             yesterday = datetime.utcnow() - timedelta(days=1)
             result = await db.execute(
-                select(Trade).where(Trade.created_at >= yesterday)
+                select(Trade).where(Trade.created_at >= yesterday, Trade.is_simulated == False)
             )
             yesterday_trades = result.scalars().all()
 
@@ -296,6 +296,16 @@ async def _compute_henry_stats():
         logger.error(f"Henry stats computation failed: {e}")
 
 
+async def _run_ai_portfolio_review():
+    """Daily review of AI portfolio positions by Henry."""
+    logger.info("Running AI portfolio scheduled review...")
+    try:
+        from app.services.ai_portfolio import scheduled_ai_portfolio_review
+        await scheduled_ai_portfolio_review()
+    except Exception as e:
+        logger.error(f"AI portfolio review failed: {e}")
+
+
 async def _cleanup_expired_context():
     """Delete expired HenryContext rows and old non-outcome rows."""
     logger.info("Cleaning up expired Henry context...")
@@ -378,6 +388,14 @@ def start_scheduler():
         _compute_henry_stats,
         CronTrigger(hour="14,16,18,20", minute=30, timezone="UTC", day_of_week="mon-fri"),
         id="henry_stats",
+        replace_existing=True,
+    )
+
+    # AI portfolio review at 2:30 PM ET (18:30 UTC) — after market stabilizes
+    scheduler.add_job(
+        _run_ai_portfolio_review,
+        CronTrigger(hour=18, minute=30, timezone="UTC", day_of_week="mon-fri"),
+        id="ai_portfolio_review",
         replace_existing=True,
     )
 

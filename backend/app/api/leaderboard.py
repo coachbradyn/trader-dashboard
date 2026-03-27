@@ -14,7 +14,7 @@ async def get_leaderboard(
     sort_by: str = Query("total_return_pct", enum=["total_return_pct", "win_rate", "profit_factor", "sharpe_ratio", "total_trades"]),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Portfolio).where(Portfolio.is_active == True))
+    result = await db.execute(select(Portfolio).where(Portfolio.is_active == True, Portfolio.is_ai_managed == False))
     portfolios = result.scalars().all()
 
     entries = []

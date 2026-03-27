@@ -540,3 +540,79 @@ export interface StrategyInfo {
   strategy_name: string | null;
   description: string | null;
 }
+
+// ── AI Portfolio Types ──────────────────────────────────────────────
+
+export interface AIPortfolioStatus {
+  exists: boolean;
+  id?: string;
+  name?: string;
+  equity?: number;
+  cash?: number;
+  initial_capital?: number;
+  return_pct?: number;
+  open_positions?: number;
+  total_trades?: number;
+  created_at?: string;
+}
+
+export interface AIPortfolioMetrics {
+  name: string;
+  equity: number;
+  total_return_pct: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown_pct: number;
+  total_trades: number;
+}
+
+export interface AIPortfolioComparison {
+  ai_portfolio: AIPortfolioMetrics;
+  real_portfolios: Array<{
+    id: string;
+    name: string;
+    total_return_pct: number;
+    win_rate: number;
+    profit_factor: number;
+    max_drawdown_pct: number;
+    total_trades: number;
+    total_pnl: number;
+  }>;
+  decision_stats: {
+    total_signals: number;
+    acted_on: number;
+    acted_on_pct: number;
+    skipped: number;
+    avg_confidence_taken: number;
+    avg_confidence_skipped: number;
+  };
+}
+
+export interface AIPortfolioDecision {
+  id: string;
+  ticker: string;
+  direction: string;
+  action_type: string;
+  confidence: number;
+  reasoning: string;
+  status: string;
+  outcome: { pnl_pct: number; pnl_dollars: number; correct: boolean } | null;
+  created_at: string;
+}
+
+export interface AIPortfolioHolding {
+  trade_id: string;
+  ticker: string;
+  direction: string;
+  strategy: string;
+  strategy_id: string;
+  entry_price: number;
+  current_price: number;
+  qty: number;
+  pnl_pct: number;
+  pnl_dollars: number;
+  hold_hours: number;
+  entry_time: string;
+  reasoning: string | null;
+  confidence: number | null;
+}

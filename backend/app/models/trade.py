@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Float, Integer, ForeignKey, JSON
+from sqlalchemy import String, Float, Integer, Boolean, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -37,6 +37,7 @@ class Trade(Base):
 
     # Status
     status: Mapped[str] = mapped_column(String(10), default="open", index=True)
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Raw webhook data
     raw_entry_payload: Mapped[dict | None] = mapped_column(JSON)

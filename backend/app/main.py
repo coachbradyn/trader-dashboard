@@ -14,6 +14,7 @@ from app.api import settings as settings_router, screener as screener_router
 from app.api import portfolio_manager as pm_router
 from app.api import analytics as analytics_router
 from app.api import watchlist as watchlist_router
+from app.api import ai_portfolio as ai_portfolio_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -36,6 +37,18 @@ async def _ensure_schema():
                 if "strategy_description" not in cols:
                     connection.execute(text("ALTER TABLE traders ADD COLUMN strategy_description TEXT"))
                     logger.info("Added missing column: traders.strategy_description")
+
+                # Add is_ai_managed to portfolios if missing
+                portfolio_cols = [c["name"] for c in insp.get_columns("portfolios")]
+                if "is_ai_managed" not in portfolio_cols:
+                    connection.execute(text("ALTER TABLE portfolios ADD COLUMN is_ai_managed BOOLEAN DEFAULT FALSE"))
+                    logger.info("Added missing column: portfolios.is_ai_managed")
+
+                # Add is_simulated to trades if missing
+                trade_cols = [c["name"] for c in insp.get_columns("trades")]
+                if "is_simulated" not in trade_cols:
+                    connection.execute(text("ALTER TABLE trades ADD COLUMN is_simulated BOOLEAN DEFAULT FALSE"))
+                    logger.info("Added missing column: trades.is_simulated")
 
                 # Create henry_memory table if missing
                 tables = insp.get_table_names()
@@ -173,6 +186,7 @@ app.include_router(screener_router.router, prefix="/api", tags=["screener"])
 app.include_router(pm_router.router, prefix="/api", tags=["portfolio-manager"])
 app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
 app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
+app.include_router(ai_portfolio_router.router, prefix="/api", tags=["ai-portfolio"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────
@@ -184,7 +198,7 @@ async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
         result = await db.execute(
             select(Trade)
             .options(selectinload(Trade.trader))
-            .where(Trade.created_at >= cutoff)
+            .where(Trade.created_at >= cutoff, Trade.is_simulated == False)
             .order_by(Trade.created_at.desc())
         )
         db_trades = result.scalars().all()
@@ -243,7 +257,7 @@ async def get_positions_for_ai() -> list[dict]:
         result = await db.execute(
             select(Trade)
             .options(selectinload(Trade.trader))
-            .where(Trade.status == "open")
+            .where(Trade.status == "open", Trade.is_simulated == False)
             .order_by(Trade.entry_time.desc())
         )
         open_trades = result.scalars().all()
