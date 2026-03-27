@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.api import webhooks, trades, traders, portfolios, leaderboard
 from app.api import settings as settings_router, screener as screener_router
 from app.api import portfolio_manager as pm_router
+from app.api import analytics as analytics_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -135,6 +136,7 @@ app.include_router(leaderboard.router, prefix="/api", tags=["leaderboard"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(screener_router.router, prefix="/api", tags=["screener"])
 app.include_router(pm_router.router, prefix="/api", tags=["portfolio-manager"])
+app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

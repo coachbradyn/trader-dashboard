@@ -405,3 +405,64 @@ export interface TickerAnalysis {
 
   generated_at: string;
 }
+
+
+// ── Monte Carlo Types ──────────────────────────────────────────────
+
+export interface MonteCarloRequest {
+  source: "live" | "backtest" | "combined";
+  strategy?: string;
+  ticker?: string;
+  num_simulations: number;
+  forward_trades: number;
+  initial_capital: number;
+  position_size_pct: number;
+}
+
+export interface HistogramBin {
+  bin_start: number;
+  bin_end: number;
+  label: string;
+  count: number;
+}
+
+export interface MonteCarloSummary {
+  median_final_equity: number;
+  mean_final_equity: number;
+  best_case_p95: number;
+  worst_case_p5: number;
+  probability_of_profit: number;
+  probability_of_ruin: number;
+  median_max_drawdown_pct: number;
+  worst_drawdown_p95: number;
+  sharpe_estimate: number;
+  median_return_pct: number;
+  mean_return_pct: number;
+}
+
+export interface MonteCarloInputStats {
+  total_trades_pooled: number;
+  live_trade_count: number;
+  backtest_trade_count: number;
+  mean_pnl_pct: number;
+  median_pnl_pct: number;
+  std_pnl_pct: number;
+  win_rate: number;
+  avg_win_pct: number;
+  avg_loss_pct: number;
+  profit_factor: number;
+  best_trade_pct: number;
+  worst_trade_pct: number;
+  strategies_included: string[];
+  tickers_included: string[];
+}
+
+export interface MonteCarloResponse {
+  percentile_bands: Record<string, number[]>;
+  sample_paths: number[][];
+  trade_indices: number[];
+  summary: MonteCarloSummary;
+  equity_histogram: HistogramBin[];
+  drawdown_histogram: HistogramBin[];
+  input_stats: MonteCarloInputStats;
+}

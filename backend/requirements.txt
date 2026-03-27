@@ -14,3 +14,4 @@ anthropic>=0.39.0
 yfinance>=0.2.36
 apscheduler>=3.10.0
 python-multipart>=0.0.9
+numpy>=1.26.0

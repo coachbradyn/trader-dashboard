@@ -192,4 +192,11 @@ export const api = {
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     return res.json() as Promise<import("./types").BacktestImportData[]>;
   },
+
+  // Analytics
+  runMonteCarlo: (params: import("./types").MonteCarloRequest) =>
+    fetchApi<import("./types").MonteCarloResponse>("/analytics/monte-carlo", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
 };

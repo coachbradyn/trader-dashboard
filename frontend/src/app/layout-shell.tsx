@@ -23,6 +23,11 @@ const NAV_LINKS = [
     label: "Manager",
     dot: "bg-ai-blue",
   },
+  {
+    href: "/monte-carlo",
+    label: "Monte Carlo",
+    dot: "bg-amber-500",
+  },
   { href: "/settings", label: "Settings" },
 ];
 
