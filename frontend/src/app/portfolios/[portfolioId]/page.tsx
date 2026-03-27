@@ -392,7 +392,8 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
     setAsked(true);
     try {
       const result = await api.postQuery(
-        `Give me a brief portfolio health check. Focus on concentration risk, recent performance trends, and one actionable recommendation. Keep it under 150 words.`
+        `Give me a portfolio health check for this specific portfolio. Analyze the actual holdings — their current performance, allocation balance, and any opportunities or risks you see. Offer constructive recommendations on positioning, not criticism. Keep it under 200 words.`,
+        portfolioId
       );
       setInsight(result.answer);
     } catch {

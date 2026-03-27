@@ -48,10 +48,15 @@ export const api = {
   // AI Analysis
   getBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing"),
   refreshBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing/refresh", { method: "POST" }),
-  postQuery: (question: string) =>
+  postReview: (daysBack: number) =>
+    fetchApi<import("./types").ReviewResponse>("/ai/review", {
+      method: "POST",
+      body: JSON.stringify({ days_back: daysBack }),
+    }),
+  postQuery: (question: string, portfolioId?: string) =>
     fetchApi<import("./types").QueryResponse>("/ai/query", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, portfolio_id: portfolioId || null }),
     }),
   getConflicts: (daysBack: number = 7) =>
     fetchApi<import("./types").ConflictResolution[]>(`/ai/conflicts?days_back=${daysBack}`),

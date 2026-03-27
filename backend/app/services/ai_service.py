@@ -926,6 +926,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     
     class QueryRequest(BaseModel):
         question: str
+        portfolio_id: str | None = None  # Scope advice to a specific portfolio
     
     @app.get("/api/ai/briefing")
     async def ai_briefing():
@@ -1082,38 +1083,79 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             from sqlalchemy import select as sa_select
             from app.database import async_session
             from app.models.portfolio_holding import PortfolioHolding
+            from app.models.portfolio import Portfolio
             from app.services.price_service import price_service
 
             all_trades = await get_trades_fn(days_back=30)
             positions = await get_positions_fn()
 
-            # Fetch manual holdings for full portfolio context
+            # Fetch holdings — scoped to specific portfolio if provided
             holdings_context = None
+            portfolio_name = None
             try:
                 async with async_session() as db:
-                    result = await db.execute(
-                        sa_select(PortfolioHolding).where(PortfolioHolding.is_active == True)
-                    )
+                    # Get portfolio name if scoped
+                    if req.portfolio_id:
+                        port_result = await db.execute(
+                            sa_select(Portfolio).where(Portfolio.id == req.portfolio_id)
+                        )
+                        portfolio = port_result.scalar_one_or_none()
+                        if portfolio:
+                            portfolio_name = portfolio.name
+
+                    query = sa_select(PortfolioHolding).where(PortfolioHolding.is_active == True)
+                    if req.portfolio_id:
+                        query = query.where(PortfolioHolding.portfolio_id == req.portfolio_id)
+
+                    result = await db.execute(query)
                     holdings = result.scalars().all()
                     if holdings:
                         lines = []
+                        total_value = 0.0
+                        total_cost = 0.0
                         for h in holdings:
                             cp = price_service.get_price(h.ticker) or h.entry_price
+                            cost = h.entry_price * h.qty
+                            value = cp * h.qty
+                            total_cost += cost
+                            total_value += value
                             if h.direction == "long":
                                 pnl = (cp - h.entry_price) / h.entry_price * 100
                             else:
                                 pnl = (h.entry_price - cp) / h.entry_price * 100
-                            lines.append(
-                                f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "
-                                f"current ${cp:.2f} | {pnl:+.2f}% | strategy: {h.strategy_name or 'manual'}"
-                            )
-                        holdings_context = "\n".join(lines)
+                            alloc = 0.0  # will compute after totaling
+                            lines.append({
+                                "text": f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "
+                                        f"current ${cp:.2f} | {pnl:+.2f}% | strategy: {h.strategy_name or 'manual'}",
+                                "value": value,
+                            })
+                        # Add allocation percentages
+                        formatted = []
+                        for l in lines:
+                            alloc_pct = (l["value"] / total_value * 100) if total_value > 0 else 0
+                            formatted.append(f"{l['text']} | allocation: {alloc_pct:.1f}%")
+                        total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
+                        header = f"Portfolio: {portfolio_name or 'All'} | Total value: ${total_value:,.2f} | Cost basis: ${total_cost:,.2f} | Return: {total_pnl_pct:+.2f}%"
+                        holdings_context = header + "\n" + "\n".join(formatted)
             except Exception:
                 pass
 
             if not all_trades and not positions and not holdings_context:
                 return {"answer": "No trading data available yet. Add manual holdings or connect TradingView strategies to start getting portfolio advice.", "trades_in_context": 0}
-            result = query_trades(req.question, all_trades, positions, holdings_context=holdings_context)
+
+            # Enhance the question with portfolio scope
+            scoped_question = req.question
+            if portfolio_name:
+                scoped_question = (
+                    f"[Context: This question is about the '{portfolio_name}' portfolio specifically. "
+                    f"Focus your analysis and recommendations ONLY on the holdings listed below. "
+                    f"Manual holdings are legitimate positions the user chose — treat them with respect. "
+                    f"Don't criticize holdings for being manually entered. Instead, provide constructive "
+                    f"recommendations based on current market conditions, position sizing, and diversification.]\n\n"
+                    f"{req.question}"
+                )
+
+            result = query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
             return {"answer": result, "trades_in_context": len(all_trades)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
