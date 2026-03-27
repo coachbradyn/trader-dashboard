@@ -44,10 +44,10 @@ If data is insufficient to draw conclusions, say so rather than speculating.
 You maintain a memory of past decisions and their outcomes. When you reference a past observation or lesson, cite it. When you notice a new pattern, flag it as something to remember."""
 
 
-async def _build_system_prompt() -> str:
+async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general") -> str:
     """
-    Build a dynamic system prompt that includes strategy descriptions
-    from the database and relevant memories from Henry's log.
+    Build a dynamic system prompt that includes strategy descriptions,
+    memories, prior context notes, track record, and strategy stats.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -114,6 +114,121 @@ async def _build_system_prompt() -> str:
     except Exception:
         pass  # Memory table may not exist yet — continue without it
 
+    # Pull prior context notes (HenryContext) — separate session
+    try:
+        from app.models import HenryContext
+        async with async_session() as db:
+            query = (
+                select(HenryContext)
+                .where(
+                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow())
+                )
+                .order_by(HenryContext.created_at.desc())
+            )
+
+            if scope == "signal" and (ticker or strategy):
+                from sqlalchemy import or_
+                filters = []
+                if ticker:
+                    filters.append(HenryContext.ticker == ticker)
+                if strategy:
+                    filters.append(HenryContext.strategy == strategy)
+                query = query.where(or_(*filters))
+                query = query.limit(10)
+            else:
+                query = query.limit(15)
+
+            result = await db.execute(query)
+            contexts = result.scalars().all()
+
+            if contexts:
+                ctx_lines = []
+                for c in contexts:
+                    prefix = f"[{c.context_type.upper()}]"
+                    scope_tag = ""
+                    if c.ticker:
+                        scope_tag += f" [{c.ticker}]"
+                    if c.strategy:
+                        scope_tag += f" ({c.strategy})"
+                    conf = f" conf {c.confidence}/10" if c.confidence else ""
+                    ctx_lines.append(f"  {prefix}{scope_tag}{conf}: {c.content}")
+
+                sections.append(
+                    "YOUR PRIOR NOTES (past recommendations, outcomes, observations):\n"
+                    + "\n".join(ctx_lines)
+                )
+
+    except Exception:
+        pass  # HenryContext table may not exist yet
+
+    # Pull track record (HenryStats — henry_hit_rate) — separate session
+    try:
+        from app.models import HenryStats
+        async with async_session() as db:
+            result = await db.execute(
+                select(HenryStats)
+                .where(HenryStats.stat_type == "henry_hit_rate")
+                .order_by(HenryStats.computed_at.desc())
+                .limit(1)
+            )
+            hit_rate_stat = result.scalar_one_or_none()
+
+            if hit_rate_stat and hit_rate_stat.data:
+                d = hit_rate_stat.data
+                overall = f"Overall: {d.get('overall_pct', '?')}% ({d.get('total_outcomes', 0)} outcomes)"
+                high = f"High conf (7-10): {d.get('high_conf_pct', '?')}%" if d.get('high_conf_pct') is not None else ""
+                mid = f"Mid (4-6): {d.get('mid_conf_pct', '?')}%" if d.get('mid_conf_pct') is not None else ""
+                parts = [overall]
+                if high:
+                    parts.append(high)
+                if mid:
+                    parts.append(mid)
+                sections.append("YOUR TRACK RECORD:\n  " + " | ".join(parts))
+
+    except Exception:
+        pass
+
+    # Pull strategy stats (HenryStats — strategy_performance) — separate session
+    try:
+        from app.models import HenryStats as HenryStats2
+        async with async_session() as db:
+            query = (
+                select(HenryStats2)
+                .where(HenryStats2.stat_type == "strategy_performance")
+                .order_by(HenryStats2.computed_at.desc())
+            )
+            if scope == "signal" and strategy:
+                query = query.where(HenryStats2.strategy == strategy)
+
+            query = query.limit(10)
+            result = await db.execute(query)
+            stats = result.scalars().all()
+
+            if stats:
+                # Deduplicate by strategy (keep most recent)
+                seen = set()
+                stat_lines = []
+                for s in stats:
+                    if s.strategy in seen:
+                        continue
+                    seen.add(s.strategy)
+                    d = s.data
+                    line = (
+                        f"  {s.strategy}: {d.get('win_rate', '?')}% WR, "
+                        f"PF {d.get('profit_factor', '?')}, "
+                        f"{d.get('trade_count', '?')} trades, "
+                        f"avg {d.get('avg_hold_bars', '?')} bars"
+                    )
+                    streak = d.get('current_streak')
+                    if streak:
+                        line += f", streak {streak}"
+                    stat_lines.append(line)
+
+                sections.append("STRATEGY STATS (30d):\n" + "\n".join(stat_lines))
+
+    except Exception:
+        pass
+
     return "\n\n".join(sections)
 
 
@@ -159,9 +274,9 @@ def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = Non
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
-async def _call_claude_async(prompt: str, max_tokens: int = 1500) -> str:
-    """Async wrapper that builds the dynamic system prompt with strategy descriptions and memory."""
-    system = await _build_system_prompt()
+async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general") -> str:
+    """Async wrapper that builds the dynamic system prompt with strategy descriptions, memory, context, and stats."""
+    system = await _build_system_prompt(ticker=ticker, strategy=strategy, scope=scope)
     return _call_claude(prompt, max_tokens=max_tokens, system_override=system)
 
 
@@ -189,6 +304,86 @@ async def save_memory(
             )
             db.add(memory)
             await db.commit()
+    except Exception:
+        pass  # Non-blocking
+
+
+async def save_context(
+    content: str,
+    context_type: str,  # recommendation | outcome | observation | pattern | portfolio_note | user_decision
+    ticker: str = None,
+    strategy: str = None,
+    portfolio_id: str = None,
+    confidence: int = None,
+    action_id: str = None,
+    trade_id: str = None,
+    expires_days: int = None,
+) -> None:
+    """Save a context entry for Henry to reference in future prompts."""
+    try:
+        from app.database import async_session
+        from app.models import HenryContext
+
+        expires_at = None
+        if expires_days:
+            expires_at = datetime.utcnow() + timedelta(days=expires_days)
+
+        async with async_session() as db:
+            ctx = HenryContext(
+                content=content,
+                context_type=context_type,
+                ticker=ticker,
+                strategy=strategy,
+                portfolio_id=portfolio_id,
+                confidence=confidence,
+                action_id=action_id,
+                trade_id=trade_id,
+                expires_at=expires_at,
+            )
+            db.add(ctx)
+            await db.commit()
+    except Exception:
+        pass  # Non-blocking
+
+
+async def _extract_and_save_context(
+    analysis_text: str,
+    context_type: str = "observation",
+    ticker: str = None,
+    strategy: str = None,
+    portfolio_id: str = None,
+    expires_days: int = 14,
+) -> None:
+    """
+    After Henry generates analysis, ask Claude (Haiku) to extract key conclusions
+    and save them as HenryContext entries. Mirrors extract_and_save_memories().
+    """
+    if CLIENT is None:
+        return
+
+    try:
+        response = CLIENT.messages.create(
+            model=MODEL_LAST_RESORT,
+            max_tokens=400,
+            system="Extract 1-2 key one-sentence conclusions from this trading analysis. Return a JSON array of objects with keys: content (1 sentence), ticker (null or ticker symbol), strategy (null or strategy slug), confidence (1-10 or null).",
+            messages=[{"role": "user", "content": analysis_text}],
+            timeout=15.0,
+        )
+
+        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        items = json.loads(raw)
+
+        if isinstance(items, list):
+            for item in items[:2]:
+                await save_context(
+                    content=item.get("content", ""),
+                    context_type=context_type,
+                    ticker=item.get("ticker") or ticker,
+                    strategy=item.get("strategy") or strategy,
+                    portfolio_id=portfolio_id,
+                    confidence=item.get("confidence"),
+                    expires_days=expires_days,
+                )
     except Exception:
         pass  # Non-blocking
 
@@ -504,11 +699,14 @@ Be specific. Use dollar amounts and percentages. Reference actual headlines and 
 Keep it under 500 words."""
 
     # Use async call that includes strategy descriptions + memory
-    result = await _call_claude_async(prompt, max_tokens=2500)
+    result = await _call_claude_async(prompt, max_tokens=2500, scope="briefing")
 
     # Extract and save key observations from the briefing (non-blocking, cheap)
     import asyncio
     asyncio.create_task(extract_and_save_memories(result, source="briefing"))
+
+    # Extract and save context notes from the briefing (non-blocking)
+    asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
 
     return result
 

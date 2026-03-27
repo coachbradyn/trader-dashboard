@@ -70,6 +70,18 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
         elif payload.signal == "exit":
             from app.services.portfolio_analysis import track_action_outcome
             await track_action_outcome(trade, db)
+
+            # Save outcome context (non-blocking)
+            import asyncio
+            from app.services.ai_service import save_context
+            pnl_pct = trade.pnl_percent or 0.0
+            asyncio.create_task(save_context(
+                content=f"CLOSED {trade.ticker} {trade.direction} | PnL: {pnl_pct:+.2f}% | Bars: {trade.bars_in_trade or '?'} | Exit: {trade.exit_reason or 'unknown'}",
+                context_type="outcome",
+                ticker=trade.ticker,
+                trade_id=trade.id,
+            ))
+
             # Mark linked holdings as inactive
             from app.models import PortfolioHolding
             result = await db.execute(

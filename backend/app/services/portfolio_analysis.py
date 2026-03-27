@@ -192,7 +192,7 @@ Based on the backtest data and current holdings, should the portfolio:
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"action_type": "BUY" or "ADD" or "TRIM" or "CLOSE" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences max", "suggested_qty": number_or_null}}"""
 
-        raw = await _call_claude_async(prompt, max_tokens=500)
+        raw = await _call_claude_async(prompt, max_tokens=500, ticker=ticker, strategy=strategy_slug, scope="signal")
 
         try:
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -227,6 +227,20 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 current_price=current_price,
             )
             db.add(action)
+            await db.flush()
+
+            # Save recommendation context (non-blocking)
+            import asyncio
+            from app.services.ai_service import save_context
+            asyncio.create_task(save_context(
+                content=f"{action_type} {ticker} ({direction}) - conf {confidence}/10: {reasoning[:200]}",
+                context_type="recommendation",
+                ticker=ticker,
+                strategy=strategy_slug,
+                confidence=confidence,
+                action_id=action.id,
+                expires_days=7,
+            ))
 
     except Exception as e:
         logger.warning(f"Signal evaluation failed (non-blocking): {e}")
@@ -542,7 +556,7 @@ Respond with a JSON array of recommended actions (or empty array if none needed)
 Each action: {{"action_type": "BUY|SELL|TRIM|ADD|CLOSE|REBALANCE", "ticker": "X", "direction": "long|short", "confidence": 1-10, "reasoning": "2-3 sentences", "suggested_qty": number_or_null}}
 No markdown, no backticks. Just the JSON array."""
 
-            raw = await _call_claude_async(prompt, max_tokens=1500)
+            raw = await _call_claude_async(prompt, max_tokens=1500, scope="review")
 
             try:
                 clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -578,6 +592,10 @@ No markdown, no backticks. Just the JSON array."""
         # Extract and save memories from the review (non-blocking)
         import asyncio
         asyncio.create_task(extract_and_save_memories(raw, source="scheduled_review"))
+
+        # Extract and save context notes from the review (non-blocking)
+        from app.services.ai_service import _extract_and_save_context
+        asyncio.create_task(_extract_and_save_context(raw, context_type="pattern", expires_days=30))
 
     except Exception as e:
         logger.error(f"Scheduled review failed: {e}")

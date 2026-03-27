@@ -765,6 +765,18 @@ async def approve_action(action_id: str, db: AsyncSession = Depends(get_db)):
     action.resolved_at = datetime.utcnow()
     await db.commit()
 
+    # Save user decision context (non-blocking)
+    import asyncio
+    from app.services.ai_service import save_context
+    asyncio.create_task(save_context(
+        content=f"User APPROVED {action.action_type} {action.ticker} (conf {action.confidence})",
+        context_type="user_decision",
+        ticker=action.ticker,
+        portfolio_id=action.portfolio_id,
+        action_id=action.id,
+        expires_days=30,
+    ))
+
     return {"status": "approved", "action_id": action_id, "action_type": action.action_type, "ticker": action.ticker}
 
 
@@ -779,9 +791,23 @@ async def reject_action(action_id: str, body: ActionReject | None = None, db: As
 
     action.status = "rejected"
     action.resolved_at = datetime.utcnow()
+    reason_text = ""
     if body and body.reason:
         action.reject_reason = body.reason
+        reason_text = f": {body.reason}"
     await db.commit()
+
+    # Save user decision context (non-blocking)
+    import asyncio
+    from app.services.ai_service import save_context
+    asyncio.create_task(save_context(
+        content=f"User REJECTED {action.action_type} {action.ticker} (conf {action.confidence}){reason_text}",
+        context_type="user_decision",
+        ticker=action.ticker,
+        portfolio_id=action.portfolio_id,
+        action_id=action.id,
+        expires_days=30,
+    ))
 
     return {"status": "rejected", "action_id": action_id}
 
@@ -959,6 +985,98 @@ async def list_strategies_with_descriptions(db: AsyncSession = Depends(get_db)):
         }
         for t in traders
     ]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# HENRY CONTEXT ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/context")
+async def list_context(
+    ticker: str | None = None,
+    strategy: str | None = None,
+    context_type: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """List Henry's context entries, optionally filtered."""
+    from app.models import HenryContext
+
+    query = select(HenryContext).order_by(HenryContext.created_at.desc())
+
+    if ticker:
+        query = query.where(HenryContext.ticker == ticker.upper())
+    if strategy:
+        query = query.where(HenryContext.strategy == strategy)
+    if context_type:
+        query = query.where(HenryContext.context_type == context_type)
+
+    query = query.limit(limit)
+    result = await db.execute(query)
+    contexts = result.scalars().all()
+
+    return [
+        {
+            "id": c.id,
+            "context_type": c.context_type,
+            "ticker": c.ticker,
+            "strategy": c.strategy,
+            "portfolio_id": c.portfolio_id,
+            "content": c.content,
+            "confidence": c.confidence,
+            "action_id": c.action_id,
+            "trade_id": c.trade_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+        }
+        for c in contexts
+    ]
+
+
+@router.get("/stats")
+async def list_stats(
+    stat_type: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """List latest Henry stats entries, optionally filtered by stat_type."""
+    from app.models import HenryStats
+
+    query = select(HenryStats).order_by(HenryStats.computed_at.desc())
+
+    if stat_type:
+        query = query.where(HenryStats.stat_type == stat_type)
+
+    query = query.limit(50)
+    result = await db.execute(query)
+    stats = result.scalars().all()
+
+    return [
+        {
+            "id": s.id,
+            "stat_type": s.stat_type,
+            "strategy": s.strategy,
+            "ticker": s.ticker,
+            "portfolio_id": s.portfolio_id,
+            "data": s.data,
+            "period_days": s.period_days,
+            "computed_at": s.computed_at.isoformat() if s.computed_at else None,
+        }
+        for s in stats
+    ]
+
+
+@router.delete("/context/{context_id}")
+async def delete_context(context_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a specific context entry."""
+    from app.models import HenryContext
+
+    result = await db.execute(select(HenryContext).where(HenryContext.id == context_id))
+    ctx = result.scalar_one_or_none()
+    if not ctx:
+        raise HTTPException(404, "Context entry not found")
+    await db.delete(ctx)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.put("/strategies/{trader_id}/description")

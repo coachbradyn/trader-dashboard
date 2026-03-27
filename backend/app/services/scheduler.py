@@ -286,6 +286,51 @@ async def _run_daily_portfolio_review():
         logger.error(f"Daily portfolio review failed: {e}")
 
 
+async def _compute_henry_stats():
+    """Compute Henry's pre-computed analytics (strategy performance, hit rate, etc.)."""
+    logger.info("Computing Henry stats...")
+    try:
+        from app.services.henry_stats_engine import compute_all_stats
+        await compute_all_stats()
+    except Exception as e:
+        logger.error(f"Henry stats computation failed: {e}")
+
+
+async def _cleanup_expired_context():
+    """Delete expired HenryContext rows and old non-outcome rows."""
+    logger.info("Cleaning up expired Henry context...")
+    try:
+        from app.database import async_session
+        from app.models import HenryContext
+        from sqlalchemy import delete, and_, or_
+
+        async with async_session() as db:
+            now = datetime.utcnow()
+
+            # Delete expired rows (where expires_at < now)
+            await db.execute(
+                delete(HenryContext).where(
+                    HenryContext.expires_at.isnot(None),
+                    HenryContext.expires_at < now,
+                )
+            )
+
+            # Delete non-outcome rows older than 90 days
+            cutoff_90d = now - timedelta(days=90)
+            await db.execute(
+                delete(HenryContext).where(
+                    HenryContext.context_type != "outcome",
+                    HenryContext.created_at < cutoff_90d,
+                )
+            )
+
+            await db.commit()
+            logger.info("Henry context cleanup complete")
+
+    except Exception as e:
+        logger.error(f"Henry context cleanup failed: {e}")
+
+
 def start_scheduler():
     """Start the APScheduler with all jobs."""
     # Morning summary at 9:30 AM ET (13:30 UTC)
@@ -328,11 +373,28 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Henry stats computation every 2h during market hours
+    scheduler.add_job(
+        _compute_henry_stats,
+        CronTrigger(hour="14,16,18,20", minute=30, timezone="UTC", day_of_week="mon-fri"),
+        id="henry_stats",
+        replace_existing=True,
+    )
+
+    # Henry context cleanup daily at 5 UTC (midnight ET)
+    scheduler.add_job(
+        _cleanup_expired_context,
+        CronTrigger(hour=5, minute=0, timezone="UTC"),
+        id="henry_context_cleanup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started: morning (13:30 UTC), nightly (20:15 UTC), "
         "screener (every 30m), thresholds (hourly M-F 14-20 UTC), "
-        "portfolio review (daily 14:00 UTC)"
+        "portfolio review (daily 14:00 UTC), "
+        "henry stats (every 2h M-F 14-20 UTC), context cleanup (daily 5 UTC)"
     )
 
 
