@@ -248,6 +248,30 @@ async def get_watchlist(db: AsyncSession = Depends(get_db)):
         )
         last_alert_at = last_alert_result.scalar()
 
+        # Signal events for sparkline overlay (last 60 days of alerts)
+        from datetime import timedelta as _td
+        event_cutoff = datetime.utcnow() - _td(days=60)
+        events_result = await db.execute(
+            select(IndicatorAlert.created_at, IndicatorAlert.signal)
+            .where(IndicatorAlert.ticker == wt.ticker, IndicatorAlert.created_at >= event_cutoff)
+            .order_by(IndicatorAlert.created_at)
+        )
+        signal_events = [
+            {"date": row[0].strftime("%Y-%m-%d"), "signal": row[1]}
+            for row in events_result.all()
+        ]
+
+        # Trade events for sparkline overlay
+        trade_events_result = await db.execute(
+            select(Trade.entry_time, Trade.direction, Trade.status)
+            .where(Trade.ticker == wt.ticker, Trade.entry_time >= event_cutoff, Trade.is_simulated == False)
+            .order_by(Trade.entry_time)
+        )
+        trade_events = [
+            {"date": row[0].strftime("%Y-%m-%d"), "direction": row[1], "status": row[2]}
+            for row in trade_events_result.all()
+        ]
+
         items.append({
             "id": wt.id,
             "ticker": wt.ticker,
@@ -258,6 +282,8 @@ async def get_watchlist(db: AsyncSession = Depends(get_db)):
             "consensus": consensus,
             "cached_summary": cached_summary,
             "last_alert_at": last_alert_at.isoformat() if last_alert_at else None,
+            "signal_events": signal_events,
+            "trade_events": trade_events,
         })
 
     return items

@@ -498,3 +498,28 @@ Answer concisely. Reference specific trades, tickers, and numbers. If the user i
 
     answer = await _call_claude_async(prompt, max_tokens=800, scope="general")
     return {"answer": answer}
+
+
+# ── AI Trading Config ────────────────────────────────────────────────────
+
+class AITradingConfig(BaseModel):
+    min_confidence: int = 5
+    high_alloc_pct: float = 5.0
+    mid_alloc_pct: float = 3.0
+    min_adx: int = 20
+    require_stop: bool = True
+    reward_risk_ratio: float = 2.0
+
+@router.get("/config")
+async def get_config():
+    """Get Henry's AI trading decision framework config."""
+    from app.services.ai_portfolio import get_ai_config
+    return get_ai_config()
+
+@router.put("/config")
+async def update_config(cfg: AITradingConfig):
+    """Update Henry's AI trading decision framework config."""
+    from app.services.ai_portfolio import save_ai_config
+    config = cfg.model_dump()
+    await save_ai_config(config)
+    return config

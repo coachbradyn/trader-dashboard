@@ -60,6 +60,23 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
 
     await db.commit()
 
+    # Auto-add traded ticker to watchlist (non-blocking)
+    try:
+        from app.models.watchlist_ticker import WatchlistTicker
+        wl_result = await db.execute(
+            select(WatchlistTicker).where(WatchlistTicker.ticker == payload.ticker.upper())
+        )
+        wl_existing = wl_result.scalar_one_or_none()
+        if wl_existing:
+            if not wl_existing.is_active:
+                wl_existing.is_active = True
+                wl_existing.removed_at = None
+        else:
+            db.add(WatchlistTicker(ticker=payload.ticker.upper()))
+        await db.commit()
+    except Exception:
+        pass
+
     # Portfolio manager hooks (non-blocking)
     try:
         from app.services.portfolio_analysis import evaluate_signal, link_trade_to_holding

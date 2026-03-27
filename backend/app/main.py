@@ -170,6 +170,12 @@ async def lifespan(app: FastAPI):
         await refresh_strategies_cache()
     except Exception:
         pass
+    # Load AI trading config from DB
+    try:
+        from app.services.ai_portfolio import load_ai_config_from_db
+        await load_ai_config_from_db()
+    except Exception:
+        pass
     yield
     stop_scheduler()
     task.cancel()

@@ -485,6 +485,23 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
         # Register ticker for price tracking
         price_service.add_ticker(holding.ticker)
 
+        # Auto-add ticker to watchlist
+        try:
+            from app.models.watchlist_ticker import WatchlistTicker
+            wl_result = await db.execute(
+                select(WatchlistTicker).where(WatchlistTicker.ticker == holding.ticker)
+            )
+            wl_existing = wl_result.scalar_one_or_none()
+            if wl_existing:
+                if not wl_existing.is_active:
+                    wl_existing.is_active = True
+                    wl_existing.removed_at = None
+            else:
+                db.add(WatchlistTicker(ticker=holding.ticker))
+            await db.commit()
+        except Exception:
+            pass  # Non-blocking
+
         return HoldingResponse(
             id=holding.id,
             portfolio_id=holding.portfolio_id,

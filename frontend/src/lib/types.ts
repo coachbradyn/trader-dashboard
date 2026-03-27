@@ -519,6 +519,17 @@ export interface WatchlistCachedSummary {
   is_stale: boolean;
 }
 
+export interface WatchlistSignalEvent {
+  date: string;
+  signal: string;
+}
+
+export interface WatchlistTradeEvent {
+  date: string;
+  direction: string;
+  status: string;
+}
+
 export interface WatchlistTickerData {
   id: string;
   ticker: string;
@@ -529,6 +540,8 @@ export interface WatchlistTickerData {
   consensus: WatchlistConsensus;
   cached_summary: WatchlistCachedSummary | null;
   last_alert_at: string | null;
+  signal_events: WatchlistSignalEvent[];
+  trade_events: WatchlistTradeEvent[];
 }
 
 export interface WatchlistTickerDetail {

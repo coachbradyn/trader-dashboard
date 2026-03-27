@@ -263,6 +263,8 @@ export default function SettingsPage() {
           <TabsList>
             <TabsTrigger value="portfolios">Portfolios</TabsTrigger>
             <TabsTrigger value="strategies">Strategies</TabsTrigger>
+            <TabsTrigger value="backtests">Backtests</TabsTrigger>
+            <TabsTrigger value="henry">Henry AI</TabsTrigger>
           </TabsList>
 
           {/* ═══ PORTFOLIOS TAB ═══ */}
@@ -486,9 +488,176 @@ export default function SettingsPage() {
               </div>
             </div>
           </TabsContent>
+
+          {/* ── BACKTESTS TAB ─────────────────────────────── */}
+          <TabsContent value="backtests">
+            <BacktestsTab flash={flash} />
+          </TabsContent>
+
+          {/* ── HENRY AI CONFIG TAB ───────────────────────── */}
+          <TabsContent value="henry">
+            <HenryConfigTab flash={flash} />
+          </TabsContent>
         </Tabs>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} />}
     </>
+  );
+}
+
+/* ── Backtests Tab Component ───────────────────────────────────── */
+function BacktestsTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
+  const [imports, setImports] = useState<import("@/lib/types").BacktestImportData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+
+  const fetchImports = useCallback(async () => {
+    try { setImports(await api.getBacktestImports()); }
+    catch {} finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchImports(); }, [fetchImports]);
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    setUploading(true);
+    try {
+      await api.uploadBacktests(Array.from(files));
+      flash("Backtests imported");
+      await fetchImports();
+    } catch { flash("Upload failed", "error"); }
+    setUploading(false);
+    e.target.value = "";
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this backtest import?")) return;
+    try {
+      await api.deleteBacktestImport(id);
+      flash("Backtest deleted");
+      await fetchImports();
+    } catch { flash("Delete failed", "error"); }
+  };
+
+  if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
+
+  return (
+    <div className="settings-panel p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <SectionTitle>Backtest Imports</SectionTitle>
+        <label className="cursor-pointer bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 px-4 py-2 rounded-lg text-xs font-medium transition">
+          {uploading ? "Uploading..." : "Upload CSV"}
+          <input type="file" accept=".csv" multiple onChange={handleUpload} className="hidden" disabled={uploading} />
+        </label>
+      </div>
+      <p className="text-xs text-gray-500">Upload TradingView backtest CSV exports. Filename format: STRATEGY_VERSION_EXCHANGE_TICKER_DATE.csv</p>
+      {imports.length === 0 ? (
+        <div className="text-center py-12 text-gray-500 text-sm">No backtest data imported yet</div>
+      ) : (
+        <div className="space-y-2">
+          {imports.map((bt) => (
+            <div key={bt.id} className="flex items-center gap-3 p-3 rounded-lg border border-border/40 bg-surface-light/20">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-white font-medium">{bt.strategy_name} — {bt.ticker}</div>
+                <div className="text-[10px] text-gray-500 font-mono mt-0.5">
+                  {bt.trade_count} trades | WR {bt.win_rate?.toFixed(1) ?? "?"}% | PF {bt.profit_factor?.toFixed(2) ?? "?"} | PnL {bt.total_pnl_pct?.toFixed(2) ?? "?"}%
+                </div>
+              </div>
+              <Badge variant="outline" className="text-[10px]">{bt.filename}</Badge>
+              <Button variant="ghost" size="sm" onClick={() => handleDelete(bt.id)} className="text-loss/50 hover:text-loss">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Henry AI Config Tab ───────────────────────────────────────── */
+function HenryConfigTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
+  const [config, setConfig] = useState({
+    min_confidence: 5,
+    high_alloc_pct: 5.0,
+    mid_alloc_pct: 3.0,
+    min_adx: 20,
+    require_stop: true,
+    reward_risk_ratio: 2.0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getAIConfig().then((c) => {
+      setConfig({
+        min_confidence: c.min_confidence as number ?? 5,
+        high_alloc_pct: c.high_alloc_pct as number ?? 5.0,
+        mid_alloc_pct: c.mid_alloc_pct as number ?? 3.0,
+        min_adx: c.min_adx as number ?? 20,
+        require_stop: c.require_stop as boolean ?? true,
+        reward_risk_ratio: c.reward_risk_ratio as number ?? 2.0,
+      });
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateAIConfig(config);
+      flash("Henry AI config updated");
+    } catch { flash("Save failed", "error"); }
+    setSaving(false);
+  };
+
+  if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
+
+  return (
+    <div className="settings-panel p-6 space-y-6">
+      <SectionTitle>Henry&apos;s Trading Decision Framework</SectionTitle>
+      <p className="text-xs text-gray-500">These rules govern how Henry evaluates signals for the AI paper portfolio.</p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <RangeField label="Min Confidence to Trade" value={config.min_confidence} onChange={(v) => setConfig({ ...config, min_confidence: v })}
+          min={1} max={10} step={1} suffix="/10" />
+        <RangeField label="High Confidence Allocation" value={config.high_alloc_pct} onChange={(v) => setConfig({ ...config, high_alloc_pct: v })}
+          min={1} max={20} step={0.5} suffix="%" />
+        <RangeField label="Mid Confidence Allocation" value={config.mid_alloc_pct} onChange={(v) => setConfig({ ...config, mid_alloc_pct: v })}
+          min={1} max={15} step={0.5} suffix="%" />
+        <RangeField label="Min ADX for Trend" value={config.min_adx} onChange={(v) => setConfig({ ...config, min_adx: v })}
+          min={10} max={40} step={1} suffix="" />
+        <RangeField label="Reward/Risk Ratio" value={config.reward_risk_ratio} onChange={(v) => setConfig({ ...config, reward_risk_ratio: v })}
+          min={1} max={5} step={0.5} suffix=":1" />
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-400 font-medium" style={FONT_OUTFIT}>Require Stop Loss</span>
+          </div>
+          <button onClick={() => setConfig({ ...config, require_stop: !config.require_stop })}
+            className={`w-12 h-6 rounded-full transition ${config.require_stop ? "bg-profit" : "bg-gray-600"}`}>
+            <div className={`w-5 h-5 rounded-full bg-white transition-transform ${config.require_stop ? "translate-x-6" : "translate-x-0.5"}`} />
+          </button>
+        </div>
+      </div>
+
+      <div className="pt-2">
+        <Button onClick={handleSave} disabled={saving} className="min-w-[140px]">
+          {saving ? "Saving..." : "Save Config"}
+        </Button>
+      </div>
+
+      <Card><CardContent className="pt-4">
+        <div className="text-xs text-gray-400 space-y-1.5">
+          <p><strong className="text-white">Min Confidence:</strong> Signals below this confidence score are auto-skipped. Higher = more selective.</p>
+          <p><strong className="text-white">High Confidence Alloc:</strong> % of equity allocated per trade when confidence is 8-10.</p>
+          <p><strong className="text-white">Mid Confidence Alloc:</strong> % of equity allocated per trade when confidence is {config.min_confidence}-7.</p>
+          <p><strong className="text-white">Min ADX:</strong> Trend strength threshold. Signals below this ADX are skipped (no trend).</p>
+          <p><strong className="text-white">Reward/Risk:</strong> Minimum expected reward-to-risk ratio for Henry to take a trade.</p>
+          <p><strong className="text-white">Require Stop:</strong> When on, Henry skips any signal that doesn&apos;t include a stop loss price.</p>
+        </div>
+      </CardContent></Card>
+    </div>
   );
 }

@@ -232,6 +232,13 @@ export const api = {
   },
   getAIPortfolioHoldings: () =>
     fetchApi<import("./types").AIPortfolioHolding[]>("/ai-portfolio/holdings"),
+  getAIConfig: () =>
+    fetchApi<Record<string, number | boolean>>("/ai-portfolio/config"),
+  updateAIConfig: (config: Record<string, number | boolean>) =>
+    fetchApi<Record<string, number | boolean>>("/ai-portfolio/config", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
   chatAIPortfolio: (question: string) =>
     fetchApi<{ answer: string }>("/ai-portfolio/chat", {
       method: "POST",

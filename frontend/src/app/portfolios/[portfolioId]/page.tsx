@@ -13,9 +13,11 @@ import {
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
   PieChart, Pie, Cell,
 } from "recharts";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
-  BacktestImportData, PortfolioHolding, ActionStats,
+  BacktestImportData, PortfolioHolding, ActionStats, PortfolioAction,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -663,6 +665,172 @@ function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
   );
 }
 
+// ── Action Queue (inline) ─────────────────────────────────────────
+
+function ActionQueue({ portfolioId }: { portfolioId: string }) {
+  const [actions, setActions] = useState<PortfolioAction[]>([]);
+  const [filter, setFilter] = useState("pending");
+  const [loading, setLoading] = useState(true);
+
+  const fetchActions = useCallback(async () => {
+    try {
+      const data = await api.getActions(filter, portfolioId);
+      setActions(data);
+    } catch {}
+    setLoading(false);
+  }, [filter, portfolioId]);
+
+  useEffect(() => { fetchActions(); }, [fetchActions]);
+
+  const handleApprove = async (id: string) => {
+    try { await api.approveAction(id); fetchActions(); } catch {}
+  };
+  const handleReject = async (id: string) => {
+    try { await api.rejectAction(id); fetchActions(); } catch {}
+  };
+
+  return (
+    <Card className="bg-surface-light/20 border-border">
+      <CardContent className="p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Henry&apos;s Recommendations</h3>
+          <div className="flex rounded-md overflow-hidden border border-border ml-auto">
+            {["pending", "approved", "rejected", "all"].map((f) => (
+              <button key={f} onClick={() => setFilter(f)}
+                className={`px-2.5 py-1 text-[10px] font-medium capitalize ${filter === f ? "bg-ai-blue/20 text-ai-blue" : "bg-surface-light/30 text-gray-500 hover:text-gray-300"}`}>{f}</button>
+            ))}
+          </div>
+        </div>
+        {loading ? <Skeleton className="h-20 rounded-lg" /> : actions.length === 0 ? (
+          <p className="text-xs text-gray-500 text-center py-6">No {filter} actions</p>
+        ) : (
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {actions.map((a) => (
+              <div key={a.id} className="flex items-start gap-3 p-3 rounded-lg border border-border/40 bg-surface/50">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-bold text-white">{a.ticker}</span>
+                    <Badge className={`text-[9px] ${a.action_type === "BUY" || a.action_type === "ADD" ? "bg-profit/15 text-profit" : a.action_type === "CLOSE" || a.action_type === "SELL" ? "bg-loss/15 text-loss" : "bg-amber-500/15 text-amber-400"}`}>{a.action_type}</Badge>
+                    <span className="text-[10px] text-gray-500 font-mono">conf {a.confidence}/10</span>
+                    <span className="text-[10px] text-gray-600">{formatTimeAgo(a.created_at)}</span>
+                  </div>
+                  <p className="text-xs text-gray-400">{a.reasoning}</p>
+                </div>
+                {a.status === "pending" && (
+                  <div className="flex flex-col gap-1">
+                    <Button size="sm" onClick={() => handleApprove(a.id)} className="text-[10px] h-6 bg-profit/20 text-profit border-profit/20 hover:bg-profit/30">Approve</Button>
+                    <Button size="sm" onClick={() => handleReject(a.id)} className="text-[10px] h-6 bg-loss/20 text-loss border-loss/20 hover:bg-loss/30">Reject</Button>
+                  </div>
+                )}
+                {a.status !== "pending" && (
+                  <Badge className={`text-[9px] ${a.status === "approved" ? "bg-profit/15 text-profit" : a.status === "rejected" ? "bg-loss/15 text-loss" : "bg-gray-600/20 text-gray-500"}`}>{a.status}</Badge>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Holdings CRUD (inline) ──────────────────────────────────────────
+
+function HoldingsManager({ portfolioId, holdings, onRefresh }: { portfolioId: string; holdings: PortfolioHolding[]; onRefresh: () => void }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [ticker, setTicker] = useState("");
+  const [dir, setDir] = useState<"long" | "short">("long");
+  const [price, setPrice] = useState("");
+  const [qty, setQty] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
+  const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
+
+  const handleAdd = async () => {
+    if (!ticker || !price || !qty) return;
+    setAdding(true);
+    try {
+      await api.createHolding({
+        portfolio_id: portfolioId,
+        ticker: ticker.toUpperCase(),
+        direction: dir,
+        entry_price: parseFloat(price),
+        qty: parseFloat(qty),
+        entry_date: new Date().toISOString().slice(0, 10),
+      });
+      setTicker(""); setPrice(""); setQty(""); setShowAdd(false);
+      onRefresh();
+    } catch {}
+    setAdding(false);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Remove this holding?")) return;
+    try { await api.deleteHolding(id); onRefresh(); } catch {}
+  };
+
+  return (
+    <Card className="bg-surface-light/20 border-border">
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>
+            Holdings <span className="text-gray-500 font-normal">({holdings.length})</span>
+          </h3>
+          <div className="flex items-center gap-3">
+            {holdings.length > 0 && (
+              <span className={`text-xs font-mono ${pnlColor(totalUnrealized)}`}>
+                {formatCurrency(totalValue)} ({formatPercent(totalValue > 0 ? totalUnrealized / totalValue * 100 : 0)})
+              </span>
+            )}
+            <Button size="sm" variant="outline" onClick={() => setShowAdd(!showAdd)} className="text-[10px] h-7">
+              {showAdd ? "Cancel" : "+ Add Holding"}
+            </Button>
+          </div>
+        </div>
+
+        {showAdd && (
+          <div className="flex flex-wrap gap-2 mb-4 p-3 rounded-lg border border-border/40 bg-surface/50">
+            <Input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="Ticker" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
+            <div className="flex rounded-md overflow-hidden border border-border">
+              <button onClick={() => setDir("long")} className={`px-2.5 py-1 text-[10px] ${dir === "long" ? "bg-profit/20 text-profit" : "bg-surface-light/30 text-gray-500"}`}>Long</button>
+              <button onClick={() => setDir("short")} className={`px-2.5 py-1 text-[10px] ${dir === "short" ? "bg-loss/20 text-loss" : "bg-surface-light/30 text-gray-500"}`}>Short</button>
+            </div>
+            <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty" type="number" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
+            <Button size="sm" onClick={handleAdd} disabled={adding || !ticker || !price || !qty} className="h-8 text-[10px]">
+              {adding ? "Adding..." : "Add"}
+            </Button>
+          </div>
+        )}
+
+        {holdings.length === 0 ? (
+          <p className="text-xs text-gray-500 text-center py-6">No holdings — add manually or receive via webhooks</p>
+        ) : (
+          <div className="space-y-1.5">
+            {holdings.map((h) => (
+              <div key={h.id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 border-b border-border/30 last:border-0 group">
+                <span className="text-white font-semibold w-12">{h.ticker}</span>
+                <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>{h.direction.toUpperCase()}</Badge>
+                <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
+                <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{h.source}</Badge>
+                <div className="ml-auto flex items-center gap-2">
+                  {h.unrealized_pnl != null && (
+                    <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>{formatPercent(h.unrealized_pnl_pct ?? 0)}</span>
+                  )}
+                  <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════
@@ -753,21 +921,28 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
       )}
 
       {/* Content Tabs */}
-      <Tabs defaultValue="positions" className="w-full">
+      <Tabs defaultValue="holdings" className="w-full">
         <TabsList className="bg-surface-light/30 border border-border p-1 rounded-lg">
+          <TabsTrigger value="holdings" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+            Holdings ({holdings?.length ?? 0})
+          </TabsTrigger>
           <TabsTrigger value="positions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Positions ({positions?.length ?? 0})
           </TabsTrigger>
           <TabsTrigger value="trades" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Trades ({trades?.length ?? 0})
           </TabsTrigger>
-          <TabsTrigger value="holdings" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
-            Holdings ({holdings?.length ?? 0})
+          <TabsTrigger value="actions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+            Actions
           </TabsTrigger>
           <TabsTrigger value="henry" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Henry
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="holdings" className="mt-4 space-y-4">
+          <HoldingsManager portfolioId={portfolioId} holdings={holdings || []} onRefresh={() => {}} />
+        </TabsContent>
 
         <TabsContent value="positions" className="mt-4 space-y-4">
           <OpenPositions positions={positions || []} />
@@ -777,8 +952,8 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
           <TradeHistorySection trades={trades || []} />
         </TabsContent>
 
-        <TabsContent value="holdings" className="mt-4 space-y-4">
-          <HoldingsSummary holdings={holdings || []} />
+        <TabsContent value="actions" className="mt-4 space-y-4">
+          <ActionQueue portfolioId={portfolioId} />
         </TabsContent>
 
         <TabsContent value="henry" className="mt-4 space-y-4">

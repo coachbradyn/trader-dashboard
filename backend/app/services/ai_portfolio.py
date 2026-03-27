@@ -28,12 +28,76 @@ from app.services.price_service import price_service
 
 logger = logging.getLogger(__name__)
 
-# Confidence → allocation mapping (% of AI portfolio equity)
-CONFIDENCE_ALLOCATION = {
+# Default confidence → allocation mapping (% of AI portfolio equity)
+DEFAULT_CONFIDENCE_ALLOCATION = {
     10: 0.05, 9: 0.05, 8: 0.05,
     7: 0.03, 6: 0.03, 5: 0.03,
 }
-MIN_CONFIDENCE = 5  # Skip signals below this
+DEFAULT_MIN_CONFIDENCE = 5
+DEFAULT_MIN_ADX = 20
+DEFAULT_REQUIRE_STOP = True
+DEFAULT_REWARD_RISK_RATIO = 2.0
+
+# In-memory config cache — refreshed from DB on startup / settings change
+_ai_config: dict | None = None
+
+
+def get_ai_config() -> dict:
+    """Return the current AI trading config (cached in memory)."""
+    if _ai_config:
+        return _ai_config
+    return {
+        "min_confidence": DEFAULT_MIN_CONFIDENCE,
+        "high_alloc_pct": 5.0,
+        "mid_alloc_pct": 3.0,
+        "min_adx": DEFAULT_MIN_ADX,
+        "require_stop": DEFAULT_REQUIRE_STOP,
+        "reward_risk_ratio": DEFAULT_REWARD_RISK_RATIO,
+    }
+
+
+async def load_ai_config_from_db() -> dict:
+    """Load AI trading config from henry_cache table (or return defaults)."""
+    global _ai_config
+    try:
+        from app.models.henry_cache import HenryCache
+        async with async_session() as db:
+            result = await db.execute(
+                select(HenryCache).where(HenryCache.cache_key == "ai_trading_config")
+            )
+            entry = result.scalar_one_or_none()
+            if entry and entry.content:
+                _ai_config = entry.content
+                return _ai_config
+    except Exception:
+        pass
+    _ai_config = get_ai_config()
+    return _ai_config
+
+
+async def save_ai_config(config: dict) -> None:
+    """Save AI trading config to DB and update in-memory cache."""
+    global _ai_config
+    _ai_config = config
+    try:
+        from app.models.henry_cache import HenryCache
+        async with async_session() as db:
+            result = await db.execute(
+                select(HenryCache).where(HenryCache.cache_key == "ai_trading_config")
+            )
+            entry = result.scalar_one_or_none()
+            if entry:
+                entry.content = config
+                entry.generated_at = datetime.utcnow()
+            else:
+                db.add(HenryCache(
+                    cache_key="ai_trading_config",
+                    cache_type="config",
+                    content=config,
+                ))
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to save AI config: {e}")
 
 
 async def get_ai_portfolio(db: AsyncSession) -> Portfolio | None:
@@ -271,10 +335,14 @@ async def evaluate_signal_for_ai_portfolio(
             except Exception:
                 pass
 
-            # Max positions / concentration limits from portfolio settings
+            # Max positions / concentration limits from portfolio settings + AI config
+            cfg = get_ai_config()
             max_positions = portfolio.max_open_positions or 15
             max_pct_per_trade = portfolio.max_pct_per_trade or 10.0
             max_dd = portfolio.max_drawdown_pct or 20.0
+            min_adx = cfg.get("min_adx", DEFAULT_MIN_ADX)
+            require_stop = cfg.get("require_stop", DEFAULT_REQUIRE_STOP)
+            rr_ratio = cfg.get("reward_risk_ratio", DEFAULT_REWARD_RISK_RATIO)
 
             # Current drawdown
             snap_result = await db.execute(
@@ -287,9 +355,9 @@ async def evaluate_signal_for_ai_portfolio(
             prompt = f"""You are Henry, managing an AI paper portfolio. Your goal is to MAXIMIZE RISK-ADJUSTED RETURNS — grow equity while protecting against drawdowns.
 
 DECISION FRAMEWORK:
-1. ONLY take trades where the expected reward clearly exceeds the risk (aim for 2:1+ reward/risk)
-2. Use the stop loss from the signal — if none provided, SKIP (no stop = unmanageable risk)
-3. SKIP if ADX < 20 (no trend) unless signal strength is exceptionally high (>80)
+1. ONLY take trades where the expected reward clearly exceeds the risk (aim for {rr_ratio}:1+ reward/risk)
+2. {"Use the stop loss from the signal — if none provided, SKIP (no stop = unmanageable risk)" if require_stop else "Stop loss preferred but not required — size down if no stop provided"}
+3. SKIP if ADX < {min_adx} (no trend) unless signal strength is exceptionally high (>80)
 4. SKIP if this ticker already has an open position in the same direction (no pyramiding by default)
 5. SKIP if portfolio would exceed {max_positions} open positions
 6. SKIP if portfolio concentration in this ticker would exceed {max_pct_per_trade}%
@@ -359,6 +427,9 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
             reasoning = result.get("reasoning", "")
 
             # Log the decision as a portfolio action
+            cfg = get_ai_config()
+            min_conf = cfg.get("min_confidence", DEFAULT_MIN_CONFIDENCE)
+
             action_record = PortfolioAction(
                 portfolio_id=portfolio.id,
                 ticker=trade.ticker,
@@ -370,15 +441,17 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 trigger_ref=trade.id,
                 current_price=trade.entry_price,
                 priority_score=confidence * 2.0,
-                status="approved" if action == "BUY" and confidence >= MIN_CONFIDENCE else "rejected",
+                status="approved" if action == "BUY" and confidence >= min_conf else "rejected",
                 resolved_at=datetime.utcnow(),
-                reject_reason="Low confidence or SKIP" if action == "SKIP" or confidence < MIN_CONFIDENCE else None,
+                reject_reason="Low confidence or SKIP" if action == "SKIP" or confidence < min_conf else None,
             )
             db.add(action_record)
 
             # Auto-execute if BUY and sufficient confidence
-            if action == "BUY" and confidence >= MIN_CONFIDENCE:
-                alloc_pct = CONFIDENCE_ALLOCATION.get(confidence, 0.03)
+            if action == "BUY" and confidence >= min_conf:
+                high_alloc = cfg.get("high_alloc_pct", 5.0) / 100.0
+                mid_alloc = cfg.get("mid_alloc_pct", 3.0) / 100.0
+                alloc_pct = high_alloc if confidence >= 8 else mid_alloc
                 alloc_amount = equity * alloc_pct
                 qty = alloc_amount / trade.entry_price if trade.entry_price > 0 else 0
 
