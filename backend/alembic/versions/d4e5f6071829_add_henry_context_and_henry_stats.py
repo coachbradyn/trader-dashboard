@@ -17,9 +17,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create henry_context table
-    op.create_table(
-        'henry_context',
+    from sqlalchemy import inspect
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    existing_tables = inspector.get_table_names()
+
+    # Create henry_context table (safe if already exists)
+    if 'henry_context' not in existing_tables:
+        op.create_table(
+            'henry_context',
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('ticker', sa.String(20), nullable=True),
         sa.Column('strategy', sa.String(50), nullable=True),
@@ -32,15 +38,16 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(), default=sa.func.now()),
         sa.Column('expires_at', sa.DateTime(), nullable=True),
     )
-    op.create_index('ix_henry_context_ticker', 'henry_context', ['ticker'])
-    op.create_index('ix_henry_context_strategy', 'henry_context', ['strategy'])
-    op.create_index('ix_henry_context_context_type', 'henry_context', ['context_type'])
-    op.create_index('ix_henry_context_created_at', 'henry_context', ['created_at'])
-    op.create_index('ix_henry_context_ticker_strategy_created', 'henry_context', ['ticker', 'strategy', 'created_at'])
+        op.create_index('ix_henry_context_ticker', 'henry_context', ['ticker'])
+        op.create_index('ix_henry_context_strategy', 'henry_context', ['strategy'])
+        op.create_index('ix_henry_context_context_type', 'henry_context', ['context_type'])
+        op.create_index('ix_henry_context_created_at', 'henry_context', ['created_at'])
+        op.create_index('ix_henry_context_ticker_strategy_created', 'henry_context', ['ticker', 'strategy', 'created_at'])
 
-    # Create henry_stats table
-    op.create_table(
-        'henry_stats',
+    # Create henry_stats table (safe if already exists)
+    if 'henry_stats' not in existing_tables:
+        op.create_table(
+            'henry_stats',
         sa.Column('id', sa.String(36), primary_key=True),
         sa.Column('stat_type', sa.String(50), nullable=False),
         sa.Column('ticker', sa.String(20), nullable=True),
@@ -50,11 +57,11 @@ def upgrade() -> None:
         sa.Column('period_days', sa.Integer(), default=30),
         sa.Column('computed_at', sa.DateTime(), default=sa.func.now()),
     )
-    op.create_index('ix_henry_stats_stat_type', 'henry_stats', ['stat_type'])
-    op.create_index('ix_henry_stats_ticker', 'henry_stats', ['ticker'])
-    op.create_index('ix_henry_stats_strategy', 'henry_stats', ['strategy'])
-    op.create_index('ix_henry_stats_computed_at', 'henry_stats', ['computed_at'])
-    op.create_index('ix_henry_stats_type_ticker_strategy', 'henry_stats', ['stat_type', 'ticker', 'strategy'])
+        op.create_index('ix_henry_stats_stat_type', 'henry_stats', ['stat_type'])
+        op.create_index('ix_henry_stats_ticker', 'henry_stats', ['ticker'])
+        op.create_index('ix_henry_stats_strategy', 'henry_stats', ['strategy'])
+        op.create_index('ix_henry_stats_computed_at', 'henry_stats', ['computed_at'])
+        op.create_index('ix_henry_stats_type_ticker_strategy', 'henry_stats', ['stat_type', 'ticker', 'strategy'])
 
 
 def downgrade() -> None:
