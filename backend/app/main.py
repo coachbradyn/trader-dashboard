@@ -18,8 +18,85 @@ from app.models import Trade, Trader, ConflictResolution
 from app.models.market_summary import MarketSummary
 
 
+async def _ensure_schema():
+    """Ensure critical columns/tables exist even if Alembic migration failed."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from sqlalchemy import text, inspect
+        from app.database import engine
+        async with engine.begin() as conn:
+            # Check if strategy_description column exists on traders
+            def _check_and_fix(connection):
+                insp = inspect(connection)
+                # Add strategy_description to traders if missing
+                cols = [c["name"] for c in insp.get_columns("traders")]
+                if "strategy_description" not in cols:
+                    connection.execute(text("ALTER TABLE traders ADD COLUMN strategy_description TEXT"))
+                    logger.info("Added missing column: traders.strategy_description")
+
+                # Create henry_memory table if missing
+                tables = insp.get_table_names()
+                if "henry_memory" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE henry_memory (
+                            id VARCHAR(36) PRIMARY KEY,
+                            memory_type VARCHAR(30) NOT NULL,
+                            strategy_id VARCHAR(50),
+                            ticker VARCHAR(10),
+                            content TEXT NOT NULL,
+                            importance INTEGER DEFAULT 5,
+                            reference_count INTEGER DEFAULT 0,
+                            validated BOOLEAN,
+                            source VARCHAR(30) DEFAULT 'system',
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            updated_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    logger.info("Created missing table: henry_memory")
+
+                if "henry_context" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE henry_context (
+                            id VARCHAR(36) PRIMARY KEY,
+                            ticker VARCHAR(20),
+                            strategy VARCHAR(50),
+                            portfolio_id VARCHAR(36) REFERENCES portfolios(id),
+                            context_type VARCHAR(30) NOT NULL,
+                            content TEXT NOT NULL,
+                            confidence INTEGER,
+                            action_id VARCHAR(36),
+                            trade_id VARCHAR(36),
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            expires_at TIMESTAMP
+                        )
+                    """))
+                    logger.info("Created missing table: henry_context")
+
+                if "henry_stats" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE henry_stats (
+                            id VARCHAR(36) PRIMARY KEY,
+                            stat_type VARCHAR(50) NOT NULL,
+                            ticker VARCHAR(20),
+                            strategy VARCHAR(50),
+                            portfolio_id VARCHAR(36) REFERENCES portfolios(id),
+                            data JSON NOT NULL,
+                            period_days INTEGER DEFAULT 30,
+                            computed_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    logger.info("Created missing table: henry_stats")
+
+            await conn.run_sync(_check_and_fix)
+    except Exception as e:
+        logger.warning(f"Schema check failed (non-blocking): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure DB schema is up to date (fallback if Alembic failed)
+    await _ensure_schema()
     # Start background price poller
     task = asyncio.create_task(price_service.run())
     # Start scheduler for summaries
