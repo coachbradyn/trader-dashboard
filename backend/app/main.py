@@ -155,6 +155,58 @@ async def _ensure_schema():
         logger.warning(f"Schema check failed (non-blocking): {e}")
 
 
+async def _sync_holdings_to_watchlist():
+    """On startup, ensure all tickers from holdings and open trades are on the watchlist."""
+    import logging
+    _logger = logging.getLogger(__name__)
+    try:
+        from app.models.portfolio_holding import PortfolioHolding
+        from app.models.watchlist_ticker import WatchlistTicker
+
+        async with async_session() as db:
+            # Get all unique tickers from active holdings
+            holding_result = await db.execute(
+                select(PortfolioHolding.ticker)
+                .where(PortfolioHolding.is_active == True)
+                .distinct()
+            )
+            holding_tickers = {row[0] for row in holding_result.all()}
+
+            # Get all unique tickers from open trades
+            trade_result = await db.execute(
+                select(Trade.ticker)
+                .where(Trade.status == "open", Trade.is_simulated == False)
+                .distinct()
+            )
+            trade_tickers = {row[0] for row in trade_result.all()}
+
+            all_tickers = holding_tickers | trade_tickers
+            if not all_tickers:
+                return
+
+            # Get existing watchlist tickers
+            wl_result = await db.execute(select(WatchlistTicker))
+            existing = {wt.ticker: wt for wt in wl_result.scalars().all()}
+
+            added = 0
+            reactivated = 0
+            for ticker in all_tickers:
+                if ticker in existing:
+                    if not existing[ticker].is_active:
+                        existing[ticker].is_active = True
+                        existing[ticker].removed_at = None
+                        reactivated += 1
+                else:
+                    db.add(WatchlistTicker(ticker=ticker))
+                    added += 1
+
+            if added or reactivated:
+                await db.commit()
+                _logger.info(f"Watchlist sync: added {added}, reactivated {reactivated} tickers from holdings/trades")
+    except Exception as e:
+        _logger.warning(f"Watchlist sync failed (non-blocking): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Ensure DB schema is up to date (fallback if Alembic failed)
@@ -174,6 +226,11 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.ai_portfolio import load_ai_config_from_db
         await load_ai_config_from_db()
+    except Exception:
+        pass
+    # Sync existing holding tickers and traded tickers to watchlist
+    try:
+        await _sync_holdings_to_watchlist()
     except Exception:
         pass
     yield

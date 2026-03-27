@@ -450,6 +450,49 @@ async def refresh_summary(ticker: str, db: AsyncSession = Depends(get_db)):
     return {"status": "generating", "ticker": ticker}
 
 
+# ── POST /watchlist/sync — sync holdings/trades to watchlist ──────────────
+
+@router.post("/sync")
+async def sync_watchlist(db: AsyncSession = Depends(get_db)):
+    """Sync all tickers from active holdings and open trades to the watchlist."""
+    from app.models.portfolio_holding import PortfolioHolding
+
+    # Get all unique tickers from active holdings
+    holding_result = await db.execute(
+        select(PortfolioHolding.ticker)
+        .where(PortfolioHolding.is_active == True)
+        .distinct()
+    )
+    holding_tickers = {row[0] for row in holding_result.all()}
+
+    # Get all unique tickers from open trades
+    trade_result = await db.execute(
+        select(Trade.ticker)
+        .where(Trade.status == "open", Trade.is_simulated == False)
+        .distinct()
+    )
+    trade_tickers = {row[0] for row in trade_result.all()}
+
+    all_tickers = holding_tickers | trade_tickers
+
+    wl_result = await db.execute(select(WatchlistTicker))
+    existing = {wt.ticker: wt for wt in wl_result.scalars().all()}
+
+    added = 0
+    for ticker in all_tickers:
+        if ticker in existing:
+            if not existing[ticker].is_active:
+                existing[ticker].is_active = True
+                existing[ticker].removed_at = None
+                added += 1
+        else:
+            db.add(WatchlistTicker(ticker=ticker))
+            added += 1
+
+    await db.commit()
+    return {"synced": added, "total_tickers": len(all_tickers)}
+
+
 # ── GET /watchlist/strategies — list available strategies dynamically ─────
 
 @router.get("/strategies/list")

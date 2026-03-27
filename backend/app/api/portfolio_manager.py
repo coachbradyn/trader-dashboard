@@ -29,16 +29,24 @@ router = APIRouter(prefix="/portfolio-manager", tags=["portfolio-manager"])
 def parse_backtest_filename(filename: str) -> dict:
     """
     Parse TradingView backtest CSV filename.
-    Pattern: {STRATEGY}_{VERSION}_{EXCHANGE}_{TICKER}_{DATE}.csv
+    Supported patterns:
+      STRATEGY_VERSION_EXCHANGE_TICKER_DATE.csv  (full)
+      STRATEGY_VERSION_TICKER_DATE.csv           (no exchange)
+      STRATEGY_EXCHANGE_TICKER_DATE.csv          (no version)
+      STRATEGY_TICKER_DATE.csv                   (minimal)
+      STRATEGY_VERSION_EXCHANGE_TICKER.csv       (no date)
     Example: HENRY_v3.8_NASDAQ_NVDA_2026-03-17.csv
     """
     name = filename.rsplit(".", 1)[0]  # strip .csv
     parts = name.split("_")
 
-    if len(parts) < 4:
-        raise ValueError(f"Cannot parse filename '{filename}'. Expected pattern: STRATEGY_VERSION_EXCHANGE_TICKER_DATE.csv")
+    if len(parts) < 2:
+        raise ValueError(f"Cannot parse filename '{filename}'. Expected at least STRATEGY_TICKER.csv")
 
-    # Try to find version (starts with 'v')
+    # Known exchange names to distinguish exchange from ticker
+    EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS", "OTC", "TSX", "LSE", "CBOE", "CME", "NYMEX", "COMEX", "CBOT"}
+
+    # Try to find version (starts with 'v' followed by digit)
     version_idx = None
     for i, p in enumerate(parts):
         if re.match(r"^v\d", p, re.IGNORECASE):
@@ -54,15 +62,33 @@ def parse_backtest_filename(filename: str) -> dict:
         strategy_version = None
         remaining = parts[1:]
 
-    # Last part might be a date (YYYY-MM-DD), strip it
-    if remaining and re.match(r"^\d{4}-\d{2}-\d{2}$", remaining[-1]):
+    # Strip date parts from the end (YYYY-MM-DD or individual YYYY, MM, DD segments)
+    # Handle both "2026-03-17" and "2026_03_17" formats
+    while remaining and re.match(r"^\d{4}-\d{2}-\d{2}$", remaining[-1]):
+        remaining = remaining[:-1]
+    # Also strip trailing numeric segments that look like date parts (MM, DD, YYYY)
+    while len(remaining) > 1 and re.match(r"^\d{1,4}$", remaining[-1]):
         remaining = remaining[:-1]
 
+    # Now remaining should be [EXCHANGE?, TICKER] or [TICKER]
+    # Identify exchange vs ticker by checking against known exchange names
+    exchange = None
+    ticker = None
+
     if len(remaining) >= 2:
-        exchange = remaining[0]
-        ticker = remaining[1]
+        if remaining[0].upper() in EXCHANGES:
+            exchange = remaining[0]
+            ticker = remaining[1]
+        else:
+            # First part isn't a known exchange — treat it as ticker, ignore rest
+            ticker = remaining[0]
     elif len(remaining) == 1:
-        exchange = None
+        # Single part — it's either an exchange (bug) or a ticker
+        if remaining[0].upper() in EXCHANGES:
+            raise ValueError(
+                f"Filename '{filename}' appears to have an exchange ({remaining[0]}) but no ticker. "
+                f"Expected: STRATEGY_VERSION_EXCHANGE_TICKER_DATE.csv"
+            )
         ticker = remaining[0]
     else:
         raise ValueError(f"Cannot extract ticker from filename '{filename}'")
@@ -71,7 +97,7 @@ def parse_backtest_filename(filename: str) -> dict:
         "strategy_name": strategy_name,
         "strategy_version": strategy_version,
         "exchange": exchange,
-        "ticker": ticker,
+        "ticker": ticker.upper(),
     }
 
 
