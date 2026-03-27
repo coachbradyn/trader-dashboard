@@ -90,6 +90,11 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
     await db.commit()
     await db.refresh(alert)
 
+    # Invalidate cached Henry analysis for this ticker
+    from app.services.henry_cache import invalidate_by_ticker
+    await invalidate_by_ticker(db, alert.ticker)
+    await db.commit()
+
     # Check if this ticker is on the watchlist and trigger staleness check
     import asyncio
     from app.services.watchlist_ai import check_and_regenerate_if_stale
@@ -213,12 +218,14 @@ async def get_latest_analysis(db: AsyncSession = Depends(get_db)):
 async def analyze_ticker(
     ticker: str,
     body: TickerAnalysisRequest | None = None,
+    force_refresh: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger a live Claude analysis for a specific ticker when its card is opened."""
+    """Trigger a Claude analysis for a specific ticker. Returns cached if fresh."""
     from sqlalchemy.orm import selectinload
     from app.models.trade import Trade as TradeModel
     from app.services.screener_ai import analyze_single_ticker
+    from app.services.henry_cache import get_cached, set_cached, _make_hash
 
     hours = body.hours if body else 24
     ticker = ticker.upper()
@@ -247,6 +254,15 @@ async def analyze_ticker(
         }
         for a in alerts
     ]
+
+    # Check cache — hash the alert IDs to detect new data
+    cache_key = f"ticker_analysis:{ticker}"
+    data_hash = _make_hash([a.id for a in alerts])
+
+    if not force_refresh:
+        cached = await get_cached(db, cache_key, max_age_hours=4, data_hash=data_hash)
+        if cached:
+            return TickerAnalysisResponse(ticker=ticker, generated_at=datetime.utcnow(), **cached)
 
     # 2. Fetch chart data
     chart_data = await get_daily_chart(ticker, 60)
@@ -309,6 +325,10 @@ async def analyze_ticker(
         portfolio_positions=positions_list,
         trade_history=history_list,
     )
+
+    # 6. Cache the result
+    await set_cached(db, cache_key, "ticker_analysis", analysis, ticker=ticker, data_hash=data_hash)
+    await db.commit()
 
     return TickerAnalysisResponse(
         ticker=ticker,

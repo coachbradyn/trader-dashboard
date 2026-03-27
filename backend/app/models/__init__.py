@@ -19,6 +19,7 @@ from app.models.henry_context import HenryContext
 from app.models.henry_stats import HenryStats
 from app.models.watchlist_ticker import WatchlistTicker
 from app.models.watchlist_summary import WatchlistSummary
+from app.models.henry_cache import HenryCache
 
 __all__ = [
     "Trader",
@@ -42,4 +43,5 @@ __all__ = [
     "HenryStats",
     "WatchlistTicker",
     "WatchlistSummary",
+    "HenryCache",
 ]

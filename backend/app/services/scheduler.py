@@ -23,6 +23,16 @@ async def _generate_morning_summary():
     """Generate morning market summary."""
     logger.info("Generating morning summary...")
     try:
+        # Invalidate stale caches for the new trading day
+        from app.services.henry_cache import invalidate_by_type
+        from app.database import async_session as _as
+        async with _as() as cdb:
+            await invalidate_by_type(cdb, "ticker_analysis")
+            await invalidate_by_type(cdb, "signal_eval")
+            await cdb.commit()
+    except Exception:
+        pass
+    try:
         from app.database import async_session
         from app.models import Trade, IndicatorAlert, MarketSummary
         from app.models.indicator_alert import IndicatorAlert
@@ -279,6 +289,13 @@ async def _run_daily_portfolio_review():
     try:
         from app.database import async_session
         from app.services.portfolio_analysis import scheduled_review
+        from app.services.henry_cache import invalidate_by_type
+
+        # Invalidate cached reviews so fresh analysis runs
+        async with async_session() as db:
+            await invalidate_by_type(db, "scheduled_review")
+            await invalidate_by_type(db, "signal_eval")
+            await db.commit()
 
         async with async_session() as db:
             await scheduled_review(db)
@@ -336,6 +353,14 @@ async def _cleanup_expired_context():
 
             await db.commit()
             logger.info("Henry context cleanup complete")
+
+        # Also clean up old henry_cache entries
+        from app.services.henry_cache import cleanup_old_cache
+        async with async_session() as db:
+            deleted = await cleanup_old_cache(db, days=7)
+            await db.commit()
+            if deleted:
+                logger.info(f"Henry cache cleanup: removed {deleted} old entries")
 
     except Exception as e:
         logger.error(f"Henry context cleanup failed: {e}")

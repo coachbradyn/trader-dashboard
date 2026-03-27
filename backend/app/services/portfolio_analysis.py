@@ -192,14 +192,26 @@ Based on the backtest data and current holdings, should the portfolio:
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"action_type": "BUY" or "ADD" or "TRIM" or "CLOSE" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences max", "suggested_qty": number_or_null}}"""
 
-        raw = await _call_claude_async(prompt, max_tokens=500, ticker=ticker, strategy=strategy_slug, scope="signal")
+        # Check cache — skip Claude if we recently evaluated this exact signal
+        from app.services.henry_cache import get_cached, set_cached, _make_hash
+        cache_key = f"signal_eval:{strategy_slug}:{ticker}:{direction}"
+        sig_hash = _make_hash({"price": trade.entry_price, "sig": trade.entry_signal_strength, "adx": trade.entry_adx})
 
-        try:
-            clean = raw.strip().replace("```json", "").replace("```", "").strip()
-            result = json.loads(clean)
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse signal evaluation: {raw[:200]}")
-            return
+        cached = await get_cached(db, cache_key, max_age_hours=1, data_hash=sig_hash)
+        if cached:
+            result = cached
+        else:
+            raw = await _call_claude_async(prompt, max_tokens=500, ticker=ticker, strategy=strategy_slug, scope="signal")
+
+            try:
+                clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                result = json.loads(clean)
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse signal evaluation: {raw[:200]}")
+                return
+
+            # Cache the result
+            await set_cached(db, cache_key, "signal_eval", result, ticker=ticker, strategy=strategy_slug, data_hash=sig_hash)
 
         action_type = result.get("action_type", "SKIP")
         if action_type == "SKIP":
@@ -556,17 +568,29 @@ Respond with a JSON array of recommended actions (or empty array if none needed)
 Each action: {{"action_type": "BUY|SELL|TRIM|ADD|CLOSE|REBALANCE", "ticker": "X", "direction": "long|short", "confidence": 1-10, "reasoning": "2-3 sentences", "suggested_qty": number_or_null}}
 No markdown, no backticks. Just the JSON array."""
 
-            raw = await _call_claude_async(prompt, max_tokens=1500, scope="review")
+            # Check cache for recent review
+            from app.services.henry_cache import get_cached, set_cached, _make_hash
+            review_cache_key = f"scheduled_review:{portfolio.id}"
+            review_hash = _make_hash({"holdings": holdings_text[:200], "equity": round(equity, 2)})
 
-            try:
-                clean = raw.strip().replace("```json", "").replace("```", "").strip()
-                actions = json.loads(clean)
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse scheduled review: {raw[:200]}")
-                continue
+            cached_review = await get_cached(db, review_cache_key, max_age_hours=12, data_hash=review_hash)
+            if cached_review:
+                actions = cached_review
+            else:
+                raw = await _call_claude_async(prompt, max_tokens=1500, scope="review")
 
-            if not isinstance(actions, list):
-                actions = [actions]
+                try:
+                    clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                    actions = json.loads(clean)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse scheduled review: {raw[:200]}")
+                    continue
+
+                if not isinstance(actions, list):
+                    actions = [actions]
+
+                # Cache the review result
+                await set_cached(db, review_cache_key, "scheduled_review", actions, data_hash=review_hash)
 
             for a in actions:
                 action_type = a.get("action_type", "SKIP")

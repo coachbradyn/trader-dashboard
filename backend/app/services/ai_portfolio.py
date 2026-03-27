@@ -329,18 +329,30 @@ YOUR TRACK RECORD: {hit_rate_text}
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences explaining your decision with specific numbers"}}"""
 
-            from app.services.ai_service import _call_claude_async
-            raw = await _call_claude_async(
-                prompt, max_tokens=400,
-                ticker=trade.ticker, strategy=trader.trader_id, scope="signal"
-            )
+            # Check cache — skip Claude if we recently evaluated same signal for AI portfolio
+            from app.services.henry_cache import get_cached, set_cached, _make_hash
+            ai_cache_key = f"ai_signal:{trader.trader_id}:{trade.ticker}:{trade.direction}"
+            ai_sig_hash = _make_hash({"price": trade.entry_price, "sig": trade.entry_signal_strength, "adx": trade.entry_adx})
 
-            try:
-                clean = raw.strip().replace("```json", "").replace("```", "").strip()
-                result = json.loads(clean)
-            except json.JSONDecodeError:
-                logger.warning(f"AI portfolio: failed to parse response for {trade.ticker}")
-                result = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
+            cached_result = await get_cached(db, ai_cache_key, max_age_hours=1, data_hash=ai_sig_hash)
+            if cached_result:
+                result = cached_result
+            else:
+                from app.services.ai_service import _call_claude_async
+                raw = await _call_claude_async(
+                    prompt, max_tokens=400,
+                    ticker=trade.ticker, strategy=trader.trader_id, scope="signal"
+                )
+
+                try:
+                    clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                    result = json.loads(clean)
+                except json.JSONDecodeError:
+                    logger.warning(f"AI portfolio: failed to parse response for {trade.ticker}")
+                    result = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
+
+                # Cache it
+                await set_cached(db, ai_cache_key, "signal_eval", result, ticker=trade.ticker, strategy=trader.trader_id, data_hash=ai_sig_hash)
 
             action = result.get("action", "SKIP").upper()
             confidence = result.get("confidence", 0)

@@ -131,6 +131,25 @@ async def _ensure_schema():
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_watchlist_summaries_ticker ON watchlist_summaries (ticker)"))
                     logger.info("Created missing table: watchlist_summaries")
 
+                if "henry_cache" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE henry_cache (
+                            id VARCHAR(36) PRIMARY KEY,
+                            cache_key VARCHAR(200) NOT NULL UNIQUE,
+                            cache_type VARCHAR(50) NOT NULL,
+                            content JSON NOT NULL,
+                            ticker VARCHAR(20),
+                            strategy VARCHAR(50),
+                            is_stale BOOLEAN DEFAULT FALSE,
+                            generated_at TIMESTAMP DEFAULT NOW(),
+                            data_hash VARCHAR(64)
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_cache_cache_key ON henry_cache (cache_key)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_cache_cache_type ON henry_cache (cache_type)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_cache_ticker ON henry_cache (ticker)"))
+                    logger.info("Created missing table: henry_cache")
+
             await conn.run_sync(_check_and_fix)
     except Exception as e:
         logger.warning(f"Schema check failed (non-blocking): {e}")
