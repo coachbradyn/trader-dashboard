@@ -9,9 +9,31 @@ import { Input } from "@/components/ui/input";
 
 const SUGGESTIONS = [
   "Which strategy has the best Sharpe?",
-  "How does S1 perform when VIX > 20?",
   "Show me my worst trades this week",
+  "What are my open positions?",
 ];
+
+function StrategyBadges() {
+  const [strategies, setStrategies] = useState<string[]>([]);
+  useEffect(() => {
+    api.getTraders().then((traders) => {
+      setStrategies(traders.map((t) => t.trader_id));
+    }).catch(() => {});
+  }, []);
+  if (!strategies.length) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      {strategies.map((s) => (
+        <span
+          key={s}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-light/60 text-gray-500"
+        >
+          {s}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 let queryId = 0;
 
@@ -19,8 +41,15 @@ export default function AskHenry() {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<QueryHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [strategies, setStrategies] = useState<Array<{ trader_id: string; display_name: string }>>([]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api.getTraders().then((traders) => {
+      setStrategies(traders.map((t) => ({ trader_id: t.trader_id, display_name: t.display_name })));
+    }).catch(() => {});
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     if (viewportRef.current) {
@@ -89,16 +118,7 @@ export default function AskHenry() {
           </div>
           <h3 className="text-base font-semibold text-white">Ask Henry</h3>
         </div>
-        <div className="flex items-center gap-1.5">
-          {["S1-LMA", "S2-REGIME", "S3-IMPULSE", "S4-KREVERT"].map((s) => (
-            <span
-              key={s}
-              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-light/60 text-gray-500"
-            >
-              {s}
-            </span>
-          ))}
-        </div>
+        <StrategyBadges />
       </div>
 
       {/* Terminal viewport */}

@@ -18,7 +18,7 @@ const NAV_LINKS = [
   { href: "/portfolios", label: "Portfolios" },
   {
     href: "/screener",
-    label: "Screener",
+    label: "Watchlist",
     dot: "bg-amber-500",
   },
   {

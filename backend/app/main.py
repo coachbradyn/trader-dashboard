@@ -13,6 +13,7 @@ from app.api import webhooks, trades, traders, portfolios, leaderboard
 from app.api import settings as settings_router, screener as screener_router
 from app.api import portfolio_manager as pm_router
 from app.api import analytics as analytics_router
+from app.api import watchlist as watchlist_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -89,6 +90,34 @@ async def _ensure_schema():
                     """))
                     logger.info("Created missing table: henry_stats")
 
+                if "watchlist_tickers" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE watchlist_tickers (
+                            id VARCHAR(36) PRIMARY KEY,
+                            ticker VARCHAR(20) NOT NULL UNIQUE,
+                            notes TEXT,
+                            is_active BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            removed_at TIMESTAMP
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_watchlist_tickers_ticker ON watchlist_tickers (ticker)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_watchlist_tickers_is_active ON watchlist_tickers (is_active)"))
+                    logger.info("Created missing table: watchlist_tickers")
+
+                if "watchlist_summaries" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE watchlist_summaries (
+                            id VARCHAR(36) PRIMARY KEY,
+                            ticker VARCHAR(20) NOT NULL UNIQUE,
+                            summary TEXT NOT NULL,
+                            alert_count_at_generation INTEGER DEFAULT 0,
+                            generated_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_watchlist_summaries_ticker ON watchlist_summaries (ticker)"))
+                    logger.info("Created missing table: watchlist_summaries")
+
             await conn.run_sync(_check_and_fix)
     except Exception as e:
         logger.warning(f"Schema check failed (non-blocking): {e}")
@@ -103,6 +132,12 @@ async def lifespan(app: FastAPI):
     # Start scheduler for summaries
     from app.services.scheduler import start_scheduler, stop_scheduler
     start_scheduler()
+    # Refresh strategy cache for AI prompts
+    try:
+        from app.services.screener_ai import refresh_strategies_cache
+        await refresh_strategies_cache()
+    except Exception:
+        pass
     yield
     stop_scheduler()
     task.cancel()
@@ -137,6 +172,7 @@ app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(screener_router.router, prefix="/api", tags=["screener"])
 app.include_router(pm_router.router, prefix="/api", tags=["portfolio-manager"])
 app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
+app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

@@ -136,6 +136,11 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
         # Register ticker for price tracking
         price_service.add_ticker(payload.ticker)
 
+        # Check watchlist summary staleness for this ticker
+        import asyncio
+        from app.services.watchlist_ai import check_and_regenerate_if_stale
+        asyncio.create_task(check_and_regenerate_if_stale(payload.ticker))
+
         return {
             "status": "ok",
             "trade_id": trade.id,

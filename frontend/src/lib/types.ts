@@ -122,11 +122,6 @@ export interface BriefingResponse {
   cached?: boolean;
 }
 
-export interface ReviewResponse {
-  review: string;
-  trades_analyzed: number;
-}
-
 export interface QueryResponse {
   answer: string;
   trades_in_context: number;
@@ -465,4 +460,83 @@ export interface MonteCarloResponse {
   equity_histogram: HistogramBin[];
   drawdown_histogram: HistogramBin[];
   input_stats: MonteCarloInputStats;
+}
+
+// ── Watchlist Types ──────────────────────────────────────────────
+
+export interface WatchlistSignal {
+  indicator: string;
+  value: number;
+  signal: string;
+  timeframe: string | null;
+  created_at: string;
+}
+
+export interface WatchlistStrategyPosition {
+  strategy_name: string;
+  strategy_id: string;
+  direction: string;
+  entry_price: number;
+  current_price: number | null;
+  pnl_pct: number | null;
+}
+
+export interface WatchlistConsensus {
+  direction: "bullish" | "bearish" | "mixed" | "no_data";
+  bullish_count: number;
+  bearish_count: number;
+  total_signals: number;
+}
+
+export interface WatchlistCachedSummary {
+  summary: string;
+  generated_at: string;
+  is_stale: boolean;
+}
+
+export interface WatchlistTickerData {
+  id: string;
+  ticker: string;
+  notes: string | null;
+  created_at: string;
+  latest_signals: WatchlistSignal[];
+  strategy_positions: WatchlistStrategyPosition[];
+  consensus: WatchlistConsensus;
+  cached_summary: WatchlistCachedSummary | null;
+  last_alert_at: string | null;
+}
+
+export interface WatchlistTickerDetail {
+  ticker: string;
+  all_signals: Array<{
+    id: string;
+    indicator: string;
+    value: number;
+    signal: string;
+    timeframe: string | null;
+    created_at: string;
+  }>;
+  latest_signals: WatchlistSignal[];
+  strategy_positions: WatchlistStrategyPosition[];
+  trade_history: Array<{
+    strategy_name: string;
+    strategy_id: string;
+    direction: string;
+    entry_price: number;
+    exit_price: number | null;
+    pnl_pct: number;
+    exit_reason: string | null;
+    entry_time: string | null;
+    exit_time: string | null;
+  }>;
+  consensus: WatchlistConsensus;
+  cached_summary: WatchlistCachedSummary | null;
+}
+
+export interface StrategyInfo {
+  id: string;
+  trader_id: string;
+  display_name: string;
+  strategy_name: string | null;
+  description: string | null;
 }

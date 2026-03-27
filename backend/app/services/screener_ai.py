@@ -179,14 +179,10 @@ Rules:
         return {"picks": [], "market_context": {"sector_heat": "Error", "catalysts": "N/A", "noise_ratio": "N/A"}}
 
 
-TICKER_ANALYSIS_SYSTEM_PROMPT = """You are Henry, an AI trading analyst embedded in a multi-strategy trading dashboard.
+TICKER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE = """You are Henry, an AI trading analyst embedded in a multi-strategy trading dashboard.
 You are analyzing a SPECIFIC ticker based on real-time screener alerts and portfolio context.
 
-The four Pine Script strategies in this system are:
-  - S1 (LMA Momentum): Log-weighted moving average + Kalman filter trend following
-  - S2 (Regime Trend): 200 SMA + ADX trend detection as entry signals
-  - S3 (Impulse Breakout): Volume spike + candle expansion breakouts with time decay
-  - S4 (Kalman Reversion): Mean reversion when price stretches from Kalman filter
+{strategies_section}
 
 PLAY TYPE CLASSIFICATION:
 - DAILY play: Majority of alerts on intraday timeframes (1m, 5m, 15m, 1H),
@@ -200,6 +196,70 @@ PLAY TYPE CLASSIFICATION:
 You speak concisely and directly. No fluff. Use numbers to back up every claim.
 Format currency as $X.XX. Format percentages as X.X%.
 If data is insufficient, say so rather than speculating."""
+
+
+def _get_strategies_section() -> str:
+    """Dynamically build the strategies section from the traders table."""
+    try:
+        from app.database import async_session
+        from app.models.trader import Trader
+        from sqlalchemy import select
+        import asyncio
+
+        async def _fetch():
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Trader).where(Trader.is_active == True)
+                )
+                return result.scalars().all()
+
+        # Try to get the event loop; if we're in a sync context, run in a new loop
+        try:
+            loop = asyncio.get_running_loop()
+            # We're in an async context but this function is sync — use cached or fallback
+            return _CACHED_STRATEGIES_SECTION or "Strategies are loaded dynamically from the database."
+        except RuntimeError:
+            traders = asyncio.run(_fetch())
+
+        if not traders:
+            return "No strategies configured."
+
+        lines = ["The Pine Script strategies in this system are:"]
+        for t in traders:
+            desc = getattr(t, "strategy_description", None) or t.description or "No description"
+            lines.append(f"  - {t.trader_id} ({t.display_name}): {desc}")
+        section = "\n".join(lines)
+        global _CACHED_STRATEGIES_SECTION
+        _CACHED_STRATEGIES_SECTION = section
+        return section
+    except Exception:
+        return "Strategies are loaded dynamically from the database."
+
+_CACHED_STRATEGIES_SECTION: str | None = None
+
+
+async def refresh_strategies_cache() -> None:
+    """Refresh the cached strategies section. Call on startup or when traders change."""
+    from app.database import async_session
+    from app.models.trader import Trader
+    from sqlalchemy import select
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Trader).where(Trader.is_active == True)
+            )
+            traders = result.scalars().all()
+
+        if traders:
+            lines = ["The Pine Script strategies in this system are:"]
+            for t in traders:
+                desc = getattr(t, "strategy_description", None) or t.description or "No description"
+                lines.append(f"  - {t.trader_id} ({t.display_name}): {desc}")
+            global _CACHED_STRATEGIES_SECTION
+            _CACHED_STRATEGIES_SECTION = "\n".join(lines)
+    except Exception:
+        pass
 
 
 def _classify_play_type(alerts: list[dict]) -> str:
@@ -361,8 +421,8 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
   ],
   "strategy_alignment": [
     {{
-      "strategy_name": "S1 (LMA Momentum)",
-      "strategy_id": "s1",
+      "strategy_name": "Strategy Display Name",
+      "strategy_id": "strategy-slug",
       "has_active_position": true/false,
       "position_direction": "long"/"short"/null,
       "latest_signal": "entry"/"exit"/null,
@@ -378,7 +438,7 @@ Rules:
 - play_type: Use the timeframe distribution and indicator types to classify. SMC/structural indicators suggest WEEKLY even on shorter timeframes.
 - confidence: 1-100 scale. Consider indicator convergence, volume confirmation, strategy alignment, and historical reliability.
 - historical_matches: Infer from trade history what happened when similar indicator combinations fired. If insufficient data, return empty array and note in thesis.
-- strategy_alignment: List all 4 strategies (S1 LMA Momentum, S2 Regime Trend, S3 Impulse Breakout, S4 Kalman Reversion). If a strategy has no data, still list it with has_active_position: false.
+- strategy_alignment: List all strategies from the system (names provided in the system prompt). If a strategy has no data, still list it with has_active_position: false.
 - Be specific about entry, target, stop levels using the chart data.
 - If data is insufficient for a confident call, lower confidence and say so in thesis."""
 
@@ -401,7 +461,9 @@ Rules:
         response = CLIENT.messages.create(
             model=MODEL,
             max_tokens=2500,
-            system=TICKER_ANALYSIS_SYSTEM_PROMPT,
+            system=TICKER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
+                strategies_section=_get_strategies_section()
+            ),
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.content[0].text

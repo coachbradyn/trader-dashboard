@@ -927,21 +927,6 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     class QueryRequest(BaseModel):
         question: str
     
-    class ReviewRequest(BaseModel):
-        days_back: int = 1
-    
-    @app.post("/api/ai/review")
-    async def ai_review(req: ReviewRequest):
-        try:
-            todays_trades = await get_trades_fn(days_back=1)
-            if not todays_trades:
-                return {"review": "No trades recorded yet. Once your strategies start sending webhooks, trade reviews will appear here.", "trades_analyzed": 0}
-            recent_history = await get_trades_fn(days_back=5) if req.days_back > 1 else None
-            result = nightly_review(todays_trades, recent_history)
-            return {"review": result, "trades_analyzed": len(todays_trades)}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    
     @app.get("/api/ai/briefing")
     async def ai_briefing():
         """Return today's cached briefing, or generate if none exists."""

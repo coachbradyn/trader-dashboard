@@ -48,11 +48,6 @@ export const api = {
   // AI Analysis
   getBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing"),
   refreshBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing/refresh", { method: "POST" }),
-  postReview: (daysBack: number) =>
-    fetchApi<import("./types").ReviewResponse>("/ai/review", {
-      method: "POST",
-      body: JSON.stringify({ days_back: daysBack }),
-    }),
   postQuery: (question: string) =>
     fetchApi<import("./types").QueryResponse>("/ai/query", {
       method: "POST",
@@ -192,6 +187,23 @@ export const api = {
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     return res.json() as Promise<import("./types").BacktestImportData[]>;
   },
+
+  // Watchlist
+  getWatchlist: () =>
+    fetchApi<import("./types").WatchlistTickerData[]>("/watchlist"),
+  addWatchlistTickers: (tickers: string[], notes?: string) =>
+    fetchApi<{ added: string[]; count: number }>("/watchlist", {
+      method: "POST",
+      body: JSON.stringify({ tickers, notes: notes || null }),
+    }),
+  removeWatchlistTicker: (ticker: string) =>
+    fetchApi<{ removed: string }>("/watchlist/" + ticker, { method: "DELETE" }),
+  getWatchlistDetail: (ticker: string) =>
+    fetchApi<import("./types").WatchlistTickerDetail>("/watchlist/" + ticker + "/detail"),
+  refreshWatchlistSummary: (ticker: string) =>
+    fetchApi<{ status: string; ticker: string }>("/watchlist/" + ticker + "/refresh-summary", { method: "POST" }),
+  getStrategies: () =>
+    fetchApi<import("./types").StrategyInfo[]>("/watchlist/strategies/list"),
 
   // Analytics
   runMonteCarlo: (params: import("./types").MonteCarloRequest) =>

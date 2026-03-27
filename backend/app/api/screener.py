@@ -90,6 +90,11 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
     await db.commit()
     await db.refresh(alert)
 
+    # Check if this ticker is on the watchlist and trigger staleness check
+    import asyncio
+    from app.services.watchlist_ai import check_and_regenerate_if_stale
+    asyncio.create_task(check_and_regenerate_if_stale(alert.ticker))
+
     return {"status": "ok", "alert_id": alert.id, "ticker": alert.ticker}
 
 

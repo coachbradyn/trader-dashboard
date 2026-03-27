@@ -17,6 +17,8 @@ from app.models.portfolio_holding import PortfolioHolding
 from app.models.henry_memory import HenryMemory
 from app.models.henry_context import HenryContext
 from app.models.henry_stats import HenryStats
+from app.models.watchlist_ticker import WatchlistTicker
+from app.models.watchlist_summary import WatchlistSummary
 
 __all__ = [
     "Trader",
@@ -38,4 +40,6 @@ __all__ = [
     "HenryMemory",
     "HenryContext",
     "HenryStats",
+    "WatchlistTicker",
+    "WatchlistSummary",
 ]
