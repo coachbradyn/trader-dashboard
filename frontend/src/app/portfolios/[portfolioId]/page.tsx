@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
+  PieChart, Pie, Cell,
 } from "recharts";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
@@ -444,6 +445,178 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
   );
 }
 
+// ── Allocation Donut Chart ──────────────────────────────────────────
+
+const ALLOC_COLORS = ["#6366f1", "#22c55e", "#fbbf24", "#ef4444", "#8b5cf6", "#06b6d4", "#f97316", "#ec4899", "#14b8a6", "#a855f7"];
+
+function AllocationDonut({ holdings }: { holdings: PortfolioHolding[] }) {
+  if (!holdings.length) return null;
+
+  const data = holdings
+    .map((h) => ({
+      ticker: h.ticker,
+      value: (h.current_price ?? h.entry_price) * h.qty,
+    }))
+    .sort((a, b) => b.value - a.value);
+
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const chartData = data.map((d) => ({ ...d, pct: total > 0 ? (d.value / total * 100) : 0 }));
+
+  return (
+    <Card className="bg-surface-light/20 border-border">
+      <CardContent className="p-5">
+        <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Allocation</h3>
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Pie
+              data={chartData}
+              dataKey="value"
+              nameKey="ticker"
+              cx="50%"
+              cy="50%"
+              innerRadius={60}
+              outerRadius={100}
+              paddingAngle={2}
+              stroke="none"
+              label={({ ticker, pct }) => `${ticker} ${pct.toFixed(1)}%`}
+            >
+              {chartData.map((_, i) => (
+                <Cell key={i} fill={ALLOC_COLORS[i % ALLOC_COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              contentStyle={CHART_TOOLTIP}
+              labelStyle={{ color: "#9ca3af" }}
+              formatter={(value: number, name: string) => [
+                `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${total > 0 ? (value / total * 100).toFixed(1) : 0}%)`,
+                name,
+              ]}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Holdings Performance Bar Chart ─────────────────────────────────
+
+function HoldingsPerformanceBars({ holdings }: { holdings: PortfolioHolding[] }) {
+  if (!holdings.length) return null;
+
+  const chartData = holdings
+    .filter((h) => h.unrealized_pnl_pct != null)
+    .map((h) => ({
+      ticker: h.ticker,
+      pnlPct: h.unrealized_pnl_pct!,
+      fill: (h.unrealized_pnl_pct ?? 0) >= 0 ? "#22c55e" : "#ef4444",
+    }))
+    .sort((a, b) => b.pnlPct - a.pnlPct);
+
+  if (!chartData.length) return null;
+
+  return (
+    <Card className="bg-surface-light/20 border-border">
+      <CardContent className="p-5">
+        <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Holdings Performance</h3>
+        <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 36)}>
+          <BarChart data={chartData} layout="vertical" margin={{ left: 10, right: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" horizontal={false} />
+            <XAxis type="number" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `${v}%`} />
+            <YAxis type="category" dataKey="ticker" stroke="#4b5563" tick={{ fontSize: 11, fill: "#e5e7eb", fontFamily: "'JetBrains Mono', monospace" }} width={50} />
+            <Tooltip
+              contentStyle={CHART_TOOLTIP}
+              labelStyle={{ color: "#9ca3af" }}
+              formatter={(value: number) => [`${value.toFixed(2)}%`, "Unrealized P&L"]}
+            />
+            <ReferenceLine x={0} stroke="#374151" />
+            <Bar dataKey="pnlPct" radius={[0, 4, 4, 0]}>
+              {chartData.map((d, i) => (
+                <Cell key={i} fill={d.fill} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Portfolio Value Over Time ───────────────────────────────────────
+
+function PortfolioValueChart({ data }: { data: { date: string; value: number; cost_basis: number }[] }) {
+  if (!data.length) {
+    return (
+      <Card className="bg-surface-light/20 border-border">
+        <CardContent className="p-5">
+          <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Portfolio Value</h3>
+          <p className="text-gray-500 text-sm text-center py-12">No holdings data yet — add holdings to see portfolio value over time</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const chartData = data.map((d) => ({
+    date: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    value: d.value,
+    costBasis: d.cost_basis,
+    pnl: d.value - d.cost_basis,
+    pnlPct: d.cost_basis > 0 ? ((d.value - d.cost_basis) / d.cost_basis * 100) : 0,
+  }));
+
+  const latestPnl = chartData.length > 0 ? chartData[chartData.length - 1].pnl : 0;
+  const latestPnlPct = chartData.length > 0 ? chartData[chartData.length - 1].pnlPct : 0;
+
+  return (
+    <Card className="bg-surface-light/20 border-border">
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Value</h3>
+          <div className="flex items-center gap-3 text-[11px] font-mono">
+            <span className="text-gray-500">P&L:</span>
+            <span className={latestPnl >= 0 ? "text-profit font-semibold" : "text-loss font-semibold"}>
+              {latestPnl >= 0 ? "+" : ""}{formatCurrency(latestPnl)} ({latestPnlPct >= 0 ? "+" : ""}{latestPnlPct.toFixed(2)}%)
+            </span>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={320}>
+          <AreaChart data={chartData}>
+            <defs>
+              <linearGradient id="portfolioValueGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
+            <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
+            <Tooltip
+              contentStyle={CHART_TOOLTIP}
+              labelStyle={{ color: "#9ca3af" }}
+              formatter={(value: number, name: string) => [
+                formatCurrency(value),
+                name === "value" ? "Portfolio Value" : "Cost Basis",
+              ]}
+            />
+            <Area type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2} fill="url(#portfolioValueGrad)" dot={false} name="value" />
+            <Line type="monotone" dataKey="costBasis" stroke="#fbbf24" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="costBasis" />
+          </AreaChart>
+        </ResponsiveContainer>
+        <div className="flex items-center gap-6 mt-3 text-[10px] text-gray-500" style={FONT_OUTFIT}>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-0.5 bg-ai-blue rounded" />
+            <span>Portfolio Value</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-0.5 bg-screener-amber rounded" style={{ borderStyle: "dashed" }} />
+            <span>Cost Basis</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Holdings Summary ────────────────────────────────────────────────
 
 function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
@@ -506,6 +679,7 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
   const { data: trades } = usePolling(() => api.getTrades({ portfolio_id: portfolioId, limit: 200 }), 15000);
   const { data: holdings } = usePolling(() => api.getHoldings(portfolioId), 15000);
   const { data: backtestImports } = usePolling(() => api.getBacktestImports(), 120000);
+  const { data: portfolioHistory } = usePolling(() => api.getPortfolioHistory(portfolioId, 90), 60000);
 
   if (loadingPortfolio) {
     return (
@@ -556,6 +730,11 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
       {/* Performance Stats */}
       {performance && <PerformanceGrid perf={performance} />}
 
+      {/* Portfolio Value Over Time (hero chart) */}
+      {holdings && holdings.length > 0 && (
+        <PortfolioValueChart data={portfolioHistory || []} />
+      )}
+
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <EquityCurveChart data={equity || []} initialCapital={portfolio.initial_capital} />
@@ -564,6 +743,14 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
 
       {/* Daily P&L */}
       {dailyStats && dailyStats.length > 0 && <DailyPnlChart data={dailyStats} />}
+
+      {/* Allocation + Performance */}
+      {holdings && holdings.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <AllocationDonut holdings={holdings} />
+          <HoldingsPerformanceBars holdings={holdings} />
+        </div>
+      )}
 
       {/* Content Tabs */}
       <Tabs defaultValue="positions" className="w-full">

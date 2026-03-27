@@ -17,6 +17,7 @@ from app.schemas.portfolio_manager import (
     BacktestImportResponse, BacktestTradeResponse,
 )
 from app.services.price_service import price_service
+from app.services.chart_service import get_daily_chart
 
 logger = logging.getLogger(__name__)
 
@@ -565,6 +566,84 @@ async def delete_holding(holding_id: str, db: AsyncSession = Depends(get_db)):
     await db.delete(holding)
     await db.commit()
     return {"status": "deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PORTFOLIO VALUE HISTORY
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/portfolio-history")
+async def get_portfolio_history(
+    portfolio_id: str,
+    days: int = 90,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Build daily portfolio value history from yfinance close prices.
+    Returns [{date, value, cost_basis}] for each trading day in the range.
+    """
+    # Fetch active holdings for the portfolio
+    result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.portfolio_id == portfolio_id,
+            PortfolioHolding.is_active == True,
+        )
+    )
+    holdings = result.scalars().all()
+
+    if not holdings:
+        return []
+
+    # Fetch daily price data for each unique ticker
+    tickers = list({h.ticker for h in holdings})
+    price_data: dict[str, dict[str, float]] = {}  # ticker -> {date_str: close}
+
+    for ticker in tickers:
+        chart = await get_daily_chart(ticker, days)
+        price_data[ticker] = {point["date"]: point["close"] for point in chart}
+
+    # Collect all unique dates across all tickers, sorted
+    all_dates: set[str] = set()
+    for date_map in price_data.values():
+        all_dates.update(date_map.keys())
+    sorted_dates = sorted(all_dates)
+
+    # Build daily value and cost basis
+    history = []
+    for date_str in sorted_dates:
+        date_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        daily_value = 0.0
+        daily_cost = 0.0
+
+        for h in holdings:
+            # Only count this holding if entry_date is on or before this date
+            entry_date_str = h.entry_date.strftime("%Y-%m-%d")
+            if entry_date_str > date_str:
+                continue
+
+            close = price_data.get(h.ticker, {}).get(date_str)
+            if close is None:
+                continue
+
+            if h.direction == "long":
+                daily_value += h.qty * close
+            else:
+                # Short: value = entry_cost + (entry_price - close) * qty
+                daily_value += h.qty * h.entry_price + (h.entry_price - close) * h.qty
+
+            daily_cost += h.entry_price * h.qty
+
+        # Skip days where we have no data at all
+        if daily_cost == 0.0 and daily_value == 0.0:
+            continue
+
+        history.append({
+            "date": date_str,
+            "value": round(daily_value, 2),
+            "cost_basis": round(daily_cost, 2),
+        })
+
+    return history
 
 
 # ══════════════════════════════════════════════════════════════════════

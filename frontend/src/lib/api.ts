@@ -150,6 +150,12 @@ export const api = {
   deleteHolding: (id: string) =>
     fetchApi("/portfolio-manager/holdings/" + id, { method: "DELETE" }),
 
+  // Portfolio Manager - Portfolio History
+  getPortfolioHistory: (portfolioId: string, days: number = 90) =>
+    fetchApi<{ date: string; value: number; cost_basis: number }[]>(
+      "/portfolio-manager/portfolio-history?portfolio_id=" + portfolioId + "&days=" + days
+    ),
+
   // Portfolio Manager - Actions
   getActions: (status?: string, portfolioId?: string) => {
     const sp = new URLSearchParams();
