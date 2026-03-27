@@ -229,6 +229,24 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
     except Exception:
         pass
 
+    # Pull recent market headlines from news_cache — separate session
+    try:
+        from app.services.news_service import news_service
+        recent_headlines = await news_service.get_recent_headlines_for_prompt(limit=5)
+        if recent_headlines:
+            headline_lines = []
+            for h in recent_headlines:
+                date_str = h.get("published_at", "")
+                if date_str:
+                    # Shorten to just date + time
+                    date_str = date_str[:16].replace("T", " ")
+                headline_lines.append(f"  - [{date_str}] {h['headline']}")
+            sections.append(
+                "RECENT MARKET HEADLINES:\n" + "\n".join(headline_lines)
+            )
+    except Exception:
+        pass  # news_cache table may not exist yet
+
     return "\n\n".join(sections)
 
 

@@ -15,6 +15,7 @@ from app.api import portfolio_manager as pm_router
 from app.api import analytics as analytics_router
 from app.api import watchlist as watchlist_router
 from app.api import ai_portfolio as ai_portfolio_router
+from app.api import news as news_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -150,6 +151,26 @@ async def _ensure_schema():
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_cache_ticker ON henry_cache (ticker)"))
                     logger.info("Created missing table: henry_cache")
 
+                if "news_cache" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE news_cache (
+                            id VARCHAR(36) PRIMARY KEY,
+                            alpaca_id VARCHAR(50) NOT NULL UNIQUE,
+                            headline TEXT NOT NULL,
+                            summary TEXT,
+                            source VARCHAR(100),
+                            tickers JSON,
+                            published_at TIMESTAMP,
+                            url VARCHAR(500),
+                            sentiment_score FLOAT,
+                            fetched_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_news_cache_alpaca_id ON news_cache (alpaca_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_published_at ON news_cache (published_at)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_fetched_at ON news_cache (fetched_at)"))
+                    logger.info("Created missing table: news_cache")
+
             await conn.run_sync(_check_and_fix)
     except Exception as e:
         logger.warning(f"Schema check failed (non-blocking): {e}")
@@ -269,6 +290,7 @@ app.include_router(pm_router.router, prefix="/api", tags=["portfolio-manager"])
 app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
 app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
 app.include_router(ai_portfolio_router.router, prefix="/api", tags=["ai-portfolio"])
+app.include_router(news_router.router, prefix="/api", tags=["news"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

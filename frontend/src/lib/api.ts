@@ -256,4 +256,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }),
+
+  // News
+  getTickerNews: (ticker: string) =>
+    fetchApi<import("./types").TickerNewsResponse>("/news/ticker/" + ticker),
+  getNews: (params?: { ticker?: string; limit?: number; hours?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.ticker) sp.set("ticker", params.ticker);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.hours) sp.set("hours", String(params.hours));
+    const qs = sp.toString();
+    return fetchApi<import("./types").NewsArticle[]>("/news" + (qs ? "?" + qs : ""));
+  },
 };

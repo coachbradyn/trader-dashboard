@@ -654,3 +654,44 @@ export interface AIPortfolioHolding {
   reasoning: string | null;
   confidence: number | null;
 }
+
+// AI Review
+export interface ReviewResponse {
+  review: string;
+  trades_analyzed: number;
+}
+
+// News
+export interface NewsArticle {
+  id: string;
+  headline: string;
+  summary: string | null;
+  source: string;
+  tickers: string[];
+  published_at: string;
+  url: string | null;
+  sentiment_score: number | null;
+}
+
+export interface CompanyInfo {
+  name: string;
+  sector: string | null;
+  industry: string | null;
+  market_cap: number | null;
+  description: string | null;
+  high_52w: number | null;
+  low_52w: number | null;
+}
+
+export interface NewsSentiment {
+  score: number;
+  label: string;
+  article_count: number;
+}
+
+export interface TickerNewsResponse {
+  ticker: string;
+  company: CompanyInfo | null;
+  sentiment: NewsSentiment;
+  headlines: NewsArticle[];
+}

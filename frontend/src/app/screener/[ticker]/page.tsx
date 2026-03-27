@@ -16,6 +16,7 @@ import {
 import type {
   WatchlistTickerDetail, ChartDataPoint, BacktestImportData,
   BacktestTradeData, MonteCarloResponse, MonteCarloRequest,
+  TickerNewsResponse,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -61,6 +62,7 @@ export default function TickerDetailPage() {
   const [expandedBt, setExpandedBt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [newsData, setNewsData] = useState<TickerNewsResponse | null>(null);
 
   // Monte Carlo state
   const [mcResults, setMcResults] = useState<MonteCarloResponse | null>(null);
@@ -72,14 +74,16 @@ export default function TickerDetailPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [d, c, allBt] = await Promise.all([
+      const [d, c, allBt, news] = await Promise.all([
         api.getWatchlistDetail(ticker).catch(() => null),
         api.getScreenerChart(ticker, 90).catch(() => []),
         api.getBacktestImports().catch(() => []),
+        api.getTickerNews(ticker).catch(() => null),
       ]);
       setDetail(d);
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
+      setNewsData(news);
     } catch {}
   }, [ticker]);
 
@@ -194,6 +198,138 @@ export default function TickerDetailPage() {
           </Button>
         </div>
       </div>
+
+      {/* Company Info + Sentiment + Headlines */}
+      {newsData && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Company Description */}
+          {newsData.company && (
+            <Card className="lg:col-span-2">
+              <CardContent className="pt-5">
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>
+                      {newsData.company.name || ticker}
+                    </h2>
+                    <div className="flex items-center gap-2 mt-1">
+                      {newsData.company.sector && (
+                        <Badge className="text-[9px] bg-ai-blue/10 text-ai-blue px-1.5 py-0">{newsData.company.sector}</Badge>
+                      )}
+                      {newsData.company.industry && (
+                        <span className="text-[10px] text-gray-500">{newsData.company.industry}</span>
+                      )}
+                    </div>
+                  </div>
+                  {newsData.company.market_cap && (
+                    <div className="text-right">
+                      <div className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Mkt Cap</div>
+                      <div className="text-sm font-mono text-white">
+                        ${newsData.company.market_cap >= 1e12
+                          ? (newsData.company.market_cap / 1e12).toFixed(2) + "T"
+                          : newsData.company.market_cap >= 1e9
+                          ? (newsData.company.market_cap / 1e9).toFixed(1) + "B"
+                          : (newsData.company.market_cap / 1e6).toFixed(0) + "M"}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {newsData.company.description && (
+                  <p className="text-xs text-gray-400 leading-relaxed mt-2" style={FONT_OUTFIT}>
+                    {newsData.company.description}
+                  </p>
+                )}
+                <div className="flex items-center gap-6 mt-3 pt-3 border-t border-border">
+                  {newsData.company.high_52w != null && (
+                    <div>
+                      <span className="text-[9px] text-gray-500 uppercase">52W High</span>
+                      <span className="text-xs font-mono text-white ml-2">${newsData.company.high_52w.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {newsData.company.low_52w != null && (
+                    <div>
+                      <span className="text-[9px] text-gray-500 uppercase">52W Low</span>
+                      <span className="text-xs font-mono text-white ml-2">${newsData.company.low_52w.toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Sentiment + Headlines */}
+          <Card>
+            <CardContent className="pt-5">
+              {/* Sentiment Gauge */}
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>News Sentiment</h2>
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-bold font-mono ${
+                    newsData.sentiment.label === "Bullish" ? "text-profit" :
+                    newsData.sentiment.label === "Bearish" ? "text-loss" :
+                    "text-gray-400"
+                  }`}>
+                    {newsData.sentiment.label}
+                  </span>
+                  <span className="text-[10px] text-gray-500 font-mono">
+                    ({newsData.sentiment.score >= 0 ? "+" : ""}{newsData.sentiment.score.toFixed(2)})
+                  </span>
+                </div>
+              </div>
+
+              {/* Sentiment bar */}
+              <div className="h-2 rounded-full bg-gray-800 mb-4 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    newsData.sentiment.score > 0.1 ? "bg-profit" :
+                    newsData.sentiment.score < -0.1 ? "bg-loss" :
+                    "bg-gray-500"
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(5, (newsData.sentiment.score + 1) / 2 * 100))}%` }}
+                />
+              </div>
+
+              <div className="text-[10px] text-gray-500 mb-3">
+                Based on {newsData.sentiment.article_count} article{newsData.sentiment.article_count !== 1 ? "s" : ""}
+              </div>
+
+              {/* Headlines */}
+              <div className="space-y-2">
+                {newsData.headlines.slice(0, 3).map((article, i) => (
+                  <a
+                    key={i}
+                    href={article.url || "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block group"
+                  >
+                    <div className="text-xs text-gray-300 group-hover:text-white transition leading-snug" style={FONT_OUTFIT}>
+                      {article.headline}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[9px] text-gray-600">{article.source}</span>
+                      <span className="text-[9px] text-gray-600">
+                        {new Date(article.published_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </span>
+                      {article.sentiment_score != null && (
+                        <span className={`text-[9px] font-mono ${
+                          article.sentiment_score > 0.1 ? "text-profit/60" :
+                          article.sentiment_score < -0.1 ? "text-loss/60" :
+                          "text-gray-600"
+                        }`}>
+                          {article.sentiment_score > 0 ? "+" : ""}{article.sentiment_score.toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+                  </a>
+                ))}
+                {newsData.headlines.length === 0 && (
+                  <p className="text-xs text-gray-600 text-center py-3">No recent headlines</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Price Chart */}
       {priceChartData.length >= 2 && (
