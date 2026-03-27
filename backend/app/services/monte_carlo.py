@@ -246,6 +246,103 @@ def _build_histogram(
     return result
 
 
+def run_buyhold_monte_carlo(
+    daily_returns: list[float],
+    num_simulations: int = 1000,
+    forward_trades: int = 100,
+    initial_capital: float = 10000.0,
+) -> dict:
+    """
+    Run a Monte Carlo simulation for buy-and-hold using historical daily returns.
+
+    Uses geometric Brownian motion: resample daily returns with replacement,
+    project forward the same number of steps as the trading MC uses trades.
+    This creates a comparable equity cone for "what if you just held the stock?"
+
+    Args:
+        daily_returns: Historical daily percentage returns
+        num_simulations: Number of simulation paths
+        forward_trades: Number of steps to project (matched to trading MC trade count)
+        initial_capital: Starting equity
+
+    Returns:
+        Dict with percentile_bands, sample_paths, summary (same shape as trading MC)
+    """
+    returns_array = np.array(daily_returns, dtype=np.float64)
+
+    # Resample daily returns with replacement
+    indices = np.random.randint(0, len(returns_array), size=(num_simulations, forward_trades))
+    sampled_returns = returns_array[indices]
+
+    # Convert to multiplicative factors and compute equity curves
+    multipliers = 1.0 + sampled_returns / 100.0
+    cumulative = np.cumprod(multipliers, axis=1)
+
+    ones = np.ones((num_simulations, 1))
+    cumulative = np.hstack([ones, cumulative])
+    equity_curves = initial_capital * cumulative
+    equity_curves = np.maximum(equity_curves, 0.0)
+
+    # Percentile bands
+    percentile_levels = [5, 10, 25, 50, 75, 90, 95]
+    band_values = np.percentile(equity_curves, percentile_levels, axis=0)
+    bands = {
+        f"p{p}": [round(float(v), 2) for v in band_values[i]]
+        for i, p in enumerate(percentile_levels)
+    }
+
+    # Sample paths
+    final_equities = equity_curves[:, -1]
+    sorted_indices = np.argsort(final_equities)
+    sample_indices = [
+        int(sorted_indices[0]),
+        int(sorted_indices[len(sorted_indices) // 2]),
+        int(sorted_indices[-1]),
+    ]
+    random_picks = np.random.choice(num_simulations, min(3, num_simulations), replace=False)
+    sample_indices.extend([int(i) for i in random_picks])
+    sample_indices = list(dict.fromkeys(sample_indices))[:6]
+
+    sample_paths = [
+        [round(float(v), 2) for v in equity_curves[idx]]
+        for idx in sample_indices
+    ]
+
+    # Summary
+    final_returns = ((final_equities - initial_capital) / initial_capital) * 100.0
+    running_peak = np.maximum.accumulate(equity_curves, axis=1)
+    safe_peak = np.where(running_peak == 0, 1, running_peak)
+    drawdowns = (running_peak - equity_curves) / safe_peak * 100.0
+    max_drawdowns = np.max(drawdowns, axis=1)
+
+    summary = {
+        "median_final_equity": round(float(np.median(final_equities)), 2),
+        "mean_final_equity": round(float(np.mean(final_equities)), 2),
+        "best_case_p95": round(float(np.percentile(final_equities, 95)), 2),
+        "worst_case_p5": round(float(np.percentile(final_equities, 5)), 2),
+        "probability_of_profit": round(float(np.mean(final_equities > initial_capital) * 100.0), 1),
+        "median_max_drawdown_pct": round(float(np.median(max_drawdowns)), 1),
+        "median_return_pct": round(float(np.median(final_returns)), 1),
+        "mean_return_pct": round(float(np.mean(final_returns)), 1),
+    }
+
+    # Input stats about the historical data used
+    input_stats = {
+        "trading_days_used": len(daily_returns),
+        "mean_daily_return_pct": round(float(np.mean(returns_array)), 4),
+        "std_daily_return_pct": round(float(np.std(returns_array)), 4),
+        "annualized_return_pct": round(float(np.mean(returns_array) * 252), 2),
+        "annualized_volatility_pct": round(float(np.std(returns_array) * np.sqrt(252)), 2),
+    }
+
+    return {
+        "percentile_bands": bands,
+        "sample_paths": sample_paths,
+        "summary": summary,
+        "input_stats": input_stats,
+    }
+
+
 def compute_input_stats(
     pnl_list: list[float],
     live_count: int,

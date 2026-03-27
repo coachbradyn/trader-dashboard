@@ -452,6 +452,30 @@ export interface MonteCarloInputStats {
   tickers_included: string[];
 }
 
+export interface BuyHoldMCSummary {
+  median_final_equity: number;
+  mean_final_equity: number;
+  best_case_p95: number;
+  worst_case_p5: number;
+  probability_of_profit: number;
+  median_max_drawdown_pct: number;
+  median_return_pct: number;
+  mean_return_pct: number;
+}
+
+export interface BuyHoldMCResult {
+  percentile_bands: Record<string, number[]>;
+  sample_paths: number[][];
+  summary: BuyHoldMCSummary;
+  input_stats: {
+    trading_days_used: number;
+    mean_daily_return_pct: number;
+    std_daily_return_pct: number;
+    annualized_return_pct: number;
+    annualized_volatility_pct: number;
+  };
+}
+
 export interface MonteCarloResponse {
   percentile_bands: Record<string, number[]>;
   sample_paths: number[][];
@@ -460,6 +484,7 @@ export interface MonteCarloResponse {
   equity_histogram: HistogramBin[];
   drawdown_histogram: HistogramBin[];
   input_stats: MonteCarloInputStats;
+  buyhold?: BuyHoldMCResult;
 }
 
 // ── Watchlist Types ──────────────────────────────────────────────

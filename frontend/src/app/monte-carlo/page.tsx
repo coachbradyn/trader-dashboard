@@ -81,15 +81,23 @@ function StatCard({
 function ConeTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ dataKey: string; value: number }>; label?: number }) {
   if (!active || !payload?.length) return null;
   const find = (key: string) => payload.find((p) => p.dataKey === key)?.value;
+  const hasBH = find("bh_p50") !== undefined;
   return (
     <div style={CHART_TOOLTIP_STYLE} className="px-3 py-2 text-xs">
       <div className="text-gray-400 mb-1" style={FONT_OUTFIT}>Trade #{label}</div>
       <div className="space-y-0.5" style={FONT_MONO}>
+        <div className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Strategy</div>
         {find("p95") !== undefined && <div className="text-gray-500">P95: {formatCurrency(find("p95")!)}</div>}
-        {find("p75") !== undefined && <div className="text-indigo-300">P75: {formatCurrency(find("p75")!)}</div>}
         {find("p50") !== undefined && <div className="text-amber-400 font-semibold">Median: {formatCurrency(find("p50")!)}</div>}
-        {find("p25") !== undefined && <div className="text-indigo-300">P25: {formatCurrency(find("p25")!)}</div>}
         {find("p5") !== undefined && <div className="text-gray-500">P5: {formatCurrency(find("p5")!)}</div>}
+        {hasBH && (
+          <>
+            <div className="text-[10px] text-green-400 uppercase tracking-wider mt-1.5 mb-0.5">Buy &amp; Hold</div>
+            {find("bh_p95") !== undefined && <div className="text-gray-500">P95: {formatCurrency(find("bh_p95")!)}</div>}
+            {find("bh_p50") !== undefined && <div className="text-green-400 font-semibold">Median: {formatCurrency(find("bh_p50")!)}</div>}
+            {find("bh_p5") !== undefined && <div className="text-gray-500">P5: {formatCurrency(find("bh_p5")!)}</div>}
+          </>
+        )}
       </div>
     </div>
   );
@@ -183,7 +191,17 @@ export default function MonteCarloPage() {
 - Median max drawdown: ${s.median_max_drawdown_pct.toFixed(1)}%, 95th DD: ${s.worst_drawdown_p95.toFixed(1)}%
 - Sharpe estimate: ${s.sharpe_estimate.toFixed(2)}
 
-Give a concise interpretation: is this system worth trading? What are the key risks? Any position sizing or diversification suggestions?`;
+Give a concise interpretation: is this system worth trading? What are the key risks? Any position sizing or diversification suggestions?${
+      results.buyhold
+        ? `\n\nBUY & HOLD COMPARISON (${ticker || "stock"}):
+- B&H median return: ${results.buyhold.summary.median_return_pct.toFixed(1)}% vs Strategy median: ${s.median_return_pct.toFixed(1)}%
+- B&H probability of profit: ${results.buyhold.summary.probability_of_profit.toFixed(1)}%
+- B&H median final equity: ${formatCurrency(results.buyhold.summary.median_final_equity)}
+- Edge (strategy - B&H): ${(s.median_return_pct - results.buyhold.summary.median_return_pct).toFixed(1)}%
+
+Does the strategy justify its complexity over simply holding ${ticker || "the stock"}?`
+        : ""
+    }`;
 
     try {
       const res = await api.postQuery(prompt);
@@ -195,22 +213,36 @@ Give a concise interpretation: is this system worth trading? What are the key ri
     }
   }, [results, numSimulations, forwardTrades, initialCapital]);
 
-  // Build cone chart data
+  // Build cone chart data with optional buy-and-hold overlay
   const coneData = results
-    ? results.trade_indices.map((t, i) => ({
-        trade: t,
-        p5: results.percentile_bands.p5[i],
-        p10: results.percentile_bands.p10[i],
-        p25: results.percentile_bands.p25[i],
-        p50: results.percentile_bands.p50[i],
-        p75: results.percentile_bands.p75[i],
-        p90: results.percentile_bands.p90[i],
-        p95: results.percentile_bands.p95[i],
-        ...Object.fromEntries(
-          results.sample_paths.map((path, j) => [`sample${j}`, path[i]])
-        ),
-      }))
+    ? results.trade_indices.map((t, i) => {
+        const point: Record<string, number> = {
+          trade: t,
+          p5: results.percentile_bands.p5[i],
+          p10: results.percentile_bands.p10[i],
+          p25: results.percentile_bands.p25[i],
+          p50: results.percentile_bands.p50[i],
+          p75: results.percentile_bands.p75[i],
+          p90: results.percentile_bands.p90[i],
+          p95: results.percentile_bands.p95[i],
+        };
+        results.sample_paths.forEach((path, j) => {
+          point[`sample${j}`] = path[i];
+        });
+        // Overlay buy-and-hold percentile bands if available
+        if (results.buyhold) {
+          const bh = results.buyhold.percentile_bands;
+          if (bh.p5?.[i] !== undefined) point.bh_p5 = bh.p5[i];
+          if (bh.p25?.[i] !== undefined) point.bh_p25 = bh.p25[i];
+          if (bh.p50?.[i] !== undefined) point.bh_p50 = bh.p50[i];
+          if (bh.p75?.[i] !== undefined) point.bh_p75 = bh.p75[i];
+          if (bh.p95?.[i] !== undefined) point.bh_p95 = bh.p95[i];
+        }
+        return point;
+      })
     : [];
+
+  const hasBuyhold = !!(results?.buyhold);
 
   // Histogram bar color helper
   const equityBarColor = (binStart: number, binEnd: number) => {
@@ -574,27 +606,97 @@ Give a concise interpretation: is this system worth trading? What are the key ri
                       dot={false}
                       isAnimationActive={false}
                     />
+
+                    {/* Buy-and-hold overlay (green tones) */}
+                    {hasBuyhold && (
+                      <>
+                        <Area
+                          type="monotone"
+                          dataKey="bh_p95"
+                          fill="#22c55e"
+                          fillOpacity={0.04}
+                          stroke="none"
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="bh_p5"
+                          fill="#111827"
+                          fillOpacity={1}
+                          stroke="none"
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="bh_p75"
+                          fill="#22c55e"
+                          fillOpacity={0.06}
+                          stroke="none"
+                          isAnimationActive={false}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="bh_p25"
+                          fill="#111827"
+                          fillOpacity={1}
+                          stroke="none"
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="bh_p95"
+                          stroke="#22c55e"
+                          strokeWidth={0.8}
+                          strokeOpacity={0.3}
+                          strokeDasharray="4 2"
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="bh_p5"
+                          stroke="#22c55e"
+                          strokeWidth={0.8}
+                          strokeOpacity={0.3}
+                          strokeDasharray="4 2"
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="bh_p50"
+                          stroke="#22c55e"
+                          strokeWidth={2.5}
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                      </>
+                    )}
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
               {/* Legend */}
-              <div className="flex items-center gap-6 mt-3 justify-center">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3 justify-center">
                 <div className="flex items-center gap-1.5">
                   <div className="w-5 h-0.5 bg-amber-400 rounded" />
-                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Median</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-0.5 bg-indigo-500/60 rounded" style={{ borderStyle: "dashed" }} />
-                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>95th percentile</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-0.5 bg-indigo-500/60 rounded" style={{ borderStyle: "dashed" }} />
-                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>5th percentile</span>
+                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Strategy Median</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded bg-indigo-500/10 border border-indigo-500/20" />
-                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Probability bands</span>
+                  <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Strategy Bands</span>
                 </div>
+                {hasBuyhold && (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-5 h-0.5 bg-green-500 rounded" />
+                      <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Buy &amp; Hold Median</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded bg-green-500/10 border border-green-500/20" />
+                      <span className="text-[10px] text-gray-500" style={FONT_OUTFIT}>Buy &amp; Hold Bands</span>
+                    </div>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -645,6 +747,71 @@ Give a concise interpretation: is this system worth trading? What are the key ri
               }
             />
           </div>
+
+          {/* 3b+. Buy & Hold Comparison (when ticker specified) */}
+          {hasBuyhold && results.buyhold && (
+            <Card>
+              <CardContent className="pt-5">
+                <h2 className="text-sm font-semibold text-white mb-3" style={FONT_OUTFIT}>
+                  Strategy vs Buy &amp; Hold — {ticker || ""}
+                </h2>
+                <p className="text-xs text-gray-500 mb-4" style={FONT_MONO}>
+                  Based on {results.buyhold.input_stats.trading_days_used} days of historical data
+                  ({results.buyhold.input_stats.annualized_return_pct.toFixed(1)}% annualized return,
+                  {results.buyhold.input_stats.annualized_volatility_pct.toFixed(1)}% annualized vol)
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-surface-light/30 rounded-xl p-3 border border-border">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>Strategy Median</div>
+                    <div className={`text-lg font-mono font-semibold ${results.summary.median_return_pct >= 0 ? "text-amber-400" : "text-loss"}`} style={FONT_MONO}>
+                      {formatPercent(results.summary.median_return_pct)}
+                    </div>
+                  </div>
+                  <div className="bg-surface-light/30 rounded-xl p-3 border border-border">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>Buy &amp; Hold Median</div>
+                    <div className={`text-lg font-mono font-semibold ${results.buyhold.summary.median_return_pct >= 0 ? "text-profit" : "text-loss"}`} style={FONT_MONO}>
+                      {formatPercent(results.buyhold.summary.median_return_pct)}
+                    </div>
+                  </div>
+                  <div className="bg-surface-light/30 rounded-xl p-3 border border-border">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>Edge (Strategy − B&amp;H)</div>
+                    {(() => {
+                      const edge = results.summary.median_return_pct - results.buyhold.summary.median_return_pct;
+                      return (
+                        <div className={`text-lg font-mono font-semibold ${edge >= 0 ? "text-profit" : "text-loss"}`} style={FONT_MONO}>
+                          {edge >= 0 ? "+" : ""}{edge.toFixed(1)}%
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  <div className="bg-surface-light/30 rounded-xl p-3 border border-border">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>B&amp;H Prob of Profit</div>
+                    <div className={`text-lg font-mono font-semibold ${results.buyhold.summary.probability_of_profit > 60 ? "text-profit" : results.buyhold.summary.probability_of_profit >= 40 ? "text-amber-400" : "text-loss"}`} style={FONT_MONO}>
+                      {results.buyhold.summary.probability_of_profit.toFixed(1)}%
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <div className="text-[10px] text-gray-600 uppercase" style={FONT_OUTFIT}>Strategy Best (P95)</div>
+                    <div className="text-xs text-white font-semibold" style={FONT_MONO}>{formatCurrency(results.summary.best_case_p95)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-600 uppercase" style={FONT_OUTFIT}>B&amp;H Best (P95)</div>
+                    <div className="text-xs text-white font-semibold" style={FONT_MONO}>{formatCurrency(results.buyhold.summary.best_case_p95)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-600 uppercase" style={FONT_OUTFIT}>Strategy Worst (P5)</div>
+                    <div className="text-xs text-loss font-semibold" style={FONT_MONO}>{formatCurrency(results.summary.worst_case_p5)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-gray-600 uppercase" style={FONT_OUTFIT}>B&amp;H Worst (P5)</div>
+                    <div className="text-xs text-loss font-semibold" style={FONT_MONO}>{formatCurrency(results.buyhold.summary.worst_case_p5)}</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* 3c. Final Equity Distribution */}
           <Card>
