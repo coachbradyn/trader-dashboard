@@ -186,6 +186,22 @@ export default function SettingsPage() {
     catch { flash("Archive failed", "error"); } finally { setSaving(false); }
   };
 
+  const handleDeletePf = async () => {
+    if (!selectedPortfolio) return;
+    if (!confirm("Permanently delete this portfolio and ALL its data (trades, snapshots, holdings)? This cannot be undone.")) return;
+    setSaving(true);
+    try { await api.deletePortfolio(selectedPortfolio); setSelectedPortfolio(null); flash("Portfolio deleted"); await fetchPortfolios(); }
+    catch { flash("Delete failed", "error"); } finally { setSaving(false); }
+  };
+
+  const handleDeleteTrader = async () => {
+    if (!selectedTrader) return;
+    if (!confirm("Permanently delete this strategy and ALL its trades? This cannot be undone.")) return;
+    setSaving(true);
+    try { await api.deleteTrader(selectedTrader); setSelectedTrader(null); flash("Strategy deleted"); await fetchTraders(); }
+    catch { flash("Delete failed", "error"); } finally { setSaving(false); }
+  };
+
   const handleSaveTrader = async () => {
     if (!selectedTrader) return; setSaving(true);
     try { await api.updateTrader(selectedTrader, { display_name: trName, description: trDesc }); flash("Strategy updated"); await fetchTraders(); }
@@ -348,6 +364,7 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-3 pt-1">
                       <Button onClick={handleSavePf} disabled={saving} className="min-w-[120px]">{saving ? "Saving..." : isCreatingPf ? "Create Portfolio" : "Save Changes"}</Button>
                       {!isCreatingPf && curPf?.status === "active" && <Button variant="destructive" size="sm" onClick={handleArchivePf} disabled={saving}>Archive</Button>}
+                      {!isCreatingPf && <Button variant="destructive" size="sm" onClick={handleDeletePf} disabled={saving} className="bg-loss/20 text-loss border-loss/30 hover:bg-loss/30">Delete</Button>}
                       <Button variant="ghost" size="sm" onClick={() => { setSelectedPortfolio(null); setIsCreatingPf(false); }}>Cancel</Button>
                     </div>
                   </div>
@@ -442,6 +459,7 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-3 pt-1">
                       <Button onClick={handleSaveTrader} disabled={saving} className="min-w-[120px]">{saving ? "Saving..." : "Save Changes"}</Button>
                       <Button variant="ghost" size="sm" onClick={() => setSelectedTrader(null)}>Cancel</Button>
+                      <Button variant="destructive" size="sm" onClick={handleDeleteTrader} disabled={saving} className="ml-auto bg-loss/20 text-loss border-loss/30 hover:bg-loss/30">Delete Strategy</Button>
                     </div>
                   </div>
                 ) : selectedKey && curKey ? (

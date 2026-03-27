@@ -271,25 +271,51 @@ async def evaluate_signal_for_ai_portfolio(
             except Exception:
                 pass
 
-            prompt = f"""You are managing a PAPER portfolio (no real money). Evaluate this signal.
+            # Max positions / concentration limits from portfolio settings
+            max_positions = portfolio.max_open_positions or 15
+            max_pct_per_trade = portfolio.max_pct_per_trade or 10.0
+            max_dd = portfolio.max_drawdown_pct or 20.0
 
-SIGNAL:
+            # Current drawdown
+            snap_result = await db.execute(
+                select(func.max(PortfolioSnapshot.peak_equity))
+                .where(PortfolioSnapshot.portfolio_id == portfolio.id)
+            )
+            peak = snap_result.scalar() or portfolio.initial_capital
+            current_dd = ((peak - equity) / peak * 100) if peak > 0 else 0
+
+            prompt = f"""You are Henry, managing an AI paper portfolio. Your goal is to MAXIMIZE RISK-ADJUSTED RETURNS — grow equity while protecting against drawdowns.
+
+DECISION FRAMEWORK:
+1. ONLY take trades where the expected reward clearly exceeds the risk (aim for 2:1+ reward/risk)
+2. Use the stop loss from the signal — if none provided, SKIP (no stop = unmanageable risk)
+3. SKIP if ADX < 20 (no trend) unless signal strength is exceptionally high (>80)
+4. SKIP if this ticker already has an open position in the same direction (no pyramiding by default)
+5. SKIP if portfolio would exceed {max_positions} open positions
+6. SKIP if portfolio concentration in this ticker would exceed {max_pct_per_trade}%
+7. SKIP if current drawdown ({current_dd:.1f}%) is near max allowed ({max_dd:.1f}%) — preserve capital
+8. Prefer strategies with proven backtest data (higher WR, higher PF = higher confidence)
+9. If backtest data shows this strategy loses money on this ticker, SKIP regardless of signal
+10. Factor in your own hit rate — if you've been wrong lately, size down (lower confidence)
+
+INCOMING SIGNAL:
   Strategy: {trader.trader_id} ({trader.display_name})
-  Action: {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f}
+  Direction: {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f}
   Signal strength: {trade.entry_signal_strength or 'N/A'}
-  ADX: {trade.entry_adx or 'N/A'}, ATR: {trade.entry_atr or 'N/A'}
-  Stop: ${trade.stop_price:.2f if trade.stop_price else 'N/A'}
+  ADX: {trade.entry_adx or 'N/A'}, ATR: ${trade.entry_atr or 0:.2f}
+  Stop: ${trade.stop_price:.2f if trade.stop_price else 'NONE'}
   Timeframe: {trade.timeframe or 'N/A'}
 
 AI PORTFOLIO STATE:
-  Equity: ${equity:.2f}
-  Cash: ${portfolio.cash:.2f}
-  Open positions: {len(open_positions)}
+  Equity: ${equity:.2f} (initial: ${portfolio.initial_capital:.2f}, return: {((equity / portfolio.initial_capital) - 1) * 100:+.2f}%)
+  Cash: ${portfolio.cash:.2f} ({portfolio.cash / equity * 100:.0f}% cash)
+  Open positions: {len(open_positions)} / {max_positions} max
+  Drawdown from peak: {current_dd:.1f}% (max allowed: {max_dd:.1f}%)
 
-CURRENT AI PORTFOLIO HOLDINGS:
+CURRENT HOLDINGS:
 {holdings_text}
 
-PORTFOLIO CONCENTRATION:
+CONCENTRATION:
 {conc_text}
 
 BACKTEST DATA ({trade.ticker}):
@@ -298,13 +324,10 @@ BACKTEST DATA ({trade.ticker}):
 PRIOR NOTES ({trade.ticker}):
 {ctx_text}
 
-YOUR HIT RATE: {hit_rate_text}
-
-This is a paper portfolio for learning. Be slightly more aggressive than with real money,
-but still filter out low-quality signals. Take trades you're genuinely confident in.
+YOUR TRACK RECORD: {hit_rate_text}
 
 Respond in EXACTLY this JSON format (no markdown, no backticks):
-{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences"}}"""
+{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences explaining your decision with specific numbers"}}"""
 
             from app.services.ai_service import _call_claude_async
             raw = await _call_claude_async(
@@ -532,24 +555,32 @@ async def scheduled_ai_portfolio_review() -> None:
 
             from app.services.ai_service import _call_claude_async, save_context
 
-            prompt = f"""Review the AI paper portfolio's open positions. Recommend adjustments.
+            max_dd = portfolio.max_drawdown_pct or 20.0
+
+            prompt = f"""You are Henry, reviewing your AI paper portfolio. Your objective: MAXIMIZE RISK-ADJUSTED RETURNS.
+
+REVIEW RULES:
+1. CLOSE any position that has lost more than the original stop distance (risk exceeded)
+2. CLOSE any position held longer than 2x the strategy's average hold time from backtests
+3. CLOSE if the trade thesis has broken — the setup that triggered entry no longer applies
+4. TRIM positions that exceed 10% of portfolio equity (concentration risk)
+5. If portfolio drawdown ({dd:.1f}%) is approaching max allowed ({max_dd:.1f}%), aggressively cut losers
+6. HOLD positions that are working and have room to run
+7. Consider: would you enter this trade today at the current price? If not, CLOSE.
 
 AI PORTFOLIO:
   Equity: ${equity:.2f} (initial: ${portfolio.initial_capital:.2f}, return: {((equity/portfolio.initial_capital)-1)*100:+.2f}%)
-  Cash: ${portfolio.cash:.2f}
-  Peak: ${peak:.2f} | Drawdown: {dd:.1f}%
+  Cash: ${portfolio.cash:.2f} ({portfolio.cash / equity * 100:.0f}% cash)
+  Peak: ${peak:.2f} | Drawdown: {dd:.1f}% (max allowed: {max_dd:.1f}%)
   {spy_text}
 
 OPEN POSITIONS ({len(open_positions)}):
 {positions_text}
 
-For each position, recommend one of:
-- HOLD — position is working, keep it
-- CLOSE — momentum faded, exceeded typical hold time, or cutting losses
-- TRIM — too large relative to portfolio
+For each position, respond with an action and specific reasoning.
 
 Respond in EXACTLY this JSON format (no markdown, no backticks):
-{{"positions": [{{"ticker": "NVDA", "action": "HOLD" or "CLOSE" or "TRIM", "reasoning": "brief"}}], "portfolio_health": "1-2 sentence overall assessment"}}"""
+{{"positions": [{{"ticker": "NVDA", "action": "HOLD" or "CLOSE" or "TRIM", "reasoning": "2 sentences with numbers"}}], "portfolio_health": "2-3 sentence assessment of overall portfolio risk and opportunity"}}"""
 
             raw = await _call_claude_async(prompt, max_tokens=800, scope="general")
 

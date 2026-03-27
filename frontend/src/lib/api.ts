@@ -70,6 +70,8 @@ export const api = {
     }),
   archivePortfolio: (id: string) =>
     fetchApi("/settings/portfolios/" + id + "/archive", { method: "PATCH" }),
+  deletePortfolio: (id: string) =>
+    fetchApi("/settings/portfolios/" + id, { method: "DELETE" }),
 
   // Settings - Traders
   getSettingsTraders: () => fetchApi<import("./types").TraderSettings[]>("/settings/traders"),
@@ -82,6 +84,8 @@ export const api = {
     fetchApi<{ api_key: string; message: string }>("/settings/traders/" + slug + "/rotate-key", {
       method: "POST",
     }),
+  deleteTrader: (slug: string) =>
+    fetchApi("/settings/traders/" + slug, { method: "DELETE" }),
 
   // Settings - Keys
   getKeys: () => fetchApi<import("./types").AllowlistedKey[]>("/settings/keys"),
@@ -228,6 +232,11 @@ export const api = {
   },
   getAIPortfolioHoldings: () =>
     fetchApi<import("./types").AIPortfolioHolding[]>("/ai-portfolio/holdings"),
+  chatAIPortfolio: (question: string) =>
+    fetchApi<{ answer: string }>("/ai-portfolio/chat", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
 
   // Analytics
   runMonteCarlo: (params: import("./types").MonteCarloRequest) =>

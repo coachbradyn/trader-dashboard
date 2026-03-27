@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { formatTimeAgo, formatCurrency } from "@/lib/formatters";
 import { renderMarkdown } from "@/lib/markdown";
@@ -278,6 +278,7 @@ export default function AIPortfolioPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="decisions">Decisions</TabsTrigger>
           <TabsTrigger value="holdings">Holdings</TabsTrigger>
+          <TabsTrigger value="chat">Ask Henry</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -482,6 +483,126 @@ export default function AIPortfolioPage() {
           )}
         </div>
       )}
+
+      {/* ── Chat Tab ──────────────────────────────────────────────── */}
+      {activeTab === "chat" && <HenryChat />}
+    </div>
+  );
+}
+
+// ── Henry Chat Component ────────────────────────────────────────────────
+function HenryChat() {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Array<{ role: "user" | "henry"; text: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (viewportRef.current) {
+      viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+    }
+  }, [messages, loading]);
+
+  const SUGGESTIONS = [
+    "Why did you skip the last signal?",
+    "What's your best trade so far?",
+    "Are any positions concerning you?",
+    "How would you change your strategy?",
+    "What's your overall assessment of the portfolio?",
+  ];
+
+  const send = async (question: string) => {
+    if (!question.trim() || loading) return;
+    const q = question.trim();
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", text: q }]);
+    setLoading(true);
+    try {
+      const res = await api.chatAIPortfolio(q);
+      setMessages((prev) => [...prev, { role: "henry", text: res.answer }]);
+    } catch {
+      setMessages((prev) => [...prev, { role: "henry", text: "Failed to get a response. Try again." }]);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="flex flex-col" style={{ minHeight: 500 }}>
+      {/* Messages */}
+      <div
+        ref={viewportRef}
+        className="flex-1 rounded-xl border border-border/40 bg-surface-light/10 p-4 overflow-y-auto space-y-4"
+        style={{ maxHeight: 500 }}
+      >
+        {messages.length === 0 && !loading && (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="w-12 h-12 rounded-full bg-ai-blue/10 flex items-center justify-center mb-3">
+              <svg className="w-6 h-6 text-ai-blue/50" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+              </svg>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">Ask Henry about his portfolio decisions</p>
+            <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => send(s)}
+                  className="px-3 py-1.5 rounded-full text-xs font-mono bg-ai-blue/8 text-ai-blue/70 border border-ai-blue/15 hover:bg-ai-blue/15 hover:text-ai-blue transition"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+              m.role === "user"
+                ? "bg-ai-blue/15 text-white border border-ai-blue/20"
+                : "bg-surface-light/30 text-gray-300 border border-border/30"
+            }`}>
+              {m.role === "henry" ? (
+                <div
+                  className="ai-prose text-xs"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }}
+                />
+              ) : (
+                <span className="text-xs">{m.text}</span>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-surface-light/30 rounded-lg px-3 py-2 border border-border/30">
+              <span className="text-xs text-ai-blue animate-pulse">Henry is thinking...</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Input */}
+      <div className="mt-3 flex items-center gap-2">
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+          placeholder="Ask Henry about his trades..."
+          disabled={loading}
+          className="flex-1 h-9 bg-surface-light/30 border-border/50 text-sm font-mono"
+        />
+        <Button
+          onClick={() => send(input)}
+          disabled={loading || !input.trim()}
+          size="sm"
+          className="bg-ai-blue/15 text-ai-blue border border-ai-blue/30 hover:bg-ai-blue/25 h-9 px-4"
+        >
+          Send
+        </Button>
+      </div>
     </div>
   );
 }

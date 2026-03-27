@@ -403,3 +403,98 @@ async def get_holdings(db: AsyncSession = Depends(get_db)):
         })
 
     return holdings
+
+
+# ── Chat with Henry about AI Portfolio ───────────────────────────────────
+
+class AIChatRequest(BaseModel):
+    question: str
+
+@router.post("/chat")
+async def chat_about_portfolio(req: AIChatRequest, db: AsyncSession = Depends(get_db)):
+    """Ask Henry about his AI portfolio decisions, reasoning, or strategy."""
+    from app.services.ai_portfolio import get_ai_portfolio, _get_ai_portfolio_equity
+    from app.services.ai_service import _call_claude_async
+
+    portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        raise HTTPException(404, "No AI portfolio exists")
+
+    equity = await _get_ai_portfolio_equity(portfolio, db)
+
+    # Get recent decisions for context
+    action_result = await db.execute(
+        select(PortfolioAction)
+        .where(PortfolioAction.portfolio_id == portfolio.id)
+        .order_by(desc(PortfolioAction.created_at))
+        .limit(15)
+    )
+    recent_actions = action_result.scalars().all()
+
+    decisions_text = ""
+    for a in recent_actions:
+        decisions_text += (
+            f"  {a.created_at.strftime('%m/%d %H:%M')} | {a.ticker} {a.direction} | "
+            f"{a.action_type} conf {a.confidence}/10 | {a.status} | {a.reasoning[:100]}\n"
+        )
+    if not decisions_text:
+        decisions_text = "  No decisions yet."
+
+    # Get open positions
+    pos_result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "open",
+            Trade.is_simulated == True,
+        )
+        .options(selectinload(Trade.trader))
+    )
+    open_positions = pos_result.scalars().all()
+
+    holdings_text = ""
+    for t in open_positions:
+        cp = price_service.get_price(t.ticker) or t.entry_price
+        pnl = ((cp - t.entry_price) / t.entry_price * 100) if t.direction == "long" else ((t.entry_price - cp) / t.entry_price * 100)
+        holdings_text += f"  {t.trader.trader_id}: {t.direction.upper()} {t.ticker} @ ${t.entry_price:.2f} → ${cp:.2f} ({pnl:+.2f}%)\n"
+    if not holdings_text:
+        holdings_text = "  No open positions."
+
+    # Closed trades stats
+    closed_result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "closed",
+            Trade.is_simulated == True,
+        )
+    )
+    closed = closed_result.scalars().all()
+    wins = len([t for t in closed if (t.pnl_dollars or 0) > 0])
+    total_closed = len(closed)
+    win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
+
+    return_pct = ((equity / portfolio.initial_capital) - 1) * 100
+
+    prompt = f"""The user is asking about your AI paper portfolio management. Answer their question directly and specifically, referencing actual data from your portfolio.
+
+AI PORTFOLIO STATE:
+  Equity: ${equity:.2f} (return: {return_pct:+.2f}%)
+  Cash: ${portfolio.cash:.2f}
+  Open positions: {len(open_positions)}
+  Closed trades: {total_closed} ({wins}W/{total_closed - wins}L, {win_rate:.1f}% WR)
+
+CURRENT HOLDINGS:
+{holdings_text}
+
+RECENT DECISIONS (newest first):
+{decisions_text}
+
+USER QUESTION: {req.question}
+
+Answer concisely. Reference specific trades, tickers, and numbers. If the user is questioning a decision, explain your reasoning and what data informed it. If they ask about strategy, explain your decision framework."""
+
+    answer = await _call_claude_async(prompt, max_tokens=800, scope="general")
+    return {"answer": answer}

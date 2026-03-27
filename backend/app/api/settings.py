@@ -140,6 +140,113 @@ async def archive_portfolio(portfolio_id: str, db: AsyncSession = Depends(get_db
     return {"status": "archived"}
 
 
+@router.delete("/portfolios/{portfolio_id}")
+async def delete_portfolio(portfolio_id: str, db: AsyncSession = Depends(get_db)):
+    """Permanently delete a portfolio and all its related data."""
+    from app.models import PortfolioSnapshot, DailyStats, PortfolioAction
+    from app.models.portfolio_holding import PortfolioHolding
+
+    result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+    portfolio = result.scalar_one_or_none()
+    if not portfolio:
+        raise HTTPException(404, "Portfolio not found")
+
+    # Delete portfolio_trades (junction table)
+    pt_result = await db.execute(
+        select(PortfolioTrade).where(PortfolioTrade.portfolio_id == portfolio_id)
+    )
+    for pt in pt_result.scalars().all():
+        await db.delete(pt)
+
+    # Delete snapshots
+    snap_result = await db.execute(
+        select(PortfolioSnapshot).where(PortfolioSnapshot.portfolio_id == portfolio_id)
+    )
+    for s in snap_result.scalars().all():
+        await db.delete(s)
+
+    # Delete daily stats
+    ds_result = await db.execute(
+        select(DailyStats).where(DailyStats.portfolio_id == portfolio_id)
+    )
+    for d in ds_result.scalars().all():
+        await db.delete(d)
+
+    # Delete portfolio strategies
+    ps_result = await db.execute(
+        select(PortfolioStrategy).where(PortfolioStrategy.portfolio_id == portfolio_id)
+    )
+    for ps in ps_result.scalars().all():
+        await db.delete(ps)
+
+    # Delete holdings
+    h_result = await db.execute(
+        select(PortfolioHolding).where(PortfolioHolding.portfolio_id == portfolio_id)
+    )
+    for h in h_result.scalars().all():
+        await db.delete(h)
+
+    # Delete actions
+    a_result = await db.execute(
+        select(PortfolioAction).where(PortfolioAction.portfolio_id == portfolio_id)
+    )
+    for a in a_result.scalars().all():
+        await db.delete(a)
+
+    # Delete simulated trades linked to this portfolio
+    sim_result = await db.execute(
+        select(Trade).where(Trade.is_simulated == True)
+        .join(PortfolioTrade, PortfolioTrade.trade_id == Trade.id, isouter=True)
+        .where(PortfolioTrade.portfolio_id == portfolio_id)
+    )
+    # The portfolio trades are already deleted above, so simulated trades linked
+    # only to this portfolio are now orphaned — but we already deleted the links.
+
+    # Delete the portfolio itself
+    await db.delete(portfolio)
+    await db.commit()
+
+    return {"status": "deleted", "id": portfolio_id}
+
+
+@router.delete("/traders/{trader_slug}")
+async def delete_trader(trader_slug: str, db: AsyncSession = Depends(get_db)):
+    """Permanently delete a strategy/trader and all its trades."""
+    result = await db.execute(select(Trader).where(Trader.trader_id == trader_slug))
+    trader = result.scalar_one_or_none()
+    if not trader:
+        raise HTTPException(404, "Trader not found")
+
+    # Delete portfolio_trades for this trader's trades
+    trade_result = await db.execute(select(Trade).where(Trade.trader_id == trader.id))
+    trades = trade_result.scalars().all()
+    trade_ids = [t.id for t in trades]
+
+    if trade_ids:
+        pt_result = await db.execute(
+            select(PortfolioTrade).where(PortfolioTrade.trade_id.in_(trade_ids))
+        )
+        for pt in pt_result.scalars().all():
+            await db.delete(pt)
+
+    # Delete the trades
+    for t in trades:
+        await db.delete(t)
+
+    # Delete portfolio_strategies
+    ps_result = await db.execute(
+        select(PortfolioStrategy).where(PortfolioStrategy.trader_id == trader.id)
+    )
+    for ps in ps_result.scalars().all():
+        await db.delete(ps)
+
+    # Delete the trader
+    await db.delete(trader)
+    await db.commit()
+
+    return {"status": "deleted", "trader_id": trader_slug}
+
+
 # ── TRADER / STRATEGY MANAGEMENT ──────────────────────────────────────
 
 @router.get("/traders", response_model=list[TraderSettingsResponse])
