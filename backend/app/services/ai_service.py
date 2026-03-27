@@ -518,22 +518,24 @@ Keep it under 500 words."""
 def query_trades(
     question: str,
     all_trades: list[dict],
-    open_positions: list[dict] = None
+    open_positions: list[dict] = None,
+    holdings_context: str = None,
 ) -> str:
     """
-    Answer a natural language question about trade history.
-    
-    The LLM receives the full trade dataset as context and answers
-    analytical questions. For large histories, pre-filter or summarize
-    before passing in.
-    
+    Answer a natural language question about trade history and portfolio.
+
+    The LLM receives the full trade dataset plus manual holdings as context
+    and answers analytical questions.
+
     Args:
         question: User's natural language question
         all_trades: Trade history (entries + exits)
-        open_positions: Current open positions
+        open_positions: Current open positions from strategies
+        holdings_context: Text summary of manual portfolio holdings
     """
     trades_text = _format_trades_for_prompt(all_trades)
     positions_text = _format_positions_for_prompt(open_positions) if open_positions else "None."
+    holdings_text = holdings_context or "No manual holdings."
     
     # Pre-compute stats the model can reference
     exits = [t for t in all_trades if t.get("signal") == "exit"]
@@ -588,12 +590,16 @@ BY STRATEGY:
 TOP TICKERS:
 {ticker_summary}
 
-CURRENT POSITIONS:
+CURRENT STRATEGY POSITIONS:
 {positions_text}
+
+MANUAL PORTFOLIO HOLDINGS:
+{holdings_text}
 
 FULL TRADE LOG:
 {trades_text}
 
+Consider BOTH strategy positions AND manual holdings when answering portfolio questions.
 Answer concisely. If the data doesn't contain enough info to answer, say so.
 If the question involves a comparison, use a small table.
 Keep it under 200 words unless the question requires more detail."""
@@ -890,11 +896,41 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     @app.post("/api/ai/query")
     async def ai_query(req: QueryRequest):
         try:
+            from sqlalchemy import select as sa_select
+            from app.database import async_session
+            from app.models.portfolio_holding import PortfolioHolding
+            from app.services.price_service import price_service
+
             all_trades = await get_trades_fn(days_back=30)
             positions = await get_positions_fn()
-            if not all_trades and not positions:
-                return {"answer": "No trading data available yet. Once webhooks start flowing in, I'll be able to answer questions about your trading performance.", "trades_in_context": 0}
-            result = query_trades(req.question, all_trades, positions)
+
+            # Fetch manual holdings for full portfolio context
+            holdings_context = None
+            try:
+                async with async_session() as db:
+                    result = await db.execute(
+                        sa_select(PortfolioHolding).where(PortfolioHolding.is_active == True)
+                    )
+                    holdings = result.scalars().all()
+                    if holdings:
+                        lines = []
+                        for h in holdings:
+                            cp = price_service.get_price(h.ticker) or h.entry_price
+                            if h.direction == "long":
+                                pnl = (cp - h.entry_price) / h.entry_price * 100
+                            else:
+                                pnl = (h.entry_price - cp) / h.entry_price * 100
+                            lines.append(
+                                f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "
+                                f"current ${cp:.2f} | {pnl:+.2f}% | strategy: {h.strategy_name or 'manual'}"
+                            )
+                        holdings_context = "\n".join(lines)
+            except Exception:
+                pass
+
+            if not all_trades and not positions and not holdings_context:
+                return {"answer": "No trading data available yet. Add manual holdings or connect TradingView strategies to start getting portfolio advice.", "trades_in_context": 0}
+            result = query_trades(req.question, all_trades, positions, holdings_context=holdings_context)
             return {"answer": result, "trades_in_context": len(all_trades)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
