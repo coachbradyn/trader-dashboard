@@ -70,21 +70,33 @@ def parse_backtest_filename(filename: str) -> dict:
     while len(remaining) > 1 and re.match(r"^\d{1,4}$", remaining[-1]):
         remaining = remaining[:-1]
 
+    # Handle "EXCHANGE:TICKER" colon format (e.g., "NASDAQ:NVDA" or "BATS:NOK")
+    expanded = []
+    for part in remaining:
+        if ":" in part:
+            expanded.extend(part.split(":"))
+        else:
+            expanded.append(part)
+    remaining = expanded
+
     # Now remaining should be [EXCHANGE?, TICKER] or [TICKER]
-    # Identify exchange vs ticker by checking against known exchange names
+    # Strategy: the LAST token is always the ticker (TradingView puts ticker right before date)
+    # Everything before it that looks like an exchange/broker name is the exchange
+    BROKERS = {"ROBINHOOD", "ALPACA", "IBKR", "SCHWAB", "FIDELITY", "TRADIER", "WEBULL", "ETRADE", "TD"}
+
     exchange = None
     ticker = None
 
     if len(remaining) >= 2:
-        if remaining[0].upper() in EXCHANGES:
+        # Last token is the ticker, first token is exchange/broker
+        ticker = remaining[-1]
+        ex_candidate = remaining[0].upper()
+        if ex_candidate in EXCHANGES or ex_candidate in BROKERS:
             exchange = remaining[0]
-            ticker = remaining[1]
-        else:
-            # First part isn't a known exchange — treat it as ticker, ignore rest
-            ticker = remaining[0]
+        # If there are 3+ tokens (e.g., exchange, subexchange, ticker), still take last as ticker
     elif len(remaining) == 1:
-        # Single part — it's either an exchange (bug) or a ticker
-        if remaining[0].upper() in EXCHANGES:
+        # Single part — it's the ticker (unless it's clearly an exchange with no ticker)
+        if remaining[0].upper() in EXCHANGES and remaining[0].upper() not in {"OTC", "ARCA"}:
             raise ValueError(
                 f"Filename '{filename}' appears to have an exchange ({remaining[0]}) but no ticker. "
                 f"Expected: STRATEGY_VERSION_EXCHANGE_TICKER_DATE.csv"
