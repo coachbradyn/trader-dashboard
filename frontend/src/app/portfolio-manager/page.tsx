@@ -434,7 +434,7 @@ function HoldingsTab({ portfolios, onToast }: { portfolios: PortfolioSettings[];
                     {h.direction.toUpperCase()}
                   </Badge>
                   <Badge className="text-[9px] px-1.5 py-0 bg-surface-light text-gray-400">
-                    {h.source}
+                    {h.source === "manual" ? "Manual" : h.source === "webhook" ? "Webhook" : h.source}
                   </Badge>
                   {h.trade_id && <Badge className="text-[9px] px-1.5 py-0 bg-ai-blue/15 text-ai-blue">linked</Badge>}
                 </div>

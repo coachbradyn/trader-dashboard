@@ -1,6 +1,6 @@
 "use client";
 import { Trade } from "@/lib/types";
-import { formatCurrency, formatPercent, formatDateTime, formatTimeAgo, pnlColor } from "@/lib/formatters";
+import { formatCurrency, formatPercent, formatDateTime, formatTimeAgo, formatExitReason, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -39,7 +39,7 @@ export default function TradeCard({ trade }: { trade: Trade }) {
 
           {trade.exit_reason && (
             <div className="mt-1 text-xs text-gray-500">
-              Exit: {trade.exit_reason}
+              Exit: {formatExitReason(trade.exit_reason)}
               {trade.bars_in_trade != null && ` · ${trade.bars_in_trade} bars`}
             </div>
           )}

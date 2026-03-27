@@ -394,7 +394,7 @@ export default function SettingsPage() {
                           <span className="font-semibold text-sm text-white">{tr.display_name || "Unnamed Strategy"}</span>
                           {tr.portfolio_count > 0 && <Badge variant="default" className="text-[10px]">{tr.portfolio_count} pf</Badge>}
                         </div>
-                        <div className="text-[11px] text-gray-500 mb-1.5 truncate" style={FONT_MONO}>{tr.trader_id}</div>
+                        <div className="text-[11px] text-gray-500 mb-1.5 truncate" style={FONT_MONO}>ID: {tr.trader_id}</div>
                         <span className="text-[11px] text-gray-600">{tr.trade_count} trades</span>
                       </button>
                     ))}

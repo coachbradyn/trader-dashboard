@@ -122,7 +122,7 @@ export default function MonteCarloPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Options for dropdowns
-  const [strategies, setStrategies] = useState<string[]>([]);
+  const [strategies, setStrategies] = useState<Array<{ id: string; label: string }>>([]);
 
   // Henry AI
   const [henryLoading, setHenryLoading] = useState(false);
@@ -136,9 +136,14 @@ export default function MonteCarloPage() {
           api.getTraders(),
           api.getBacktestImports(),
         ]);
-        const traderIds = traders.map((t) => t.trader_id);
-        const importNames = imports.map((i) => i.strategy_name);
-        const unique = Array.from(new Set([...traderIds, ...importNames]));
+        const traderEntries = traders.map((t) => ({ id: t.trader_id, label: t.display_name }));
+        const importEntries = imports.map((i) => ({ id: i.strategy_name, label: i.strategy_name }));
+        const seen = new Set<string>();
+        const unique = [...traderEntries, ...importEntries].filter((e) => {
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        });
         setStrategies(unique);
       } catch {
         // silently fail — dropdowns just won't be populated
@@ -312,8 +317,8 @@ Does the strategy justify its complexity over simply holding ${ticker || "the st
               >
                 <option value="">All Strategies</option>
                 {strategies.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
+                  <option key={s.id} value={s.id}>
+                    {s.label}
                   </option>
                 ))}
               </select>

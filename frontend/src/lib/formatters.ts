@@ -55,3 +55,53 @@ export function pnlBg(value: number): string {
   if (value < 0) return "bg-loss/10";
   return "bg-gray-800";
 }
+
+/** Convert snake_case or UPPER_CASE to human-readable labels */
+export function formatLabel(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bPnl\b/g, "P&L")
+    .replace(/\bPct\b/g, "%")
+    .replace(/\bQty\b/g, "Qty")
+    .replace(/\bAdx\b/g, "ADX")
+    .replace(/\bAtr\b/g, "ATR");
+}
+
+/** Human-readable exit reason labels */
+export function formatExitReason(reason: string | null | undefined): string {
+  if (!reason) return "Unknown";
+  const map: Record<string, string> = {
+    "stop_loss": "Stop Loss",
+    "take_profit": "Take Profit",
+    "trailing_stop": "Trailing Stop",
+    "signal_exit": "Signal Exit",
+    "time_exit": "Time Exit",
+    "manual": "Manual",
+    "ai_review_close": "AI Review",
+    "reverse_signal": "Reverse Signal",
+    "strategy_exit": "Strategy Exit",
+    "unknown": "Unknown",
+  };
+  return map[reason.toLowerCase()] || formatLabel(reason);
+}
+
+/** Human-readable source labels */
+export function formatSource(source: string | null | undefined): string {
+  if (!source) return "Unknown";
+  const map: Record<string, string> = {
+    "manual": "Manual",
+    "webhook": "Webhook",
+    "ai_portfolio": "AI Portfolio",
+  };
+  return map[source.toLowerCase()] || formatLabel(source);
+}
+
+/** Format strategy slug into readable name (fallback if no display_name) */
+export function formatStrategyId(id: string): string {
+  return id
+    .replace(/^henry-/, "Henry ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}

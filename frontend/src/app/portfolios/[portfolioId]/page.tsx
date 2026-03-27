@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
-import { formatCurrency, formatPercent, formatDate, formatTimeAgo, pnlColor } from "@/lib/formatters";
+import { formatCurrency, formatPercent, formatDate, formatTimeAgo, formatSource, formatExitReason, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -649,7 +649,7 @@ function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
                 {h.direction.toUpperCase()}
               </Badge>
               <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
-              <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{h.source}</Badge>
+              <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
               <div className="ml-auto">
                 {h.unrealized_pnl != null && (
                   <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
@@ -813,7 +813,7 @@ function HoldingsManager({ portfolioId, holdings, onRefresh }: { portfolioId: st
                 <span className="text-white font-semibold w-12">{h.ticker}</span>
                 <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>{h.direction.toUpperCase()}</Badge>
                 <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
-                <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{h.source}</Badge>
+                <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
                 <div className="ml-auto flex items-center gap-2">
                   {h.unrealized_pnl != null && (
                     <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>{formatPercent(h.unrealized_pnl_pct ?? 0)}</span>

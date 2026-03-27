@@ -1,6 +1,6 @@
 "use client";
 import { Trade } from "@/lib/types";
-import { formatCurrency, formatPercent, formatDateTime, pnlColor } from "@/lib/formatters";
+import { formatCurrency, formatPercent, formatDateTime, formatExitReason, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -71,7 +71,7 @@ export default function TradeHistory({ trades }: { trades: Trade[] }) {
               <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/30">
                 <span className="text-[10px] text-gray-500">{t.exit_time ? formatDateTime(t.exit_time) : "—"}</span>
                 {t.exit_reason && (
-                  <span className="text-[10px] text-gray-400 bg-surface-light/30 px-2 py-0.5 rounded">{t.exit_reason}</span>
+                  <span className="text-[10px] text-gray-400 bg-surface-light/30 px-2 py-0.5 rounded">{formatExitReason(t.exit_reason)}</span>
                 )}
               </div>
             </CardContent>

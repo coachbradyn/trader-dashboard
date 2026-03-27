@@ -14,10 +14,10 @@ const SUGGESTIONS = [
 ];
 
 function StrategyBadges() {
-  const [strategies, setStrategies] = useState<string[]>([]);
+  const [strategies, setStrategies] = useState<Array<{ id: string; name: string }>>([]);
   useEffect(() => {
     api.getTraders().then((traders) => {
-      setStrategies(traders.map((t) => t.trader_id));
+      setStrategies(traders.map((t) => ({ id: t.trader_id, name: t.display_name })));
     }).catch(() => {});
   }, []);
   if (!strategies.length) return null;
@@ -25,10 +25,10 @@ function StrategyBadges() {
     <div className="flex items-center gap-1.5">
       {strategies.map((s) => (
         <span
-          key={s}
+          key={s.id}
           className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-light/60 text-gray-500"
         >
-          {s}
+          {s.name}
         </span>
       ))}
     </div>
