@@ -91,7 +91,7 @@ async def _generate_morning_summary():
                 t["indicators"] = list(t["indicators"])
 
             # Generate summary
-            content = generate_market_summary(
+            content = await generate_market_summary(
                 "morning",
                 {"positions": positions, "trades": [{"id": t.id} for t in yesterday_trades]},
                 {"tickers": list(ticker_map.values()), "alert_count": len(alerts), "top_tickers": top_tickers},
@@ -165,7 +165,7 @@ async def _generate_nightly_summary():
             latest_analysis = result.scalar_one_or_none()
             picks_data = latest_analysis.picks if latest_analysis else None
 
-            content = generate_market_summary(
+            content = await generate_market_summary(
                 "nightly",
                 {
                     "closed_today": [{"ticker": t.ticker, "pnl": t.pnl_dollars} for t in closed_today],
@@ -249,7 +249,7 @@ async def _refresh_screener_analysis():
                     pass
 
             # Call AI
-            result = analyze_screener_signals(
+            result = await analyze_screener_signals(
                 alerts=alerts_list,
                 ticker_aggregations=agg_list,
                 chart_data=chart_data if chart_data else None,

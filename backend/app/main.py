@@ -171,6 +171,24 @@ async def _ensure_schema():
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_fetched_at ON news_cache (fetched_at)"))
                     logger.info("Created missing table: news_cache")
 
+                if "ai_usage" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE ai_usage (
+                            id VARCHAR(36) PRIMARY KEY,
+                            provider VARCHAR(20) NOT NULL,
+                            function_name VARCHAR(50) NOT NULL,
+                            model VARCHAR(100),
+                            input_tokens INTEGER,
+                            output_tokens INTEGER,
+                            latency_ms INTEGER,
+                            was_fallback BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_usage_created_at ON ai_usage (created_at)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ai_usage_provider ON ai_usage (provider)"))
+                    logger.info("Created missing table: ai_usage")
+
             await conn.run_sync(_check_and_fix)
     except Exception as e:
         logger.warning(f"Schema check failed (non-blocking): {e}")
@@ -432,6 +450,79 @@ async def get_conflicts(days_back: int = 7, limit: int = 50):
         }
         for c in conflicts
     ]
+
+
+# ─── AI USAGE ANALYTICS ──────────────────────────────────────────────────
+
+@app.get("/api/ai/usage")
+async def get_ai_usage(days: int = 7, provider: str = None):
+    """Return AI usage analytics: total calls, tokens, costs, and breakdown by function."""
+    from app.models.ai_usage import AIUsage
+    from sqlalchemy import func as sa_func
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    try:
+        async with async_session() as db:
+            query = select(AIUsage).where(AIUsage.created_at >= cutoff)
+            if provider:
+                query = query.where(AIUsage.provider == provider)
+            result = await db.execute(query.order_by(AIUsage.created_at.desc()))
+            rows = result.scalars().all()
+
+        # Aggregate
+        total_calls = len(rows)
+        total_input_tokens = sum(r.input_tokens or 0 for r in rows)
+        total_output_tokens = sum(r.output_tokens or 0 for r in rows)
+        fallback_count = sum(1 for r in rows if r.was_fallback)
+        avg_latency = (sum(r.latency_ms or 0 for r in rows) / total_calls) if total_calls else 0
+
+        # By provider
+        by_provider = {}
+        for r in rows:
+            p = r.provider
+            if p not in by_provider:
+                by_provider[p] = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
+            by_provider[p]["calls"] += 1
+            by_provider[p]["input_tokens"] += r.input_tokens or 0
+            by_provider[p]["output_tokens"] += r.output_tokens or 0
+
+        # By function
+        by_function = {}
+        for r in rows:
+            fn = r.function_name
+            if fn not in by_function:
+                by_function[fn] = {"calls": 0, "provider_breakdown": {}}
+            by_function[fn]["calls"] += 1
+            p = r.provider
+            if p not in by_function[fn]["provider_breakdown"]:
+                by_function[fn]["provider_breakdown"][p] = 0
+            by_function[fn]["provider_breakdown"][p] += 1
+
+        # Approximate costs: Claude ~$3/M input, $15/M output; Gemini ~$0.10/M input, $0.40/M output
+        estimated_cost = 0.0
+        for p, stats in by_provider.items():
+            if p == "claude":
+                estimated_cost += (stats["input_tokens"] / 1_000_000 * 3.0) + (stats["output_tokens"] / 1_000_000 * 15.0)
+            elif p == "gemini":
+                estimated_cost += (stats["input_tokens"] / 1_000_000 * 0.10) + (stats["output_tokens"] / 1_000_000 * 0.40)
+
+        return {
+            "period_days": days,
+            "total_calls": total_calls,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "fallback_count": fallback_count,
+            "avg_latency_ms": round(avg_latency),
+            "estimated_cost_usd": round(estimated_cost, 4),
+            "by_provider": by_provider,
+            "by_function": by_function,
+        }
+    except Exception as e:
+        return {
+            "period_days": days,
+            "total_calls": 0,
+            "error": f"Usage tracking not available yet: {type(e).__name__}",
+        }
 
 
 # ─── MARKET SUMMARIES ───────────────────────────────────────────────────

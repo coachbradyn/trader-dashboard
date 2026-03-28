@@ -318,7 +318,7 @@ async def analyze_ticker(
     ]
 
     # 5. Call AI analysis
-    analysis = analyze_single_ticker(
+    analysis = await analyze_single_ticker(
         ticker=ticker,
         alerts=alert_dicts,
         chart_data=chart_data,

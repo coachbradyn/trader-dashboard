@@ -409,7 +409,8 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 from app.services.ai_service import _call_claude_async
                 raw = await _call_claude_async(
                     prompt, max_tokens=400,
-                    ticker=trade.ticker, strategy=trader.trader_id, scope="signal"
+                    ticker=trade.ticker, strategy=trader.trader_id, scope="signal",
+                    function_name="ai_portfolio_decision"
                 )
 
                 try:
@@ -667,7 +668,7 @@ For each position, respond with an action and specific reasoning.
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"positions": [{{"ticker": "NVDA", "action": "HOLD" or "CLOSE" or "TRIM", "reasoning": "2 sentences with numbers"}}], "portfolio_health": "2-3 sentence assessment of overall portfolio risk and opportunity"}}"""
 
-            raw = await _call_claude_async(prompt, max_tokens=800, scope="general")
+            raw = await _call_claude_async(prompt, max_tokens=800, scope="general", function_name="scheduled_review")
 
             try:
                 clean = raw.strip().replace("```json", "").replace("```", "").strip()

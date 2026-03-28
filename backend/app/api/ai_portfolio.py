@@ -496,7 +496,7 @@ USER QUESTION: {req.question}
 
 Answer concisely. Reference specific trades, tickers, and numbers. If the user is questioning a decision, explain your reasoning and what data informed it. If they ask about strategy, explain your decision framework."""
 
-    answer = await _call_claude_async(prompt, max_tokens=800, scope="general")
+    answer = await _call_claude_async(prompt, max_tokens=800, scope="general", function_name="ask_henry")
     return {"answer": answer}
 
 

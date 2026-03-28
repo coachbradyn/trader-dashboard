@@ -216,25 +216,12 @@ Be direct and specific. Use numbers. No fluff."""
             system = """You are Henry, an AI trading analyst. You're writing a brief watchlist summary for a specific ticker.
 Be concise (2-4 sentences), data-driven, and actionable. Format currency as $X.XX. Format percentages as X.X%."""
 
-            # Call Claude
-            summary_text = None
-            for model in [MODEL, MODEL_FALLBACK, MODEL_LAST_RESORT]:
-                try:
-                    response = CLIENT.messages.create(
-                        model=model,
-                        max_tokens=500,
-                        system=system,
-                        messages=[{"role": "user", "content": prompt}],
-                        timeout=30.0,
-                    )
-                    summary_text = response.content[0].text
-                    break
-                except Exception as e:
-                    logger.warning(f"Watchlist summary model {model} failed: {e}")
-                    continue
+            # Call AI (routes through dual provider system)
+            from app.services.ai_provider import call_ai
+            summary_text = await call_ai(system, prompt, function_name="watchlist_summary", max_tokens=500)
 
-            if not summary_text:
-                logger.error(f"All models failed for watchlist summary of {ticker}")
+            if not summary_text or summary_text == "AI analysis temporarily unavailable.":
+                logger.error(f"AI call failed for watchlist summary of {ticker}")
                 return
 
             # Upsert the summary

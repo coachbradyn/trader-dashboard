@@ -36,7 +36,7 @@ Format currency as $X.XX. Format percentages as X.X%.
 If data is insufficient, say so rather than speculating."""
 
 
-def analyze_screener_signals(
+async def analyze_screener_signals(
     alerts: list[dict],
     ticker_aggregations: list[dict],
     chart_data: dict[str, list[dict]] | None = None,
@@ -147,17 +147,9 @@ Rules:
 - Be specific about WHY the indicator convergence matters
 - Sort picks by confidence descending"""
 
-    if CLIENT is None:
-        return {"picks": [], "market_context": {"sector_heat": "AI unavailable", "catalysts": "ANTHROPIC_API_KEY not configured", "noise_ratio": "N/A"}}
-
     try:
-        response = CLIENT.messages.create(
-            model=MODEL,
-            max_tokens=2000,
-            system=SCREENER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = response.content[0].text
+        from app.services.ai_provider import call_ai
+        raw = await call_ai(SCREENER_SYSTEM_PROMPT, prompt, function_name="screener_analysis", max_tokens=2000)
 
         # Parse JSON response
         clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -279,7 +271,7 @@ def _classify_play_type(alerts: list[dict]) -> str:
     return "WEEKLY" if swing_count > intraday_count else "DAILY"
 
 
-def analyze_single_ticker(
+async def analyze_single_ticker(
     ticker: str,
     alerts: list[dict],
     chart_data: list[dict] | None = None,
@@ -442,31 +434,12 @@ Rules:
 - Be specific about entry, target, stop levels using the chart data.
 - If data is insufficient for a confident call, lower confidence and say so in thesis."""
 
-    if CLIENT is None:
-        return {
-            "play_type": heuristic_play,
-            "direction": "LONG" if dominant == "bullish" else "SHORT",
-            "confidence": 0,
-            "thesis": "AI analysis unavailable — ANTHROPIC_API_KEY not configured.",
-            "entry_zone": "N/A", "price_target": "N/A", "stop_loss": "N/A", "risk_reward": "N/A",
-            "indicators_firing": indicators_firing,
-            "signal_breakdown": {"bullish": bullish, "bearish": bearish, "neutral": neutral},
-            "dominant_signal": dominant,
-            "historical_matches": [], "strategy_alignment": [],
-            "alert_timeline_summary": f"{len(alerts)} alerts in window",
-            "timeframes_represented": timeframes,
-        }
-
     try:
-        response = CLIENT.messages.create(
-            model=MODEL,
-            max_tokens=2500,
-            system=TICKER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
-                strategies_section=_get_strategies_section()
-            ),
-            messages=[{"role": "user", "content": prompt}]
+        from app.services.ai_provider import call_ai
+        system = TICKER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
+            strategies_section=_get_strategies_section()
         )
-        raw = response.content[0].text
+        raw = await call_ai(system, prompt, function_name="screener_analysis", max_tokens=2500)
         clean = raw.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(clean)
 
@@ -527,7 +500,7 @@ Rules:
         }
 
 
-def generate_market_summary(
+async def generate_market_summary(
     summary_type: str,
     portfolio_data: dict,
     screener_data: dict,
@@ -587,17 +560,9 @@ Write a 4-section recap:
 
 Keep it under 300 words. Be direct and specific."""
 
-    if CLIENT is None:
-        return "AI summary unavailable — ANTHROPIC_API_KEY not configured."
-
     try:
-        response = CLIENT.messages.create(
-            model=MODEL,
-            max_tokens=1500,
-            system=SCREENER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
+        from app.services.ai_provider import call_ai
+        return await call_ai(SCREENER_SYSTEM_PROMPT, prompt, function_name="screener_analysis", max_tokens=1500)
     except Exception as e:
         logger.error(f"Market summary generation failed: {e}")
         return f"Summary generation failed: {str(e)}"

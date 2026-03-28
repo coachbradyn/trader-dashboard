@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     # AI service
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    ai_routing_mode: str = "dual"  # "dual", "claude_only", "gemini_only"
 
     # Price polling
     price_poll_interval_market: int = 15  # seconds during market hours

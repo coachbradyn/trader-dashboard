@@ -201,7 +201,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
         if cached:
             result = cached
         else:
-            raw = await _call_claude_async(prompt, max_tokens=500, ticker=ticker, strategy=strategy_slug, scope="signal")
+            raw = await _call_claude_async(prompt, max_tokens=500, ticker=ticker, strategy=strategy_slug, scope="signal", function_name="signal_evaluation")
 
             try:
                 clean = raw.strip().replace("```json", "").replace("```", "").strip()
@@ -577,7 +577,7 @@ No markdown, no backticks. Just the JSON array."""
             if cached_review:
                 actions = cached_review
             else:
-                raw = await _call_claude_async(prompt, max_tokens=1500, scope="review")
+                raw = await _call_claude_async(prompt, max_tokens=1500, scope="review", function_name="scheduled_review")
 
                 try:
                     clean = raw.strip().replace("```json", "").replace("```", "").strip()

@@ -107,7 +107,7 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
 
         # Call AI conflict resolver
         from app.services.ai_service import resolve_conflict
-        ai_result = resolve_conflict(conflicting_signals, recent_formatted)
+        ai_result = await resolve_conflict(conflicting_signals, recent_formatted)
 
         # Store the conflict resolution
         conflict = ConflictResolution(

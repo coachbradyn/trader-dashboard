@@ -292,10 +292,11 @@ def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = Non
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
-async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general") -> str:
-    """Async wrapper that builds the dynamic system prompt with strategy descriptions, memory, context, and stats."""
+async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general") -> str:
+    """Async wrapper that builds the dynamic system prompt and routes through the dual AI provider."""
+    from app.services.ai_provider import call_ai
     system = await _build_system_prompt(ticker=ticker, strategy=strategy, scope=scope)
-    return _call_claude(prompt, max_tokens=max_tokens, system_override=system)
+    return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens)
 
 
 async def save_memory(
@@ -373,22 +374,15 @@ async def _extract_and_save_context(
     expires_days: int = 14,
 ) -> None:
     """
-    After Henry generates analysis, ask Claude (Haiku) to extract key conclusions
+    After Henry generates analysis, ask AI to extract key conclusions
     and save them as HenryContext entries. Mirrors extract_and_save_memories().
     """
-    if CLIENT is None:
-        return
-
     try:
-        response = CLIENT.messages.create(
-            model=MODEL_LAST_RESORT,
-            max_tokens=400,
-            system="Extract 1-2 key one-sentence conclusions from this trading analysis. Return a JSON array of objects with keys: content (1 sentence), ticker (null or ticker symbol), strategy (null or strategy slug), confidence (1-10 or null).",
-            messages=[{"role": "user", "content": analysis_text}],
-            timeout=15.0,
-        )
+        from app.services.ai_provider import call_ai
+        system = "Extract 1-2 key one-sentence conclusions from this trading analysis. Return a JSON array of objects with keys: content (1 sentence), ticker (null or ticker symbol), strategy (null or strategy slug), confidence (1-10 or null)."
+        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=400)
 
-        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        raw = raw.strip().replace("```json", "").replace("```", "").strip()
         items = json.loads(raw)
 
         if isinstance(items, list):
@@ -408,23 +402,15 @@ async def _extract_and_save_context(
 
 async def extract_and_save_memories(analysis_text: str, source: str = "briefing") -> None:
     """
-    After Henry generates analysis, ask Claude to extract key observations
-    worth remembering for future analysis. Cheap call with Haiku.
+    After Henry generates analysis, ask AI to extract key observations
+    worth remembering for future analysis.
     """
-    if CLIENT is None:
-        return
-
     try:
-        response = CLIENT.messages.create(
-            model=MODEL_LAST_RESORT,  # Use cheapest model for extraction
-            max_tokens=500,
-            system="Extract 1-3 key observations from this trading analysis that would be useful to remember for future decisions. Return a JSON array of objects with keys: content (1 sentence), memory_type (observation|lesson|strategy_note), strategy_id (null or strategy slug), ticker (null or ticker symbol), importance (1-10).",
-            messages=[{"role": "user", "content": analysis_text}],
-            timeout=15.0,
-        )
+        from app.services.ai_provider import call_ai
+        system = "Extract 1-3 key observations from this trading analysis that would be useful to remember for future decisions. Return a JSON array of objects with keys: content (1 sentence), memory_type (observation|lesson|strategy_note), strategy_id (null or strategy slug), ticker (null or ticker symbol), importance (1-10)."
+        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=500)
 
-        import json
-        raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+        raw = raw.strip().replace("```json", "").replace("```", "").strip()
         memories = json.loads(raw)
 
         if isinstance(memories, list):
@@ -482,7 +468,7 @@ def _format_positions_for_prompt(positions: list[dict]) -> str:
 
 # ─── FEATURE 1: NIGHTLY TRADE REVIEW ────────────────────────────────────────
 
-def nightly_review(todays_trades: list[dict], recent_history: list[dict] = None) -> str:
+async def nightly_review(todays_trades: list[dict], recent_history: list[dict] = None) -> str:
     """
     Analyze today's trades, spot patterns, suggest adjustments.
     
@@ -557,7 +543,10 @@ Analyze:
 4. One concrete adjustment to consider for tomorrow
 Keep it under 300 words. Lead with the most important finding."""
 
-    return _call_claude(prompt, max_tokens=1500)
+    import asyncio
+    from app.services.ai_provider import call_ai
+    system = await _build_system_prompt()
+    return await call_ai(system, prompt, function_name="trade_review", max_tokens=1500)
 
 
 # ─── FEATURE 2: MORNING BRIEFING (ENHANCED) ────────────────────────────────
@@ -717,7 +706,9 @@ Be specific. Use dollar amounts and percentages. Reference actual headlines and 
 Keep it under 500 words."""
 
     # Use async call that includes strategy descriptions + memory
-    result = await _call_claude_async(prompt, max_tokens=2500, scope="briefing")
+    from app.services.ai_provider import call_ai
+    system = await _build_system_prompt(scope="briefing")
+    result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2500)
 
     # Extract and save key observations from the briefing (non-blocking, cheap)
     import asyncio
@@ -731,7 +722,7 @@ Keep it under 500 words."""
 
 # ─── FEATURE 3: NATURAL LANGUAGE QUERY ───────────────────────────────────────
 
-def query_trades(
+async def query_trades(
     question: str,
     all_trades: list[dict],
     open_positions: list[dict] = None,
@@ -820,12 +811,14 @@ Answer concisely. If the data doesn't contain enough info to answer, say so.
 If the question involves a comparison, use a small table.
 Keep it under 200 words unless the question requires more detail."""
 
-    return _call_claude(prompt, max_tokens=1000)
+    from app.services.ai_provider import call_ai
+    system = await _build_system_prompt()
+    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question)
 
 
 # ─── FEATURE 4: STRATEGY CONFLICT RESOLUTION ────────────────────────────────
 
-def resolve_conflict(
+async def resolve_conflict(
     conflicting_signals: list[dict],
     recent_trades: list[dict] = None,
     market_context: dict = None
@@ -900,8 +893,10 @@ MARKET CONTEXT:
 Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"recommendation": "LONG" or "SHORT" or "STAY_FLAT", "confidence": 1-10, "reasoning": "one paragraph max"}}"""
 
-    raw = _call_claude(prompt, max_tokens=500)
-    
+    from app.services.ai_provider import call_ai
+    system = await _build_system_prompt(ticker=ticker, scope="signal")
+    raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500)
+
     # Parse JSON response
     try:
         # Strip any markdown fencing just in case
@@ -1173,7 +1168,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     f"{req.question}"
                 )
 
-            result = query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
+            result = await query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
             return {"answer": result, "trades_in_context": len(all_trades)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -1183,7 +1178,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         try:
             recent = await get_trades_fn(days_back=14)
             market = await get_market_data_fn() if get_market_data_fn else None
-            result = resolve_conflict(signals, recent, market)
+            result = await resolve_conflict(signals, recent, market)
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
