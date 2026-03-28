@@ -1317,7 +1317,8 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
             {/* Manual holdings */}
             {holdings.map((h) => (
               <div key={h.id}>
-                <div className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 group">
+                <div className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 cursor-pointer group"
+                  onClick={() => editingId === h.id ? setEditingId(null) : startEdit(h)}>
                   <span className="text-white font-semibold w-12">{h.ticker}</span>
                   <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
                     {h.direction.toUpperCase()}
@@ -1360,10 +1361,10 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                         </span>
                       </div>
                     )}
-                    <button onClick={() => startEdit(h)} className="text-gray-600 hover:text-ai-blue opacity-0 group-hover:opacity-100 transition" title="Edit">
+                    <button onClick={(e) => { e.stopPropagation(); startEdit(h); }} className="text-gray-600 hover:text-ai-blue transition" title="Edit">
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
                     </button>
-                    <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition" title="Remove">
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(h.id); }} className="text-gray-600 hover:text-loss transition" title="Remove">
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                   </div>
