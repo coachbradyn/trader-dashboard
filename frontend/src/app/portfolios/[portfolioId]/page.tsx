@@ -770,9 +770,16 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const [dragOver, setDragOver] = useState(false);
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({ date: "", ticker: "", action: "", qty: "", price: "" });
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editFields, setEditFields] = useState<Record<string, unknown>>({});
+
   const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
   const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
-  const totalCount = holdings.length + positions.length;
+
+  // Deduplicate: filter out strategy positions that already exist as manual holdings
+  const holdingTickers = new Set(holdings.map((h) => `${h.ticker}:${h.direction}`));
+  const uniquePositions = positions.filter((p) => !holdingTickers.has(`${p.ticker}:${p.direction}`));
+  const totalCount = holdings.length + uniquePositions.length;
 
   const handleBuy = async () => {
     if (!ticker || !price || !qty) return;
@@ -831,6 +838,42 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const handleDelete = async (id: string) => {
     if (!confirm("Remove this position?")) return;
     try { await api.deleteHolding(id); onRefresh(); } catch {}
+  };
+
+  const startEdit = (h: PortfolioHolding) => {
+    setEditingId(h.id);
+    setEditFields({
+      position_type: h.position_type || "momentum",
+      thesis: h.thesis || "",
+      catalyst_date: h.catalyst_date || "",
+      catalyst_description: h.catalyst_description || "",
+      max_allocation_pct: h.max_allocation_pct || "",
+      dca_enabled: h.dca_enabled || false,
+      dca_threshold_pct: h.dca_threshold_pct || "",
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    setSubmitting(true);
+    try {
+      const updates: Record<string, unknown> = { position_type: editFields.position_type };
+      if (editFields.thesis) updates.thesis = editFields.thesis;
+      else updates.thesis = null;
+      if (editFields.catalyst_date) updates.catalyst_date = editFields.catalyst_date;
+      else updates.catalyst_date = null;
+      if (editFields.catalyst_description) updates.catalyst_description = editFields.catalyst_description;
+      else updates.catalyst_description = null;
+      if (editFields.max_allocation_pct) updates.max_allocation_pct = parseFloat(String(editFields.max_allocation_pct));
+      else updates.max_allocation_pct = null;
+      updates.dca_enabled = !!editFields.dca_enabled;
+      if (editFields.dca_threshold_pct) updates.dca_threshold_pct = parseFloat(String(editFields.dca_threshold_pct));
+      else updates.dca_threshold_pct = null;
+      await api.updateHolding(editingId, updates);
+      setEditingId(null);
+      onRefresh();
+    } catch {}
+    setSubmitting(false);
   };
 
   // ── Import handlers ──
@@ -1317,18 +1360,75 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                         </span>
                       </div>
                     )}
-                    <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition">
+                    <button onClick={() => startEdit(h)} className="text-gray-600 hover:text-ai-blue opacity-0 group-hover:opacity-100 transition" title="Edit">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+                    </button>
+                    <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition" title="Remove">
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                   </div>
                 </div>
-                {h.thesis && (
+                {h.thesis && editingId !== h.id && (
                   <div className="text-[9px] text-gray-600 pl-12 -mt-0.5 mb-1 italic">&quot;{h.thesis}&quot;</div>
+                )}
+                {/* Inline edit form */}
+                {editingId === h.id && (
+                  <div className="ml-12 mr-2 mb-2 p-3 rounded-lg border border-ai-blue/20 bg-ai-blue/5">
+                    <div className="text-[9px] text-ai-blue font-semibold uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Edit Position</div>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      <select value={String(editFields.position_type)} onChange={(e) => setEditFields((f) => ({ ...f, position_type: e.target.value }))}
+                        className="h-7 text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 text-white">
+                        <option value="momentum">Momentum</option>
+                        <option value="accumulation">Accumulation</option>
+                        <option value="catalyst">Catalyst</option>
+                        <option value="conviction">Conviction</option>
+                      </select>
+                      {editFields.position_type !== "momentum" && (
+                        <Input value={String(editFields.thesis || "")} onChange={(e) => setEditFields((f) => ({ ...f, thesis: e.target.value }))}
+                          placeholder="Investment thesis" className="flex-1 min-w-[200px] h-7 text-[10px] font-mono bg-surface-light/30" />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {editFields.position_type === "catalyst" && (
+                        <>
+                          <Input type="date" value={String(editFields.catalyst_date || "")} onChange={(e) => setEditFields((f) => ({ ...f, catalyst_date: e.target.value }))}
+                            className="w-36 h-7 text-[10px] font-mono bg-surface-light/30" />
+                          <Input value={String(editFields.catalyst_description || "")} onChange={(e) => setEditFields((f) => ({ ...f, catalyst_description: e.target.value }))}
+                            placeholder="e.g., Phase 3 readout" className="w-40 h-7 text-[10px] font-mono bg-surface-light/30" />
+                        </>
+                      )}
+                      {(editFields.position_type === "accumulation" || editFields.position_type === "catalyst") && (
+                        <Input type="number" value={String(editFields.max_allocation_pct || "")} onChange={(e) => setEditFields((f) => ({ ...f, max_allocation_pct: e.target.value }))}
+                          placeholder="Max alloc %" step="0.5" className="w-24 h-7 text-[10px] font-mono bg-surface-light/30" />
+                      )}
+                      {editFields.position_type === "accumulation" && (
+                        <>
+                          <label className="flex items-center gap-1.5 text-[10px] text-gray-400 cursor-pointer">
+                            <input type="checkbox" checked={!!editFields.dca_enabled} onChange={(e) => setEditFields((f) => ({ ...f, dca_enabled: e.target.checked }))}
+                              className="w-3 h-3 rounded" />
+                            DCA
+                          </label>
+                          {editFields.dca_enabled && (
+                            <Input type="number" value={String(editFields.dca_threshold_pct || "")} onChange={(e) => setEditFields((f) => ({ ...f, dca_threshold_pct: e.target.value }))}
+                              placeholder="DCA threshold %" step="1" className="w-28 h-7 text-[10px] font-mono bg-surface-light/30" />
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={saveEdit} disabled={submitting} className="h-6 text-[10px] bg-ai-blue hover:bg-ai-blue/80">
+                        {submitting ? "..." : "Save"}
+                      </Button>
+                      <Button size="sm" onClick={() => setEditingId(null)} className="h-6 text-[10px] bg-white/10 text-white hover:bg-white/20">
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </div>
             ))}
-            {/* Strategy positions */}
-            {positions.map((p) => (
+            {/* Strategy positions (deduplicated — skip if holding already exists) */}
+            {uniquePositions.map((p) => (
               <div key={p.trade_id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10">
                 <span className="text-white font-semibold w-12">{p.ticker}</span>
                 <Badge className={`text-[8px] px-1 py-0 ${p.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
