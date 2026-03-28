@@ -1550,6 +1550,8 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
   useFonts();
   const { portfolioId } = params;
 
+  const [editingEquity, setEditingEquity] = useState(false);
+  const [equityInput, setEquityInput] = useState("");
   const { data: portfolio, loading: loadingPortfolio } = usePolling(() => api.getPortfolio(portfolioId), 15000);
   const { data: performance } = usePolling(() => api.getPerformance(portfolioId), 60000);
   const { data: positions } = usePolling(() => api.getPositions(portfolioId), 15000);
@@ -1593,6 +1595,41 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
           )}
         </div>
         <div className="flex items-center gap-4 text-right">
+          <div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Capital</div>
+            {editingEquity ? (
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-gray-500 font-mono">$</span>
+                <input
+                  type="number"
+                  value={equityInput}
+                  onChange={(e) => setEquityInput(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === "Enter" && equityInput) {
+                      await api.updatePortfolio(portfolioId, { portfolio: { initial_capital: parseFloat(equityInput), cash: parseFloat(equityInput) } });
+                      setEditingEquity(false);
+                    } else if (e.key === "Escape") {
+                      setEditingEquity(false);
+                    }
+                  }}
+                  autoFocus
+                  className="w-28 text-lg font-mono font-bold text-white bg-transparent border-b border-ai-blue outline-none text-right"
+                />
+                <button onClick={() => setEditingEquity(false)} className="text-gray-500 hover:text-white text-xs">✕</button>
+              </div>
+            ) : (
+              <div
+                className="text-xl font-mono font-bold text-white cursor-pointer hover:text-ai-blue transition group"
+                onClick={() => { setEquityInput(String(portfolio.initial_capital)); setEditingEquity(true); }}
+                title="Click to edit initial capital"
+              >
+                {formatCurrency(portfolio.initial_capital)}
+                <svg className="w-3 h-3 inline ml-1 text-gray-600 group-hover:text-ai-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                </svg>
+              </div>
+            )}
+          </div>
           <div>
             <div className="text-[10px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Equity</div>
             <div className="text-xl font-mono font-bold text-white">{formatCurrency(portfolio.equity)}</div>

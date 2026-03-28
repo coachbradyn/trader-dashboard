@@ -110,6 +110,53 @@ export function formatSource(source: string | null | undefined): string {
   return map[source.toLowerCase()] || formatLabel(source);
 }
 
+/** Format indicator names like MACD_12_26 or EMA_CROSS into readable labels */
+export function formatIndicator(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const map: Record<string, string> = {
+    "macd_12_26": "MACD (12/26)",
+    "macd_12_26_9": "MACD (12/26/9)",
+    "ema_cross": "EMA Cross",
+    "ema_cross_9_21": "EMA Cross (9/21)",
+    "ema_cross_12_26": "EMA Cross (12/26)",
+    "ema_cross_50_200": "EMA Cross (50/200)",
+    "rsi_14": "RSI (14)",
+    "rsi_divergence": "RSI Divergence",
+    "bb_squeeze": "BB Squeeze",
+    "bb_breakout": "BB Breakout",
+    "bollinger_squeeze": "Bollinger Squeeze",
+    "vwap_cross": "VWAP Cross",
+    "volume_spike": "Volume Spike",
+    "adx_trend": "ADX Trend",
+    "kalman_breakout": "Kalman Breakout",
+    "lma_momentum": "LMA Momentum",
+    "regime_trend": "Regime Trend",
+    "impulse_breakout": "Impulse Breakout",
+    "kalman_reversion": "Kalman Reversion",
+    "struct_break": "Structure Break",
+    "stochastic_cross": "Stochastic Cross",
+    "atr_breakout": "ATR Breakout",
+    "obv_divergence": "OBV Divergence",
+    "supertrend": "SuperTrend",
+    "ichimoku_cloud": "Ichimoku Cloud",
+  };
+  const lower = raw.toLowerCase();
+  if (map[lower]) return map[lower];
+  // Fallback: replace underscores, capitalize, keep numbers
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b([a-z])/g, (c) => c.toUpperCase())
+    .replace(/\bMacd\b/g, "MACD")
+    .replace(/\bEma\b/g, "EMA")
+    .replace(/\bRsi\b/g, "RSI")
+    .replace(/\bBb\b/g, "BB")
+    .replace(/\bVwap\b/g, "VWAP")
+    .replace(/\bAdx\b/g, "ADX")
+    .replace(/\bAtr\b/g, "ATR")
+    .replace(/\bObv\b/g, "OBV")
+    .replace(/\bLma\b/g, "LMA");
+}
+
 /** Format strategy slug into readable name (fallback if no display_name) */
 export function formatStrategyId(id: string): string {
   return id

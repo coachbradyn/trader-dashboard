@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { formatTimeAgo, formatCurrency, formatPercent, pnlColor } from "@/lib/formatters";
+import { formatTimeAgo, formatCurrency, formatPercent, pnlColor, formatIndicator } from "@/lib/formatters";
 import { renderMarkdown } from "@/lib/markdown";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -420,7 +420,7 @@ export default function TickerDetailPage() {
                 {detail.all_signals.map((s) => (
                   <div key={s.id} className="flex items-center gap-2 text-xs py-1.5 px-2 rounded bg-surface-light/20">
                     <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${signalDot(s.signal)}`} />
-                    <span className="text-gray-300 font-mono flex-1">{s.indicator}</span>
+                    <span className="text-gray-300 font-mono flex-1">{formatIndicator(s.indicator)}</span>
                     <span className="text-gray-500 font-mono">{s.value.toFixed(2)}</span>
                     <span className={s.signal === "bullish" ? "text-profit" : s.signal === "bearish" ? "text-loss" : "text-gray-500"}>{s.signal}</span>
                     <span className="text-gray-600">{formatTimeAgo(s.created_at)}</span>

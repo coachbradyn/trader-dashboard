@@ -1053,13 +1053,14 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 )
             holdings_context = "\n".join(holdings_context_lines) if holdings_context_lines else None
 
-            # Add position archetype context for non-momentum holdings
+            # Add position archetype context for ALL holdings with thesis or non-momentum type
             position_context_lines = []
             for h in holdings:
-                pos_type = getattr(h, "position_type", None)
-                if pos_type and pos_type != "momentum":
+                pos_type = getattr(h, "position_type", None) or "momentum"
+                thesis = getattr(h, "thesis", None)
+                # Include if non-momentum OR if has a thesis (even momentum with thesis)
+                if pos_type != "momentum" or thesis:
                     ctx = f"  [{pos_type.upper()}] {h.ticker}"
-                    thesis = getattr(h, "thesis", None)
                     if thesis:
                         ctx += f" — Thesis: {thesis}"
                     cat_date = getattr(h, "catalyst_date", None)
@@ -1193,13 +1194,13 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                         header = f"Portfolio: {portfolio_name or 'All'} | Total value: ${total_value:,.2f} | Cost basis: ${total_cost:,.2f} | Return: {total_pnl_pct:+.2f}%"
                         holdings_context = header + "\n" + "\n".join(formatted)
 
-                        # Add position archetype context for non-momentum holdings
+                        # Add position archetype context for ALL holdings with thesis or non-momentum
                         pos_ctx_lines = []
                         for h in holdings:
-                            pos_type = getattr(h, "position_type", None)
-                            if pos_type and pos_type != "momentum":
+                            pos_type = getattr(h, "position_type", None) or "momentum"
+                            thesis = getattr(h, "thesis", None)
+                            if pos_type != "momentum" or thesis:
                                 ctx = f"  [{pos_type.upper()}] {h.ticker}"
-                                thesis = getattr(h, "thesis", None)
                                 if thesis:
                                     ctx += f" — Thesis: {thesis}"
                                 cat_date = getattr(h, "catalyst_date", None)

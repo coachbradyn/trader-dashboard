@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { formatTimeAgo } from "@/lib/formatters";
+import { formatTimeAgo, formatIndicator } from "@/lib/formatters";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -269,7 +269,7 @@ function TickerCard({
           {item.latest_signals.slice(0, 3).map((s, i) => (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${signalDot(s.signal)}`} />
-              <span className="text-gray-400 font-mono truncate">{s.indicator}</span>
+              <span className="text-gray-400 font-mono truncate">{formatIndicator(s.indicator)}</span>
               <span className={`ml-auto ${
                 s.signal === "bullish" ? "text-profit" : s.signal === "bearish" ? "text-loss" : "text-gray-500"
               }`}>
