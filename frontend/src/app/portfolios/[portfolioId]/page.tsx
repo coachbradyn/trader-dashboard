@@ -773,6 +773,14 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editFields, setEditFields] = useState<Record<string, unknown>>({});
 
+  // Fetch recent actions for notification tooltips
+  const [actions, setActions] = useState<import("@/lib/types").PortfolioAction[]>([]);
+  useEffect(() => {
+    api.getActions("all", portfolioId).then(setActions).catch(() => {});
+  }, [portfolioId]);
+
+  const [hoveredAlert, setHoveredAlert] = useState<string | null>(null);
+
   const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
   const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
 
@@ -780,6 +788,21 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const holdingTickers = new Set(holdings.map((h) => `${h.ticker}:${h.direction}`));
   const uniquePositions = positions.filter((p) => !holdingTickers.has(`${p.ticker}:${p.direction}`));
   const totalCount = holdings.length + uniquePositions.length;
+
+  // Build a map of recent actions per ticker for notification tooltips
+  const actionsByTicker: Record<string, typeof actions[number][]> = {};
+  if (actions.length > 0) {
+    for (const a of actions) {
+      if (!actionsByTicker[a.ticker]) actionsByTicker[a.ticker] = [];
+      if (actionsByTicker[a.ticker].length < 3) actionsByTicker[a.ticker].push(a);
+    }
+  }
+
+  // Allocation helper
+  const getAllocation = (price: number, qty: number) => {
+    if (totalValue <= 0) return 0;
+    return ((price * qty) / totalValue) * 100;
+  };
 
   const handleBuy = async () => {
     if (!ticker || !price || !qty) return;
@@ -1349,8 +1372,11 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                   {h.current_price && (
                     <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(h.current_price)}</span>
                   )}
-                  <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
-                  <div className="ml-auto flex items-center gap-3">
+                  {/* Allocation % */}
+                  <span className="text-[9px] text-gray-600 tabular-nums">
+                    {getAllocation(h.current_price ?? h.entry_price, h.qty).toFixed(1)}%
+                  </span>
+                  <div className="ml-auto flex items-center gap-2">
                     {h.unrealized_pnl != null && (
                       <div className="text-right">
                         <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
@@ -1359,6 +1385,61 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                         <span className={`ml-1.5 ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
                           ({formatPercent(h.unrealized_pnl_pct ?? 0)})
                         </span>
+                      </div>
+                    )}
+                    {/* Henry notification — recent actions for this ticker */}
+                    {actionsByTicker[h.ticker] && actionsByTicker[h.ticker].length > 0 && (
+                      <div className="relative"
+                        onMouseEnter={() => setHoveredAlert(h.ticker)}
+                        onMouseLeave={() => setHoveredAlert(null)}
+                        onClick={(e) => e.stopPropagation()}>
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center cursor-pointer transition ${
+                          actionsByTicker[h.ticker].some((a) => a.status === "pending")
+                            ? "bg-screener-amber/20 text-screener-amber"
+                            : "bg-gray-700/50 text-gray-500 hover:text-gray-300"
+                        }`}>
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                          </svg>
+                        </div>
+                        {hoveredAlert === h.ticker && (
+                          <div className="absolute right-0 top-7 z-50 w-72 p-3 rounded-lg bg-surface border border-border shadow-xl">
+                            <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>
+                              Recent Henry Actions — {h.ticker}
+                            </div>
+                            <div className="space-y-2">
+                              {actionsByTicker[h.ticker].map((a) => (
+                                <div key={a.id} className="text-[10px]">
+                                  <div className="flex items-center gap-1.5 mb-0.5">
+                                    <Badge className={`text-[7px] px-1 py-0 ${
+                                      a.action_type === "BUY" || a.action_type === "ADD" || a.action_type === "DCA" ? "bg-profit/15 text-profit"
+                                        : a.action_type === "SELL" || a.action_type === "CLOSE" ? "bg-loss/15 text-loss"
+                                        : "bg-screener-amber/15 text-screener-amber"
+                                    }`}>{a.action_type}</Badge>
+                                    <span className={`text-[8px] px-1 rounded ${
+                                      a.status === "pending" ? "bg-screener-amber/10 text-screener-amber"
+                                        : a.status === "approved" ? "bg-profit/10 text-profit"
+                                        : a.status === "rejected" ? "bg-loss/10 text-loss"
+                                        : "bg-gray-700 text-gray-400"
+                                    }`}>{a.status}</span>
+                                    <span className="text-gray-600 ml-auto">{formatTimeAgo(a.created_at)}</span>
+                                  </div>
+                                  <p className="text-gray-400 leading-snug line-clamp-2">{a.reasoning}</p>
+                                  {a.confidence > 0 && (
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      <span className="text-[8px] text-gray-600">Confidence:</span>
+                                      <div className="flex gap-px">
+                                        {Array.from({ length: 10 }).map((_, i) => (
+                                          <div key={i} className={`w-1.5 h-1 rounded-sm ${i < a.confidence ? "bg-ai-blue" : "bg-gray-800"}`} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     <button onClick={(e) => { e.stopPropagation(); startEdit(h); }} className="text-gray-600 hover:text-ai-blue transition" title="Edit">
