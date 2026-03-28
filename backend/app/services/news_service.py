@@ -114,14 +114,13 @@ def _fetch_company_sync(ticker: str) -> dict:
     info = tk.info or {}
 
     long_summary = info.get("longBusinessSummary", "") or ""
-    truncated = long_summary[:200] + ("..." if len(long_summary) > 200 else "")
 
     return {
         "name": info.get("longName") or info.get("shortName") or ticker,
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "market_cap": info.get("marketCap"),
-        "description": truncated if truncated else None,
+        "description": long_summary or None,  # Full description, frontend handles truncation
         "high_52w": info.get("fiftyTwoWeekHigh"),
         "low_52w": info.get("fiftyTwoWeekLow"),
     }

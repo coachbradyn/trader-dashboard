@@ -49,6 +49,30 @@ function consensusLabel(dir: string) {
 
 const CHART_TOOLTIP = { background: "#1f2937", border: "1px solid #374151", borderRadius: 8 };
 
+function CompanyDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const truncLen = 200;
+  const needsTruncation = text.length > truncLen;
+  const displayed = expanded ? text : text.slice(0, truncLen) + (needsTruncation ? "..." : "");
+
+  return (
+    <div className="mt-2">
+      <p className="text-xs text-gray-400 leading-relaxed" style={FONT_OUTFIT}>
+        {displayed}
+      </p>
+      {needsTruncation && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[10px] text-ai-blue/70 hover:text-ai-blue mt-1 transition"
+          style={FONT_OUTFIT}
+        >
+          {expanded ? "Show less" : "Read more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function TickerDetailPage() {
   useFonts();
   const params = useParams();
@@ -233,11 +257,7 @@ export default function TickerDetailPage() {
                     </div>
                   )}
                 </div>
-                {newsData.company.description && (
-                  <p className="text-xs text-gray-400 leading-relaxed mt-2" style={FONT_OUTFIT}>
-                    {newsData.company.description}
-                  </p>
-                )}
+                {newsData.company.description && <CompanyDescription text={newsData.company.description} />}
                 <div className="flex items-center gap-6 mt-3 pt-3 border-t border-border">
                   {newsData.company.high_52w != null && (
                     <div>

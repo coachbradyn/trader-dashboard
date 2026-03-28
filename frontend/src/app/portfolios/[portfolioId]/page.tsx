@@ -737,20 +737,26 @@ function ActionQueue({ portfolioId }: { portfolioId: string }) {
 
 // ── Holdings CRUD (inline) ──────────────────────────────────────────
 
-function HoldingsManager({ portfolioId, holdings, onRefresh }: { portfolioId: string; holdings: PortfolioHolding[]; onRefresh: () => void }) {
-  const [showAdd, setShowAdd] = useState(false);
+function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
+  portfolioId: string;
+  holdings: PortfolioHolding[];
+  positions: Position[];
+  onRefresh: () => void;
+}) {
+  const [mode, setMode] = useState<"buy" | "sell" | null>(null);
   const [ticker, setTicker] = useState("");
   const [dir, setDir] = useState<"long" | "short">("long");
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
   const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
+  const totalCount = holdings.length + positions.length;
 
-  const handleAdd = async () => {
+  const handleBuy = async () => {
     if (!ticker || !price || !qty) return;
-    setAdding(true);
+    setSubmitting(true);
     try {
       await api.createHolding({
         portfolio_id: portfolioId,
@@ -760,14 +766,37 @@ function HoldingsManager({ portfolioId, holdings, onRefresh }: { portfolioId: st
         qty: parseFloat(qty),
         entry_date: new Date().toISOString().slice(0, 10),
       });
-      setTicker(""); setPrice(""); setQty(""); setShowAdd(false);
+      setTicker(""); setPrice(""); setQty(""); setMode(null);
       onRefresh();
     } catch {}
-    setAdding(false);
+    setSubmitting(false);
+  };
+
+  const handleSell = async () => {
+    // Selling reduces a holding — find the matching holding and reduce qty or remove
+    if (!ticker || !qty) return;
+    setSubmitting(true);
+    const t = ticker.toUpperCase();
+    const matching = holdings.find((h) => h.ticker === t && h.is_active);
+    if (matching) {
+      const sellQty = parseFloat(qty);
+      if (sellQty >= matching.qty) {
+        // Full sell — delete the holding
+        try { await api.deleteHolding(matching.id); } catch {}
+      } else {
+        // Partial sell — update qty (create a negative holding to reduce)
+        try {
+          await api.updateHolding(matching.id, { qty: matching.qty - sellQty });
+        } catch {}
+      }
+    }
+    setTicker(""); setPrice(""); setQty(""); setMode(null);
+    onRefresh();
+    setSubmitting(false);
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Remove this holding?")) return;
+    if (!confirm("Remove this position?")) return;
     try { await api.deleteHolding(id); onRefresh(); } catch {}
   };
 
@@ -776,52 +805,114 @@ function HoldingsManager({ portfolioId, holdings, onRefresh }: { portfolioId: st
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>
-            Holdings <span className="text-gray-500 font-normal">({holdings.length})</span>
+            Positions <span className="text-gray-500 font-normal">({totalCount})</span>
           </h3>
-          <div className="flex items-center gap-3">
-            {holdings.length > 0 && (
+          <div className="flex items-center gap-2">
+            {totalValue > 0 && (
               <span className={`text-xs font-mono ${pnlColor(totalUnrealized)}`}>
                 {formatCurrency(totalValue)} ({formatPercent(totalValue > 0 ? totalUnrealized / totalValue * 100 : 0)})
               </span>
             )}
-            <Button size="sm" variant="outline" onClick={() => setShowAdd(!showAdd)} className="text-[10px] h-7">
-              {showAdd ? "Cancel" : "+ Add Holding"}
+            <Button size="sm" onClick={() => setMode(mode === "buy" ? null : "buy")}
+              className={`text-[10px] h-7 ${mode === "buy" ? "bg-profit text-white" : "bg-profit/10 text-profit border-profit/20 hover:bg-profit/20"}`}>
+              {mode === "buy" ? "Cancel" : "Buy"}
+            </Button>
+            <Button size="sm" onClick={() => setMode(mode === "sell" ? null : "sell")}
+              className={`text-[10px] h-7 ${mode === "sell" ? "bg-loss text-white" : "bg-loss/10 text-loss border-loss/20 hover:bg-loss/20"}`}>
+              {mode === "sell" ? "Cancel" : "Sell"}
             </Button>
           </div>
         </div>
 
-        {showAdd && (
-          <div className="flex flex-wrap gap-2 mb-4 p-3 rounded-lg border border-border/40 bg-surface/50">
+        {/* Buy Form */}
+        {mode === "buy" && (
+          <div className="flex flex-wrap gap-2 mb-4 p-3 rounded-lg border border-profit/20 bg-profit/5">
+            <div className="text-[9px] text-profit font-semibold uppercase tracking-wider w-full mb-1" style={FONT_OUTFIT}>Buy Position</div>
             <Input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="Ticker" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
             <div className="flex rounded-md overflow-hidden border border-border">
               <button onClick={() => setDir("long")} className={`px-2.5 py-1 text-[10px] ${dir === "long" ? "bg-profit/20 text-profit" : "bg-surface-light/30 text-gray-500"}`}>Long</button>
               <button onClick={() => setDir("short")} className={`px-2.5 py-1 text-[10px] ${dir === "short" ? "bg-loss/20 text-loss" : "bg-surface-light/30 text-gray-500"}`}>Short</button>
             </div>
-            <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
-            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty" type="number" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
-            <Button size="sm" onClick={handleAdd} disabled={adding || !ticker || !price || !qty} className="h-8 text-[10px]">
-              {adding ? "Adding..." : "Add"}
+            <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" step="0.01" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Shares" type="number" step="0.001" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+            <Button size="sm" onClick={handleBuy} disabled={submitting || !ticker || !price || !qty}
+              className="h-8 text-[10px] bg-profit hover:bg-profit/80">
+              {submitting ? "..." : "Buy"}
             </Button>
           </div>
         )}
 
-        {holdings.length === 0 ? (
-          <p className="text-xs text-gray-500 text-center py-6">No holdings — add manually or receive via webhooks</p>
+        {/* Sell Form */}
+        {mode === "sell" && (
+          <div className="flex flex-wrap gap-2 mb-4 p-3 rounded-lg border border-loss/20 bg-loss/5">
+            <div className="text-[9px] text-loss font-semibold uppercase tracking-wider w-full mb-1" style={FONT_OUTFIT}>Sell Position</div>
+            <Input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="Ticker" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
+            <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price (optional)" type="number" step="0.01" className="w-28 h-8 text-xs font-mono bg-surface-light/30" />
+            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Shares" type="number" step="0.001" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+            <Button size="sm" onClick={handleSell} disabled={submitting || !ticker || !qty}
+              className="h-8 text-[10px] bg-loss hover:bg-loss/80">
+              {submitting ? "..." : "Sell"}
+            </Button>
+          </div>
+        )}
+
+        {/* Combined positions list */}
+        {totalCount === 0 ? (
+          <p className="text-xs text-gray-500 text-center py-6">No positions — use Buy to add your first position</p>
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-1">
+            {/* Manual holdings */}
             {holdings.map((h) => (
-              <div key={h.id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 border-b border-border/30 last:border-0 group">
+              <div key={h.id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 group">
                 <span className="text-white font-semibold w-12">{h.ticker}</span>
-                <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>{h.direction.toUpperCase()}</Badge>
+                <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
+                  {h.direction.toUpperCase()}
+                </Badge>
                 <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
+                {h.current_price && (
+                  <span className="text-gray-500">→ {formatCurrency(h.current_price)}</span>
+                )}
                 <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
-                <div className="ml-auto flex items-center gap-2">
+                <div className="ml-auto flex items-center gap-3">
                   {h.unrealized_pnl != null && (
-                    <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>{formatPercent(h.unrealized_pnl_pct ?? 0)}</span>
+                    <div className="text-right">
+                      <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
+                        {formatCurrency(h.unrealized_pnl)}
+                      </span>
+                      <span className={`ml-1.5 ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
+                        ({formatPercent(h.unrealized_pnl_pct ?? 0)})
+                      </span>
+                    </div>
                   )}
                   <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
+                </div>
+              </div>
+            ))}
+            {/* Strategy positions */}
+            {positions.map((p) => (
+              <div key={p.trade_id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10">
+                <span className="text-white font-semibold w-12">{p.ticker}</span>
+                <Badge className={`text-[8px] px-1 py-0 ${p.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
+                  {p.direction.toUpperCase()}
+                </Badge>
+                <span className="text-gray-500">{p.qty} @ {formatCurrency(p.entry_price)}</span>
+                {p.current_price && (
+                  <span className="text-gray-500">→ {formatCurrency(p.current_price)}</span>
+                )}
+                <Badge className="text-[8px] px-1 py-0 bg-ai-blue/10 text-ai-blue">strategy</Badge>
+                <div className="ml-auto">
+                  {p.unrealized_pnl != null && (
+                    <div className="text-right">
+                      <span className={`font-semibold ${pnlColor(p.unrealized_pnl)}`}>
+                        {formatCurrency(p.unrealized_pnl)}
+                      </span>
+                      <span className={`ml-1.5 ${pnlColor(p.unrealized_pnl_pct ?? 0)}`}>
+                        ({formatPercent(p.unrealized_pnl_pct ?? 0)})
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -922,13 +1013,10 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
       )}
 
       {/* Content Tabs */}
-      <Tabs defaultValue="holdings" className="w-full">
+      <Tabs defaultValue="positions" className="w-full">
         <TabsList className="bg-surface-light/30 border border-border p-1 rounded-lg">
-          <TabsTrigger value="holdings" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
-            Holdings ({holdings?.length ?? 0})
-          </TabsTrigger>
           <TabsTrigger value="positions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
-            Positions ({positions?.length ?? 0})
+            Positions ({(holdings?.length ?? 0) + (positions?.length ?? 0)})
           </TabsTrigger>
           <TabsTrigger value="trades" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Trades ({trades?.length ?? 0})
@@ -941,12 +1029,8 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="holdings" className="mt-4 space-y-4">
-          <HoldingsManager portfolioId={portfolioId} holdings={holdings || []} onRefresh={() => {}} />
-        </TabsContent>
-
         <TabsContent value="positions" className="mt-4 space-y-4">
-          <OpenPositions positions={positions || []} />
+          <PositionsManager portfolioId={portfolioId} holdings={holdings || []} positions={positions || []} onRefresh={() => {}} />
         </TabsContent>
 
         <TabsContent value="trades" className="mt-4">
