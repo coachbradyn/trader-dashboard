@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -865,6 +865,483 @@ async def reject_action(action_id: str, body: ActionReject | None = None, db: As
     ))
 
     return {"status": "rejected", "action_id": action_id}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BROKERAGE TRADE CSV IMPORT
+# ══════════════════════════════════════════════════════════════════════
+
+BROKERAGE_PATTERNS = {
+    "robinhood": {
+        "headers": ["activity date", "instrument", "trans code", "quantity", "price", "amount"],
+        "mapping": {
+            "date": "activity date",
+            "ticker": "instrument",
+            "action": "trans code",
+            "qty": "quantity",
+            "price": "price",
+            "amount": "amount",
+        },
+        "action_map": {"buy": "buy", "sell": "sell", "stc": "sell", "btc": "buy", "bto": "buy", "sto": "sell"},
+    },
+    "schwab": {
+        "headers": ["date", "action", "symbol", "quantity", "price", "amount"],
+        "mapping": {
+            "date": "date",
+            "ticker": "symbol",
+            "action": "action",
+            "qty": "quantity",
+            "price": "price",
+            "amount": "amount",
+        },
+        "action_map": {"buy": "buy", "sell": "sell", "buy to open": "buy", "sell to close": "sell"},
+    },
+    "fidelity": {
+        "headers": ["run date", "action", "symbol", "quantity", "price ($)", "amount ($)"],
+        "mapping": {
+            "date": "run date",
+            "ticker": "symbol",
+            "action": "action",
+            "qty": "quantity",
+            "price": "price ($)",
+            "amount": "amount ($)",
+        },
+        "action_map": {"you bought": "buy", "you sold": "sell", "bought": "buy", "sold": "sell"},
+    },
+    "webull": {
+        "headers": ["symbol", "side", "qty", "price", "total"],
+        "mapping": {
+            "date": "create time",
+            "ticker": "symbol",
+            "action": "side",
+            "qty": "qty",
+            "price": "price",
+            "amount": "total",
+        },
+        "action_map": {"buy": "buy", "sell": "sell"},
+    },
+    "etrade": {
+        "headers": ["transaction date", "transaction type", "symbol", "quantity", "price", "amount"],
+        "mapping": {
+            "date": "transaction date",
+            "ticker": "symbol",
+            "action": "transaction type",
+            "qty": "quantity",
+            "price": "price",
+            "amount": "amount",
+        },
+        "action_map": {"bought": "buy", "sold": "sell", "buy": "buy", "sell": "sell"},
+    },
+}
+
+# Keywords indicating non-equity transactions to skip
+SKIP_KEYWORDS = {"dividend", "interest", "fee", "journal", "transfer", "acat", "reinvest",
+                 "margin", "adjustment", "wire", "ach", "deposit", "withdrawal", "option",
+                 "call", "put", "expired", "assigned", "exercised"}
+
+
+def _clean_numeric(val: str | None) -> float | None:
+    """Strip $, commas, whitespace from numeric fields and parse."""
+    if not val or not val.strip():
+        return None
+    cleaned = val.strip().replace("$", "").replace(",", "").replace("(", "-").replace(")", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_date_flexible(val: str | None) -> str | None:
+    """Parse various date formats into YYYY-MM-DD string."""
+    if not val or not val.strip():
+        return None
+    s = val.strip()
+    # Try multiple formats
+    formats = [
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%m/%d/%y",
+        "%m-%d-%y",
+        "%Y/%m/%d",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%d-%b-%Y",
+        "%Y-%m-%dT%H:%M:%S.%f",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    # Last resort: try dateutil-style parsing
+    # Just grab first 10 chars if it looks like YYYY-MM-DD
+    if len(s) >= 10 and s[4] in "-/" and s[7] in "-/":
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return None
+
+
+def _detect_brokerage(headers: list[str]) -> str | None:
+    """Detect brokerage from CSV column headers."""
+    lower_headers = set(h.lower().strip() for h in headers)
+    for name, pattern in BROKERAGE_PATTERNS.items():
+        required = set(h.lower() for h in pattern["headers"])
+        if required.issubset(lower_headers):
+            return name
+    return None
+
+
+def _should_skip_row(row: dict, action_col: str) -> bool:
+    """Check if a row is a non-equity transaction that should be skipped."""
+    action_val = (row.get(action_col) or "").lower().strip()
+    # Check action column for skip keywords
+    for kw in SKIP_KEYWORDS:
+        if kw in action_val:
+            return True
+    # Also check other columns for option-like patterns (e.g. ticker containing spaces or option descriptors)
+    return False
+
+
+def _resolve_action(action_val: str, action_map: dict) -> str | None:
+    """Resolve an action string to 'buy' or 'sell' using the brokerage action map."""
+    lower = action_val.lower().strip()
+    # Direct match
+    if lower in action_map:
+        return action_map[lower]
+    # Partial match (e.g. "Sell to Close" contains "sell")
+    for key, resolved in action_map.items():
+        if key in lower:
+            return resolved
+    return None
+
+
+def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> list[dict]:
+    """Parse CSV content into normalized trade dicts using the given column mapping and action map."""
+    reader = csv.DictReader(io.StringIO(content))
+    trades = []
+
+    # Build a case-insensitive lookup for the actual CSV column names
+    fieldnames = reader.fieldnames or []
+    col_lookup = {f.lower().strip(): f for f in fieldnames}
+
+    def get_val(row: dict, mapped_name: str) -> str | None:
+        # mapped_name is the value from our mapping dict (e.g., "activity date")
+        # Try exact match first, then case-insensitive
+        if mapped_name in row:
+            return row[mapped_name]
+        actual = col_lookup.get(mapped_name.lower().strip())
+        if actual and actual in row:
+            return row[actual]
+        return None
+
+    for row in reader:
+        # Get action value and check for skip
+        action_raw = get_val(row, mapping["action"]) or ""
+        action_lower = action_raw.lower().strip()
+
+        # Skip non-equity rows
+        skip = False
+        for kw in SKIP_KEYWORDS:
+            if kw in action_lower:
+                skip = True
+                break
+        if skip:
+            continue
+
+        # Resolve action
+        action = _resolve_action(action_raw, action_map)
+        if not action:
+            continue
+
+        # Get ticker
+        ticker_raw = get_val(row, mapping["ticker"])
+        if not ticker_raw or not ticker_raw.strip():
+            continue
+        ticker = ticker_raw.strip().upper()
+        # Skip if ticker looks like an option (contains space or more than 6 chars with digits)
+        if " " in ticker or len(ticker) > 6:
+            continue
+
+        # Parse numeric fields
+        qty_val = _clean_numeric(get_val(row, mapping["qty"]))
+        price_val = _clean_numeric(get_val(row, mapping["price"]))
+        amount_val = _clean_numeric(get_val(row, mapping.get("amount", "")))
+
+        if qty_val is None or price_val is None:
+            continue
+        if qty_val == 0 or price_val == 0:
+            continue
+
+        # Handle negative quantities (some brokerages use negative for sells)
+        qty_val = abs(qty_val)
+        price_val = abs(price_val)
+        if amount_val is not None:
+            amount_val = abs(amount_val)
+        else:
+            amount_val = round(qty_val * price_val, 2)
+
+        # Parse date
+        date_str = _parse_date_flexible(get_val(row, mapping["date"]))
+        if not date_str:
+            date_str = datetime.utcnow().strftime("%Y-%m-%d")
+
+        trades.append({
+            "date": date_str,
+            "ticker": ticker,
+            "action": action,
+            "qty": round(qty_val, 6),
+            "price": round(price_val, 4),
+            "amount": round(amount_val, 2),
+        })
+
+    return trades
+
+
+def _build_summary(trades: list[dict]) -> dict:
+    """Build a summary dict from a list of parsed trade dicts."""
+    buys = sum(1 for t in trades if t["action"] == "buy")
+    sells = sum(1 for t in trades if t["action"] == "sell")
+    tickers = sorted(set(t["ticker"] for t in trades))
+    dates = [t["date"] for t in trades if t["date"]]
+    date_range = ""
+    if dates:
+        date_range = f"{min(dates)} to {max(dates)}"
+    return {
+        "total_trades": len(trades),
+        "buys": buys,
+        "sells": sells,
+        "tickers": tickers,
+        "date_range": date_range,
+    }
+
+
+@router.post("/import-trades/preview")
+async def preview_import_trades(file: UploadFile = File(...)):
+    """
+    Upload a brokerage CSV and get a parsed preview.
+    Auto-detects brokerage format; returns needs_mapping if unknown.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "File must be a CSV")
+
+    raw = await file.read()
+    content = raw.decode("utf-8-sig")  # handle BOM
+
+    reader = csv.DictReader(io.StringIO(content))
+    headers = reader.fieldnames or []
+
+    if not headers:
+        raise HTTPException(400, "CSV has no column headers")
+
+    brokerage = _detect_brokerage(headers)
+
+    if not brokerage:
+        # Return needs_mapping response with sample rows
+        sample_reader = csv.DictReader(io.StringIO(content))
+        sample_rows = []
+        for i, row in enumerate(sample_reader):
+            if i >= 3:
+                break
+            sample_rows.append(dict(row))
+        return {
+            "status": "needs_mapping",
+            "headers": headers,
+            "sample_rows": sample_rows,
+        }
+
+    pattern = BROKERAGE_PATTERNS[brokerage]
+    trades = _parse_trades_from_csv(content, pattern["mapping"], pattern["action_map"])
+
+    if not trades:
+        raise HTTPException(400, "No valid equity trades found in the CSV")
+
+    return {
+        "status": "ready",
+        "brokerage": brokerage,
+        "trades": trades,
+        "summary": _build_summary(trades),
+    }
+
+
+@router.post("/import-trades/parse-with-mapping")
+async def parse_with_mapping(
+    file: UploadFile = File(...),
+    mapping: str = Form(""),
+):
+    """
+    Parse a CSV with user-provided column mapping.
+    mapping is a JSON string: {"date": "col", "ticker": "col", "action": "col", "qty": "col", "price": "col"}
+    """
+    import json as json_mod
+
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "File must be a CSV")
+
+    if not mapping:
+        raise HTTPException(400, "Column mapping is required")
+
+    try:
+        col_mapping = json_mod.loads(mapping)
+    except json_mod.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON in mapping parameter")
+
+    required_keys = {"date", "ticker", "action", "qty", "price"}
+    if not required_keys.issubset(col_mapping.keys()):
+        raise HTTPException(400, f"Mapping must include: {required_keys}")
+
+    raw = await file.read()
+    content = raw.decode("utf-8-sig")
+
+    # Generic action map for user-provided mappings
+    generic_action_map = {
+        "buy": "buy", "sell": "sell",
+        "bought": "buy", "sold": "sell",
+        "buy to open": "buy", "sell to close": "sell",
+        "buy to close": "buy", "sell to open": "sell",
+        "bto": "buy", "stc": "sell", "btc": "buy", "sto": "sell",
+        "you bought": "buy", "you sold": "sell",
+        "long": "buy", "short": "sell",
+    }
+
+    trades = _parse_trades_from_csv(content, col_mapping, generic_action_map)
+
+    if not trades:
+        raise HTTPException(400, "No valid equity trades found with the provided mapping")
+
+    return {
+        "status": "ready",
+        "brokerage": "custom",
+        "trades": trades,
+        "summary": _build_summary(trades),
+    }
+
+
+@router.post("/import-trades/confirm")
+async def confirm_import_trades(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Confirm and execute a trade import into a portfolio.
+    Body: { portfolio_id, trades: [{date, ticker, action, qty, price, amount}] }
+    """
+    portfolio_id = body.get("portfolio_id")
+    trades = body.get("trades", [])
+
+    if not portfolio_id:
+        raise HTTPException(400, "portfolio_id is required")
+    if not trades:
+        raise HTTPException(400, "No trades to import")
+
+    # Sort trades chronologically (oldest first)
+    trades.sort(key=lambda t: t.get("date", ""))
+
+    holdings_created = 0
+    holdings_updated = 0
+    holdings_closed = 0
+    imported = 0
+
+    for trade in trades:
+        ticker = trade.get("ticker", "").upper()
+        action = trade.get("action", "")
+        qty = float(trade.get("qty", 0))
+        price = float(trade.get("price", 0))
+        date_str = trade.get("date", "")
+
+        if not ticker or not action or qty <= 0 or price <= 0:
+            continue
+
+        # Parse date
+        try:
+            entry_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            entry_date = datetime.utcnow()
+
+        if action == "buy":
+            # Check for existing active holding with same ticker+portfolio, direction=long
+            result = await db.execute(
+                select(PortfolioHolding).where(
+                    PortfolioHolding.portfolio_id == portfolio_id,
+                    PortfolioHolding.ticker == ticker,
+                    PortfolioHolding.direction == "long",
+                    PortfolioHolding.is_active == True,
+                )
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                # Merge: weighted average price, sum qty
+                old_cost = existing.entry_price * existing.qty
+                new_cost = price * qty
+                total_qty = existing.qty + qty
+                avg_price = (old_cost + new_cost) / total_qty if total_qty > 0 else price
+
+                existing.entry_price = round(avg_price, 4)
+                existing.qty = round(total_qty, 6)
+                if entry_date < existing.entry_date:
+                    existing.entry_date = entry_date
+                holdings_updated += 1
+            else:
+                # Create new holding
+                holding = PortfolioHolding(
+                    portfolio_id=portfolio_id,
+                    ticker=ticker,
+                    direction="long",
+                    entry_price=round(price, 4),
+                    qty=round(qty, 6),
+                    entry_date=entry_date,
+                    strategy_name="import",
+                    notes=f"Imported from CSV",
+                    is_active=True,
+                    created_at=datetime.utcnow(),
+                )
+                db.add(holding)
+                holdings_created += 1
+
+        elif action == "sell":
+            # Find matching active holding
+            result = await db.execute(
+                select(PortfolioHolding).where(
+                    PortfolioHolding.portfolio_id == portfolio_id,
+                    PortfolioHolding.ticker == ticker,
+                    PortfolioHolding.direction == "long",
+                    PortfolioHolding.is_active == True,
+                )
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                remaining = existing.qty - qty
+                if remaining <= 0.0001:
+                    # Full close
+                    existing.is_active = False
+                    existing.qty = 0
+                    holdings_closed += 1
+                else:
+                    existing.qty = round(remaining, 6)
+                    holdings_updated += 1
+
+        imported += 1
+
+        # Flush periodically to avoid stale reads in subsequent iterations
+        if imported % 50 == 0:
+            await db.flush()
+
+    await db.commit()
+
+    return {
+        "imported": imported,
+        "holdings_created": holdings_created,
+        "holdings_updated": holdings_updated,
+        "holdings_closed": holdings_closed,
+    }
 
 
 # ── Debug / Seed ─────────────────────────────────────────────────────

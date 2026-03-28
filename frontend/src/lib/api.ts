@@ -197,6 +197,36 @@ export const api = {
     return res.json() as Promise<import("./types").BacktestImportData[]>;
   },
 
+  // Portfolio Manager - Brokerage CSV Import
+  previewImportTrades: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+    const res = await fetch(`${API_URL}/portfolio-manager/import-trades/preview`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Preview failed: ${res.status}`);
+    return res.json() as Promise<import("./types").ImportPreview>;
+  },
+  confirmImportTrades: (data: { portfolio_id: string; trades: import("./types").ImportedTrade[] }) =>
+    fetchApi<import("./types").ImportResult>("/portfolio-manager/import-trades/confirm", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  parseWithMapping: async (file: File, mapping: Record<string, string>) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mapping", JSON.stringify(mapping));
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+    const res = await fetch(`${API_URL}/portfolio-manager/import-trades/parse-with-mapping`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) throw new Error(`Parse failed: ${res.status}`);
+    return res.json() as Promise<import("./types").ImportPreview>;
+  },
+
   // Watchlist
   getWatchlist: () =>
     fetchApi<import("./types").WatchlistTickerData[]>("/watchlist"),

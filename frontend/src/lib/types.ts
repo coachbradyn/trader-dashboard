@@ -655,6 +655,39 @@ export interface AIPortfolioHolding {
   confidence: number | null;
 }
 
+// ── Brokerage CSV Import Types ─────────────────────────────────
+
+export interface ImportedTrade {
+  date: string;
+  ticker: string;
+  action: "buy" | "sell";
+  qty: number;
+  price: number;
+  amount: number;
+}
+
+export interface ImportPreview {
+  status: "ready" | "needs_mapping";
+  brokerage?: string;
+  trades?: ImportedTrade[];
+  summary?: {
+    total_trades: number;
+    buys: number;
+    sells: number;
+    tickers: string[];
+    date_range: string;
+  };
+  headers?: string[];
+  sample_rows?: Record<string, string>[];
+}
+
+export interface ImportResult {
+  imported: number;
+  holdings_created: number;
+  holdings_updated: number;
+  holdings_closed: number;
+}
+
 // AI Review
 export interface ReviewResponse {
   review: string;

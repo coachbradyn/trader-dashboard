@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
   BacktestImportData, PortfolioHolding, ActionStats, PortfolioAction,
+  ImportedTrade, ImportPreview, ImportResult,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -750,6 +751,16 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const [qty, setQty] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Import state
+  const [importStep, setImportStep] = useState<"idle" | "upload" | "mapping" | "preview" | "result">("idle");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const [columnMapping, setColumnMapping] = useState<Record<string, string>>({ date: "", ticker: "", action: "", qty: "", price: "" });
+
   const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
   const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
   const totalCount = holdings.length + positions.length;
@@ -773,7 +784,6 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   };
 
   const handleSell = async () => {
-    // Selling reduces a holding — find the matching holding and reduce qty or remove
     if (!ticker || !qty) return;
     setSubmitting(true);
     const t = ticker.toUpperCase();
@@ -781,10 +791,8 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
     if (matching) {
       const sellQty = parseFloat(qty);
       if (sellQty >= matching.qty) {
-        // Full sell — delete the holding
         try { await api.deleteHolding(matching.id); } catch {}
       } else {
-        // Partial sell — update qty (create a negative holding to reduce)
         try {
           await api.updateHolding(matching.id, { qty: matching.qty - sellQty });
         } catch {}
@@ -800,6 +808,115 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
     try { await api.deleteHolding(id); onRefresh(); } catch {}
   };
 
+  // ── Import handlers ──
+  const resetImport = () => {
+    setImportStep("idle");
+    setImportFile(null);
+    setImportPreview(null);
+    setImportResult(null);
+    setImportLoading(false);
+    setImportError("");
+    setDragOver(false);
+    setColumnMapping({ date: "", ticker: "", action: "", qty: "", price: "" });
+  };
+
+  const handleFileSelect = async (file: File) => {
+    setImportFile(file);
+    setImportError("");
+    setImportLoading(true);
+    try {
+      const preview = await api.previewImportTrades(file);
+      setImportPreview(preview);
+      if (preview.status === "needs_mapping") {
+        // Pre-fill column mapping with best guesses
+        const headers = preview.headers || [];
+        const lowerHeaders = headers.map(h => h.toLowerCase());
+        const guessMap: Record<string, string[]> = {
+          date: ["date", "activity date", "run date", "transaction date", "create time", "trade date"],
+          ticker: ["symbol", "instrument", "ticker", "stock"],
+          action: ["action", "trans code", "side", "transaction type", "type"],
+          qty: ["quantity", "qty", "shares", "amount"],
+          price: ["price", "cost", "price ($)", "cost per share"],
+        };
+        const newMapping: Record<string, string> = { date: "", ticker: "", action: "", qty: "", price: "" };
+        for (const [field, candidates] of Object.entries(guessMap)) {
+          for (const c of candidates) {
+            const idx = lowerHeaders.indexOf(c);
+            if (idx !== -1) {
+              newMapping[field] = headers[idx];
+              break;
+            }
+          }
+        }
+        setColumnMapping(newMapping);
+        setImportStep("mapping");
+      } else {
+        setImportStep("preview");
+      }
+    } catch (e: unknown) {
+      setImportError(e instanceof Error ? e.message : "Failed to parse CSV");
+      setImportStep("upload");
+    }
+    setImportLoading(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.name.toLowerCase().endsWith(".csv")) {
+      handleFileSelect(file);
+    } else {
+      setImportError("Please drop a CSV file");
+    }
+  };
+
+  const handleParseWithMapping = async () => {
+    if (!importFile) return;
+    const missingFields = Object.entries(columnMapping).filter(([, v]) => !v);
+    if (missingFields.length > 0) {
+      setImportError(`Please map all columns: ${missingFields.map(([k]) => k).join(", ")}`);
+      return;
+    }
+    setImportLoading(true);
+    setImportError("");
+    try {
+      const preview = await api.parseWithMapping(importFile, columnMapping);
+      setImportPreview(preview);
+      setImportStep("preview");
+    } catch (e: unknown) {
+      setImportError(e instanceof Error ? e.message : "Failed to parse with mapping");
+    }
+    setImportLoading(false);
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importPreview?.trades) return;
+    setImportLoading(true);
+    setImportError("");
+    try {
+      const result = await api.confirmImportTrades({
+        portfolio_id: portfolioId,
+        trades: importPreview.trades,
+      });
+      setImportResult(result);
+      setImportStep("result");
+      onRefresh();
+    } catch (e: unknown) {
+      setImportError(e instanceof Error ? e.message : "Import failed");
+    }
+    setImportLoading(false);
+  };
+
+  const toggleImport = () => {
+    if (importStep !== "idle") {
+      resetImport();
+    } else {
+      setMode(null);
+      setImportStep("upload");
+    }
+  };
+
   return (
     <Card className="bg-surface-light/20 border-border">
       <CardContent className="p-5">
@@ -813,13 +930,17 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                 {formatCurrency(totalValue)} ({formatPercent(totalValue > 0 ? totalUnrealized / totalValue * 100 : 0)})
               </span>
             )}
-            <Button size="sm" onClick={() => setMode(mode === "buy" ? null : "buy")}
+            <Button size="sm" onClick={() => { setMode(mode === "buy" ? null : "buy"); if (importStep !== "idle") resetImport(); }}
               className={`text-[10px] h-7 ${mode === "buy" ? "bg-profit text-white" : "bg-profit/10 text-profit border-profit/20 hover:bg-profit/20"}`}>
               {mode === "buy" ? "Cancel" : "Buy"}
             </Button>
-            <Button size="sm" onClick={() => setMode(mode === "sell" ? null : "sell")}
+            <Button size="sm" onClick={() => { setMode(mode === "sell" ? null : "sell"); if (importStep !== "idle") resetImport(); }}
               className={`text-[10px] h-7 ${mode === "sell" ? "bg-loss text-white" : "bg-loss/10 text-loss border-loss/20 hover:bg-loss/20"}`}>
               {mode === "sell" ? "Cancel" : "Sell"}
+            </Button>
+            <Button size="sm" onClick={toggleImport}
+              className={`text-[10px] h-7 ${importStep !== "idle" ? "bg-white text-gray-900" : "bg-white/10 text-white border-white/20 hover:bg-white/20"}`}>
+              {importStep !== "idle" ? "Cancel Import" : "Import"}
             </Button>
           </div>
         </div>
@@ -856,10 +977,229 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
           </div>
         )}
 
+        {/* ── Import Flow ── */}
+        {importStep === "upload" && (
+          <div className="mb-4 p-4 rounded-lg border border-dashed border-border bg-surface-light/5 transition-colors"
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            style={{ borderColor: dragOver ? "#6366f1" : undefined, backgroundColor: dragOver ? "rgba(99,102,241,0.05)" : undefined }}>
+            <div className="text-center py-6">
+              <svg className="w-8 h-8 mx-auto mb-3 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              <p className="text-sm text-gray-300 mb-1" style={FONT_OUTFIT}>Drop your brokerage CSV here</p>
+              <p className="text-[10px] text-gray-500 mb-3" style={FONT_OUTFIT}>or click to browse</p>
+              <input type="file" accept=".csv" className="hidden" id="csv-import-input"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); }} />
+              <label htmlFor="csv-import-input">
+                <Button size="sm" className="text-[10px] h-7 bg-white/10 text-white hover:bg-white/20 cursor-pointer" asChild>
+                  <span>Choose File</span>
+                </Button>
+              </label>
+              <p className="text-[9px] text-gray-600 mt-3" style={FONT_OUTFIT}>
+                Supported: Robinhood, Schwab, Fidelity, Webull, E*Trade — or map columns manually
+              </p>
+              {importLoading && <p className="text-[10px] text-ai-blue mt-2 animate-pulse">Parsing CSV...</p>}
+              {importError && <p className="text-[10px] text-loss mt-2">{importError}</p>}
+            </div>
+          </div>
+        )}
+
+        {importStep === "mapping" && importPreview && (
+          <div className="mb-4 p-4 rounded-lg border border-border bg-surface-light/10">
+            <div className="text-[9px] text-screener-amber font-semibold uppercase tracking-wider mb-3" style={FONT_OUTFIT}>
+              Column Mapping Required
+            </div>
+            <p className="text-xs text-gray-400 mb-3" style={FONT_OUTFIT}>
+              Could not auto-detect your brokerage format. Please map the columns:
+            </p>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
+              {(["date", "ticker", "action", "qty", "price"] as const).map((field) => (
+                <div key={field}>
+                  <label className="text-[9px] text-gray-500 uppercase tracking-wider block mb-1" style={FONT_OUTFIT}>
+                    {field === "qty" ? "Quantity" : field.charAt(0).toUpperCase() + field.slice(1)}
+                  </label>
+                  <select
+                    value={columnMapping[field]}
+                    onChange={(e) => setColumnMapping((m) => ({ ...m, [field]: e.target.value }))}
+                    className="w-full h-8 text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 text-white appearance-none"
+                  >
+                    <option value="">Select...</option>
+                    {(importPreview.headers || []).map((h) => (
+                      <option key={h} value={h}>{h}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            {/* Sample rows */}
+            {importPreview.sample_rows && importPreview.sample_rows.length > 0 && (
+              <div className="mb-3">
+                <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>Sample Data</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px] font-mono">
+                    <thead>
+                      <tr className="border-b border-border">
+                        {Object.keys(importPreview.sample_rows[0]).map((k) => (
+                          <th key={k} className="text-left text-gray-500 px-2 py-1 font-normal">{k}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.sample_rows.map((row, i) => (
+                        <tr key={i} className="border-b border-border/50">
+                          {Object.values(row).map((v, j) => (
+                            <td key={j} className="text-gray-300 px-2 py-1 truncate max-w-[120px]">{v}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleParseWithMapping} disabled={importLoading}
+                className="h-7 text-[10px] bg-ai-blue hover:bg-ai-blue/80 text-white">
+                {importLoading ? "Parsing..." : "Parse & Preview"}
+              </Button>
+              <Button size="sm" onClick={resetImport} className="h-7 text-[10px] bg-white/10 text-white hover:bg-white/20">
+                Cancel
+              </Button>
+            </div>
+            {importError && <p className="text-[10px] text-loss mt-2">{importError}</p>}
+          </div>
+        )}
+
+        {importStep === "preview" && importPreview && importPreview.trades && (
+          <div className="mb-4 p-4 rounded-lg border border-border bg-surface-light/10">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="text-[9px] text-profit font-semibold uppercase tracking-wider" style={FONT_OUTFIT}>
+                Import Preview
+              </div>
+              {importPreview.brokerage && (
+                <Badge className="text-[8px] px-1.5 py-0 bg-ai-blue/15 text-ai-blue">
+                  {importPreview.brokerage}
+                </Badge>
+              )}
+            </div>
+
+            {/* Summary card */}
+            {importPreview.summary && (
+              <div className="flex flex-wrap gap-4 mb-4 p-3 rounded-md bg-surface-light/20 border border-border">
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase" style={FONT_OUTFIT}>Trades</div>
+                  <div className="text-sm font-mono text-white font-semibold">{importPreview.summary.total_trades}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase" style={FONT_OUTFIT}>Buys</div>
+                  <div className="text-sm font-mono text-profit font-semibold">{importPreview.summary.buys}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase" style={FONT_OUTFIT}>Sells</div>
+                  <div className="text-sm font-mono text-loss font-semibold">{importPreview.summary.sells}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase" style={FONT_OUTFIT}>Tickers</div>
+                  <div className="text-sm font-mono text-white font-semibold">{importPreview.summary.tickers.length}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase" style={FONT_OUTFIT}>Date Range</div>
+                  <div className="text-[10px] font-mono text-gray-300">{importPreview.summary.date_range}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Trade table (first 20) */}
+            <div className="overflow-x-auto max-h-[320px] overflow-y-auto mb-3">
+              <table className="w-full text-[10px] font-mono">
+                <thead className="sticky top-0 bg-surface-light/30">
+                  <tr className="border-b border-border">
+                    <th className="text-left text-gray-500 px-2 py-1.5 font-normal">Date</th>
+                    <th className="text-left text-gray-500 px-2 py-1.5 font-normal">Ticker</th>
+                    <th className="text-left text-gray-500 px-2 py-1.5 font-normal">Action</th>
+                    <th className="text-right text-gray-500 px-2 py-1.5 font-normal">Qty</th>
+                    <th className="text-right text-gray-500 px-2 py-1.5 font-normal">Price</th>
+                    <th className="text-right text-gray-500 px-2 py-1.5 font-normal">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importPreview.trades.slice(0, 20).map((t, i) => (
+                    <tr key={i} className="border-b border-border/30 hover:bg-surface-light/10">
+                      <td className="text-gray-400 px-2 py-1.5">{t.date}</td>
+                      <td className="text-white font-semibold px-2 py-1.5">{t.ticker}</td>
+                      <td className="px-2 py-1.5">
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-semibold uppercase ${
+                          t.action === "buy" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"
+                        }`}>{t.action}</span>
+                      </td>
+                      <td className="text-gray-300 text-right px-2 py-1.5">{t.qty}</td>
+                      <td className="text-gray-300 text-right px-2 py-1.5">${t.price.toFixed(2)}</td>
+                      <td className="text-gray-300 text-right px-2 py-1.5">${t.amount.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {importPreview.trades.length > 20 && (
+                <p className="text-[9px] text-gray-500 text-center py-2">
+                  ...and {importPreview.trades.length - 20} more trades
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleConfirmImport} disabled={importLoading}
+                className="h-7 text-[10px] bg-profit hover:bg-profit/80 text-white">
+                {importLoading ? "Importing..." : `Confirm Import (${importPreview.trades.length} trades)`}
+              </Button>
+              <Button size="sm" onClick={resetImport} className="h-7 text-[10px] bg-white/10 text-white hover:bg-white/20">
+                Cancel
+              </Button>
+            </div>
+            {importError && <p className="text-[10px] text-loss mt-2">{importError}</p>}
+          </div>
+        )}
+
+        {importStep === "result" && importResult && (
+          <div className="mb-4 p-4 rounded-lg border border-profit/30 bg-profit/5">
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-5 h-5 text-profit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-sm text-profit font-semibold" style={FONT_OUTFIT}>Import Complete</span>
+            </div>
+            <div className="flex flex-wrap gap-4 text-[11px] font-mono">
+              <div>
+                <span className="text-gray-500">Imported:</span>{" "}
+                <span className="text-white font-semibold">{importResult.imported} trades</span>
+              </div>
+              <div>
+                <span className="text-gray-500">New positions:</span>{" "}
+                <span className="text-profit font-semibold">{importResult.holdings_created}</span>
+              </div>
+              <div>
+                <span className="text-gray-500">Updated:</span>{" "}
+                <span className="text-screener-amber font-semibold">{importResult.holdings_updated}</span>
+              </div>
+              <div>
+                <span className="text-gray-500">Closed:</span>{" "}
+                <span className="text-loss font-semibold">{importResult.holdings_closed}</span>
+              </div>
+            </div>
+            <Button size="sm" onClick={resetImport} className="mt-3 h-7 text-[10px] bg-white/10 text-white hover:bg-white/20">
+              Done
+            </Button>
+          </div>
+        )}
+
         {/* Combined positions list */}
-        {totalCount === 0 ? (
+        {totalCount === 0 && importStep === "idle" ? (
           <p className="text-xs text-gray-500 text-center py-6">No positions — use Buy to add your first position</p>
-        ) : (
+        ) : totalCount > 0 ? (
           <div className="space-y-1">
             {/* Manual holdings */}
             {holdings.map((h) => (
@@ -870,7 +1210,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                 </Badge>
                 <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
                 {h.current_price && (
-                  <span className="text-gray-500">→ {formatCurrency(h.current_price)}</span>
+                  <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(h.current_price)}</span>
                 )}
                 <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
                 <div className="ml-auto flex items-center gap-3">
@@ -899,7 +1239,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                 </Badge>
                 <span className="text-gray-500">{p.qty} @ {formatCurrency(p.entry_price)}</span>
                 {p.current_price && (
-                  <span className="text-gray-500">→ {formatCurrency(p.current_price)}</span>
+                  <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(p.current_price)}</span>
                 )}
                 <Badge className="text-[8px] px-1 py-0 bg-ai-blue/10 text-ai-blue">strategy</Badge>
                 <div className="ml-auto">
@@ -917,7 +1257,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
               </div>
             ))}
           </div>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
