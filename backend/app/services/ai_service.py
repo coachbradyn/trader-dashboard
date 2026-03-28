@@ -953,14 +953,18 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         logger = logging.getLogger(__name__)
 
         try:
-            # Check cache: has today's briefing already been generated?
-            today_str = date.today().isoformat()
+            # Check cache: has today's briefing already been generated? (US Eastern)
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            today_start_et = now_et.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Convert to UTC for DB query
+            today_start_utc = today_start_et.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
             async with async_session() as db:
                 result = await db.execute(
                     select(MarketSummary)
                     .where(
                         MarketSummary.summary_type == "daily_briefing",
-                        MarketSummary.generated_at >= datetime.utcnow().replace(hour=0, minute=0, second=0),
+                        MarketSummary.generated_at >= today_start_utc,
                     )
                     .order_by(MarketSummary.generated_at.desc())
                     .limit(1)

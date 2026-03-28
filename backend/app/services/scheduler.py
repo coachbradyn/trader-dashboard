@@ -367,19 +367,21 @@ async def _cleanup_expired_context():
 
 
 def start_scheduler():
-    """Start the APScheduler with all jobs."""
-    # Morning summary at 9:30 AM ET (13:30 UTC)
+    """Start the APScheduler with all jobs. All times in US Eastern."""
+    ET = "America/New_York"
+
+    # Morning summary at 9:30 AM ET
     scheduler.add_job(
         _generate_morning_summary,
-        CronTrigger(hour=13, minute=30, timezone="UTC"),
+        CronTrigger(hour=9, minute=30, timezone=ET),
         id="morning_summary",
         replace_existing=True,
     )
 
-    # Nightly summary at 4:15 PM ET (20:15 UTC)
+    # Nightly summary at 4:15 PM ET
     scheduler.add_job(
         _generate_nightly_summary,
-        CronTrigger(hour=20, minute=15, timezone="UTC"),
+        CronTrigger(hour=16, minute=15, timezone=ET),
         id="nightly_summary",
         replace_existing=True,
     )
@@ -392,52 +394,52 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Portfolio threshold checks every hour during market hours (14:30-21:00 UTC)
+    # Portfolio threshold checks every hour during market hours (10 AM - 4 PM ET, M-F)
     scheduler.add_job(
         _run_threshold_checks,
-        CronTrigger(hour="14-20", minute=0, timezone="UTC", day_of_week="mon-fri"),
+        CronTrigger(hour="10-15", minute=0, timezone=ET, day_of_week="mon-fri"),
         id="portfolio_thresholds",
         replace_existing=True,
     )
 
-    # Daily portfolio review at 10:00 AM ET (14:00 UTC) — after market opens and settles
+    # Daily portfolio review at 10:00 AM ET — after market opens and settles
     scheduler.add_job(
         _run_daily_portfolio_review,
-        CronTrigger(hour=14, minute=0, timezone="UTC", day_of_week="mon-fri"),
+        CronTrigger(hour=10, minute=0, timezone=ET, day_of_week="mon-fri"),
         id="portfolio_daily_review",
         replace_existing=True,
     )
 
-    # Henry stats computation every 2h during market hours
+    # Henry stats computation every 2h during market hours (10, 12, 2, 4 PM ET)
     scheduler.add_job(
         _compute_henry_stats,
-        CronTrigger(hour="14,16,18,20", minute=30, timezone="UTC", day_of_week="mon-fri"),
+        CronTrigger(hour="10,12,14,16", minute=30, timezone=ET, day_of_week="mon-fri"),
         id="henry_stats",
         replace_existing=True,
     )
 
-    # AI portfolio review at 2:30 PM ET (18:30 UTC) — after market stabilizes
+    # AI portfolio review at 2:30 PM ET — after market stabilizes
     scheduler.add_job(
         _run_ai_portfolio_review,
-        CronTrigger(hour=18, minute=30, timezone="UTC", day_of_week="mon-fri"),
+        CronTrigger(hour=14, minute=30, timezone=ET, day_of_week="mon-fri"),
         id="ai_portfolio_review",
         replace_existing=True,
     )
 
-    # Henry context cleanup daily at 5 UTC (midnight ET)
+    # Henry context cleanup daily at midnight ET
     scheduler.add_job(
         _cleanup_expired_context,
-        CronTrigger(hour=5, minute=0, timezone="UTC"),
+        CronTrigger(hour=0, minute=0, timezone=ET),
         id="henry_context_cleanup",
         replace_existing=True,
     )
 
     scheduler.start()
     logger.info(
-        "Scheduler started: morning (13:30 UTC), nightly (20:15 UTC), "
-        "screener (every 30m), thresholds (hourly M-F 14-20 UTC), "
-        "portfolio review (daily 14:00 UTC), "
-        "henry stats (every 2h M-F 14-20 UTC), context cleanup (daily 5 UTC)"
+        "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "
+        "screener (every 30m), thresholds (hourly M-F 10AM-3PM), "
+        "portfolio review (daily 10:00 AM), "
+        "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight)"
     )
 
 

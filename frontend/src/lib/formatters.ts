@@ -1,3 +1,5 @@
+const TZ = "America/New_York";
+
 export function formatCurrency(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -21,6 +23,7 @@ export function formatDate(dateStr: string): string {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: TZ,
   });
 }
 
@@ -30,6 +33,7 @@ export function formatDateTime(dateStr: string): string {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: TZ,
   });
 }
 
@@ -42,6 +46,14 @@ export function formatTimeAgo(dateStr: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+export function formatTime(dateStr: string): string {
+  return new Date(dateStr).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: TZ,
+  });
 }
 
 export function pnlColor(value: number): string {

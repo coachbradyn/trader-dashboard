@@ -30,7 +30,8 @@ def _fetch_yfinance(ticker: str, days: int) -> list[dict]:
     try:
         import yfinance as yf
 
-        end = datetime.now()
+        from zoneinfo import ZoneInfo
+        end = datetime.now(ZoneInfo("America/New_York"))
         start = end - timedelta(days=days + 5)  # extra buffer for weekends
 
         tk = yf.Ticker(ticker)

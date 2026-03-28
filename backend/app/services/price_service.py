@@ -22,14 +22,19 @@ class PriceService:
         return entry["price"] if entry else None
 
     def _is_market_hours(self) -> bool:
-        now = datetime.utcnow()
-        # US Eastern: UTC-5 (EST) or UTC-4 (EDT)
-        # Approximate: market open ~14:30 UTC, close ~21:00 UTC
-        hour = now.hour
-        weekday = now.weekday()
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        weekday = now_et.weekday()
         if weekday >= 5:  # Saturday/Sunday
             return False
-        return 14 <= hour < 21
+        hour = now_et.hour
+        minute = now_et.minute
+        # Market open 9:30 AM ET, close 4:00 PM ET
+        if hour < 9 or (hour == 9 and minute < 30):
+            return False
+        if hour >= 16:
+            return False
+        return True
 
     async def _fetch_prices(self):
         settings = get_settings()
