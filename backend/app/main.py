@@ -171,6 +171,24 @@ async def _ensure_schema():
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_fetched_at ON news_cache (fetched_at)"))
                     logger.info("Created missing table: news_cache")
 
+                # Add position archetype columns to portfolio_holdings if missing
+                holding_cols = [c["name"] for c in insp.get_columns("portfolio_holdings")]
+                archetype_cols = {
+                    "position_type": "ALTER TABLE portfolio_holdings ADD COLUMN position_type VARCHAR(20) DEFAULT 'momentum'",
+                    "thesis": "ALTER TABLE portfolio_holdings ADD COLUMN thesis TEXT",
+                    "catalyst_date": "ALTER TABLE portfolio_holdings ADD COLUMN catalyst_date DATE",
+                    "catalyst_description": "ALTER TABLE portfolio_holdings ADD COLUMN catalyst_description VARCHAR(200)",
+                    "max_allocation_pct": "ALTER TABLE portfolio_holdings ADD COLUMN max_allocation_pct FLOAT",
+                    "dca_enabled": "ALTER TABLE portfolio_holdings ADD COLUMN dca_enabled BOOLEAN DEFAULT FALSE",
+                    "dca_threshold_pct": "ALTER TABLE portfolio_holdings ADD COLUMN dca_threshold_pct FLOAT",
+                    "avg_cost": "ALTER TABLE portfolio_holdings ADD COLUMN avg_cost FLOAT",
+                    "total_shares": "ALTER TABLE portfolio_holdings ADD COLUMN total_shares FLOAT",
+                }
+                for col_name, sql in archetype_cols.items():
+                    if col_name not in holding_cols:
+                        connection.execute(text(sql))
+                        logger.info(f"Added missing column: portfolio_holdings.{col_name}")
+
                 if "ai_usage" not in tables:
                     connection.execute(text("""
                         CREATE TABLE ai_usage (

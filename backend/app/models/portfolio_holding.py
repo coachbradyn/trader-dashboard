@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 
-from sqlalchemy import String, Float, Boolean, Text, ForeignKey
+from sqlalchemy import String, Float, Boolean, Text, Date, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -22,6 +22,17 @@ class PortfolioHolding(Base):
     strategy_name: Mapped[str | None] = mapped_column(String(50))
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    # Position archetype fields
+    position_type: Mapped[str] = mapped_column(String(20), default="momentum")  # momentum, accumulation, catalyst, conviction
+    thesis: Mapped[str | None] = mapped_column(Text)
+    catalyst_date: Mapped[date | None] = mapped_column(Date)
+    catalyst_description: Mapped[str | None] = mapped_column(String(200))
+    max_allocation_pct: Mapped[float | None] = mapped_column(Float)
+    dca_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    dca_threshold_pct: Mapped[float | None] = mapped_column(Float)
+    avg_cost: Mapped[float | None] = mapped_column(Float)
+    total_shares: Mapped[float | None] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 

@@ -751,6 +751,15 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const [qty, setQty] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Position archetype fields
+  const [positionType, setPositionType] = useState<"momentum" | "accumulation" | "catalyst" | "conviction">("momentum");
+  const [thesis, setThesis] = useState("");
+  const [catalystDate, setCatalystDate] = useState("");
+  const [catalystDescription, setCatalystDescription] = useState("");
+  const [maxAllocationPct, setMaxAllocationPct] = useState("");
+  const [dcaEnabled, setDcaEnabled] = useState(false);
+  const [dcaThresholdPct, setDcaThresholdPct] = useState("");
+
   // Import state
   const [importStep, setImportStep] = useState<"idle" | "upload" | "mapping" | "preview" | "result">("idle");
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -769,15 +778,31 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
     if (!ticker || !price || !qty) return;
     setSubmitting(true);
     try {
-      await api.createHolding({
+      const payload: Parameters<typeof api.createHolding>[0] = {
         portfolio_id: portfolioId,
         ticker: ticker.toUpperCase(),
         direction: dir,
         entry_price: parseFloat(price),
         qty: parseFloat(qty),
         entry_date: new Date().toISOString().slice(0, 10),
-      });
+        position_type: positionType,
+      };
+      if (positionType !== "momentum") {
+        if (thesis) payload.thesis = thesis;
+        if (maxAllocationPct) payload.max_allocation_pct = parseFloat(maxAllocationPct);
+      }
+      if (positionType === "catalyst") {
+        if (catalystDate) payload.catalyst_date = catalystDate;
+        if (catalystDescription) payload.catalyst_description = catalystDescription;
+      }
+      if (positionType === "accumulation") {
+        payload.dca_enabled = dcaEnabled;
+        if (dcaEnabled && dcaThresholdPct) payload.dca_threshold_pct = parseFloat(dcaThresholdPct);
+      }
+      await api.createHolding(payload);
       setTicker(""); setPrice(""); setQty(""); setMode(null);
+      setPositionType("momentum"); setThesis(""); setCatalystDate(""); setCatalystDescription("");
+      setMaxAllocationPct(""); setDcaEnabled(false); setDcaThresholdPct("");
       onRefresh();
     } catch {}
     setSubmitting(false);
@@ -947,19 +972,64 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
 
         {/* Buy Form */}
         {mode === "buy" && (
-          <div className="flex flex-wrap gap-2 mb-4 p-3 rounded-lg border border-profit/20 bg-profit/5">
-            <div className="text-[9px] text-profit font-semibold uppercase tracking-wider w-full mb-1" style={FONT_OUTFIT}>Buy Position</div>
-            <Input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="Ticker" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
-            <div className="flex rounded-md overflow-hidden border border-border">
-              <button onClick={() => setDir("long")} className={`px-2.5 py-1 text-[10px] ${dir === "long" ? "bg-profit/20 text-profit" : "bg-surface-light/30 text-gray-500"}`}>Long</button>
-              <button onClick={() => setDir("short")} className={`px-2.5 py-1 text-[10px] ${dir === "short" ? "bg-loss/20 text-loss" : "bg-surface-light/30 text-gray-500"}`}>Short</button>
+          <div className="mb-4 p-3 rounded-lg border border-profit/20 bg-profit/5">
+            <div className="text-[9px] text-profit font-semibold uppercase tracking-wider w-full mb-2" style={FONT_OUTFIT}>Buy Position</div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              <Input value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="Ticker" className="w-20 h-8 text-xs font-mono bg-surface-light/30" />
+              <div className="flex rounded-md overflow-hidden border border-border">
+                <button onClick={() => setDir("long")} className={`px-2.5 py-1 text-[10px] ${dir === "long" ? "bg-profit/20 text-profit" : "bg-surface-light/30 text-gray-500"}`}>Long</button>
+                <button onClick={() => setDir("short")} className={`px-2.5 py-1 text-[10px] ${dir === "short" ? "bg-loss/20 text-loss" : "bg-surface-light/30 text-gray-500"}`}>Short</button>
+              </div>
+              <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" step="0.01" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+              <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Shares" type="number" step="0.001" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
+              <select value={positionType} onChange={(e) => setPositionType(e.target.value as typeof positionType)}
+                className="h-8 text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 text-white appearance-none">
+                <option value="momentum">Momentum</option>
+                <option value="accumulation">Accumulation</option>
+                <option value="catalyst">Catalyst</option>
+                <option value="conviction">Conviction</option>
+              </select>
+              <Button size="sm" onClick={handleBuy} disabled={submitting || !ticker || !price || !qty}
+                className="h-8 text-[10px] bg-profit hover:bg-profit/80">
+                {submitting ? "..." : "Buy"}
+              </Button>
             </div>
-            <Input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" step="0.01" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
-            <Input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Shares" type="number" step="0.001" className="w-24 h-8 text-xs font-mono bg-surface-light/30" />
-            <Button size="sm" onClick={handleBuy} disabled={submitting || !ticker || !price || !qty}
-              className="h-8 text-[10px] bg-profit hover:bg-profit/80">
-              {submitting ? "..." : "Buy"}
-            </Button>
+
+            {/* Progressive disclosure — extra fields for non-momentum types */}
+            {positionType !== "momentum" && (
+              <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t border-profit/10">
+                <textarea value={thesis} onChange={(e) => setThesis(e.target.value)} placeholder="Why are you in this position?"
+                  rows={2} className="flex-1 min-w-[200px] text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 py-1.5 text-white resize-none placeholder:text-gray-600" />
+
+                {positionType === "catalyst" && (
+                  <>
+                    <Input value={catalystDate} onChange={(e) => setCatalystDate(e.target.value)} type="date"
+                      className="w-36 h-8 text-[10px] font-mono bg-surface-light/30" />
+                    <Input value={catalystDescription} onChange={(e) => setCatalystDescription(e.target.value)}
+                      placeholder="e.g., Phase 3 readout, FDA PDUFA" className="w-52 h-8 text-[10px] font-mono bg-surface-light/30" />
+                  </>
+                )}
+
+                {(positionType === "accumulation" || positionType === "catalyst") && (
+                  <Input value={maxAllocationPct} onChange={(e) => setMaxAllocationPct(e.target.value)}
+                    placeholder="Max alloc %" type="number" step="0.5" className="w-24 h-8 text-[10px] font-mono bg-surface-light/30" />
+                )}
+
+                {positionType === "accumulation" && (
+                  <>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="checkbox" checked={dcaEnabled} onChange={(e) => setDcaEnabled(e.target.checked)}
+                        className="w-3 h-3 rounded border-border bg-surface-light/30 accent-ai-blue" />
+                      <span className="text-[9px] text-gray-400">DCA</span>
+                    </label>
+                    {dcaEnabled && (
+                      <Input value={dcaThresholdPct} onChange={(e) => setDcaThresholdPct(e.target.value)}
+                        placeholder="DCA threshold %" type="number" step="1" className="w-28 h-8 text-[10px] font-mono bg-surface-light/30" />
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1203,31 +1273,58 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
           <div className="space-y-1">
             {/* Manual holdings */}
             {holdings.map((h) => (
-              <div key={h.id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 group">
-                <span className="text-white font-semibold w-12">{h.ticker}</span>
-                <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
-                  {h.direction.toUpperCase()}
-                </Badge>
-                <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
-                {h.current_price && (
-                  <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(h.current_price)}</span>
-                )}
-                <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
-                <div className="ml-auto flex items-center gap-3">
-                  {h.unrealized_pnl != null && (
-                    <div className="text-right">
-                      <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
-                        {formatCurrency(h.unrealized_pnl)}
-                      </span>
-                      <span className={`ml-1.5 ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
-                        ({formatPercent(h.unrealized_pnl_pct ?? 0)})
-                      </span>
-                    </div>
+              <div key={h.id}>
+                <div className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 group">
+                  <span className="text-white font-semibold w-12">{h.ticker}</span>
+                  <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
+                    {h.direction.toUpperCase()}
+                  </Badge>
+                  {/* Position type badge */}
+                  {h.position_type === "accumulation" && (
+                    <Badge className="bg-ai-blue/15 text-ai-blue text-[8px] px-1 py-0">ACCUM</Badge>
                   )}
-                  <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                  </button>
+                  {h.position_type === "catalyst" && (
+                    <>
+                      <Badge className="bg-amber-500/15 text-amber-400 text-[8px] px-1 py-0">CATALYST</Badge>
+                      {h.catalyst_date && (() => {
+                        const days = Math.ceil((new Date(h.catalyst_date).getTime() - Date.now()) / 86400000);
+                        return days > 0
+                          ? <span className="text-[9px] text-amber-400/70">{days}d to {h.catalyst_description || "event"}</span>
+                          : <span className="text-[9px] text-loss/70">catalyst passed</span>;
+                      })()}
+                    </>
+                  )}
+                  {h.position_type === "conviction" && (
+                    <Badge className="bg-purple-500/15 text-purple-400 text-[8px] px-1 py-0">HOLD</Badge>
+                  )}
+                  {/* Entry info — show avg cost for accumulation, normal for others */}
+                  {h.position_type === "accumulation" && h.avg_cost
+                    ? <span className="text-gray-500">avg ${h.avg_cost.toFixed(2)} x {h.total_shares?.toFixed(2)}</span>
+                    : <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
+                  }
+                  {h.current_price && (
+                    <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(h.current_price)}</span>
+                  )}
+                  <Badge className="text-[8px] px-1 py-0 bg-surface-light text-gray-400">{formatSource(h.source)}</Badge>
+                  <div className="ml-auto flex items-center gap-3">
+                    {h.unrealized_pnl != null && (
+                      <div className="text-right">
+                        <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
+                          {formatCurrency(h.unrealized_pnl)}
+                        </span>
+                        <span className={`ml-1.5 ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
+                          ({formatPercent(h.unrealized_pnl_pct ?? 0)})
+                        </span>
+                      </div>
+                    )}
+                    <button onClick={() => handleDelete(h.id)} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                  </div>
                 </div>
+                {h.thesis && (
+                  <div className="text-[9px] text-gray-600 pl-12 -mt-0.5 mb-1 italic">&quot;{h.thesis}&quot;</div>
+                )}
               </div>
             ))}
             {/* Strategy positions */}

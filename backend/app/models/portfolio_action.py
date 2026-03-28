@@ -15,7 +15,7 @@ class PortfolioAction(Base):
 
     ticker: Mapped[str] = mapped_column(String(10), nullable=False)
     direction: Mapped[str] = mapped_column(String(10), nullable=False)  # "long" / "short"
-    action_type: Mapped[str] = mapped_column(String(20), nullable=False)  # BUY/SELL/TRIM/ADD/CLOSE/REBALANCE
+    action_type: Mapped[str] = mapped_column(String(20), nullable=False)  # BUY/SELL/TRIM/ADD/CLOSE/REBALANCE/DCA
     suggested_qty: Mapped[float | None] = mapped_column(Float)
     suggested_price: Mapped[float | None] = mapped_column(Float)
     current_price: Mapped[float | None] = mapped_column(Float)

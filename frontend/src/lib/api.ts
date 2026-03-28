@@ -141,7 +141,12 @@ export const api = {
     const qs = sp.toString();
     return fetchApi<import("./types").PortfolioHolding[]>("/portfolio-manager/holdings" + (qs ? "?" + qs : ""));
   },
-  createHolding: (data: { portfolio_id: string; ticker: string; direction: string; entry_price: number; qty: number; entry_date: string; strategy_name?: string; notes?: string }) =>
+  createHolding: (data: {
+    portfolio_id: string; ticker: string; direction: string; entry_price: number; qty: number; entry_date: string;
+    strategy_name?: string; notes?: string;
+    position_type?: string; thesis?: string; catalyst_date?: string; catalyst_description?: string;
+    max_allocation_pct?: number; dca_enabled?: boolean; dca_threshold_pct?: number;
+  }) =>
     fetchApi<import("./types").PortfolioHolding>("/portfolio-manager/holdings", {
       method: "POST",
       body: JSON.stringify(data),

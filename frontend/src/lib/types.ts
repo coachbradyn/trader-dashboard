@@ -282,6 +282,15 @@ export interface PortfolioHolding {
   current_price: number | null;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
+  position_type?: string;  // "momentum" | "accumulation" | "catalyst" | "conviction"
+  thesis?: string | null;
+  catalyst_date?: string | null;
+  catalyst_description?: string | null;
+  max_allocation_pct?: number | null;
+  dca_enabled?: boolean;
+  dca_threshold_pct?: number | null;
+  avg_cost?: number | null;
+  total_shares?: number | null;
   created_at: string;
 }
 
@@ -290,7 +299,7 @@ export interface PortfolioAction {
   portfolio_id: string;
   ticker: string;
   direction: string;
-  action_type: "BUY" | "SELL" | "TRIM" | "ADD" | "CLOSE" | "REBALANCE";
+  action_type: "BUY" | "SELL" | "TRIM" | "ADD" | "CLOSE" | "REBALANCE" | "DCA";
   suggested_qty: number | null;
   suggested_price: number | null;
   current_price: number | null;

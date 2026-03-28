@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel
 
 
@@ -13,6 +13,13 @@ class HoldingCreate(BaseModel):
     entry_date: datetime
     strategy_name: str | None = None
     notes: str | None = None
+    position_type: str = "momentum"  # momentum, accumulation, catalyst, conviction
+    thesis: str | None = None
+    catalyst_date: date | None = None
+    catalyst_description: str | None = None
+    max_allocation_pct: float | None = None
+    dca_enabled: bool = False
+    dca_threshold_pct: float | None = None
 
 
 class HoldingUpdate(BaseModel):
@@ -24,6 +31,15 @@ class HoldingUpdate(BaseModel):
     strategy_name: str | None = None
     notes: str | None = None
     is_active: bool | None = None
+    position_type: str | None = None
+    thesis: str | None = None
+    catalyst_date: date | None = None
+    catalyst_description: str | None = None
+    max_allocation_pct: float | None = None
+    dca_enabled: bool | None = None
+    dca_threshold_pct: float | None = None
+    avg_cost: float | None = None
+    total_shares: float | None = None
 
 
 class HoldingResponse(BaseModel):
@@ -42,6 +58,15 @@ class HoldingResponse(BaseModel):
     current_price: float | None = None
     unrealized_pnl: float | None = None
     unrealized_pnl_pct: float | None = None
+    position_type: str = "momentum"
+    thesis: str | None = None
+    catalyst_date: date | None = None
+    catalyst_description: str | None = None
+    max_allocation_pct: float | None = None
+    dca_enabled: bool = False
+    dca_threshold_pct: float | None = None
+    avg_cost: float | None = None
+    total_shares: float | None = None
     created_at: datetime
 
 

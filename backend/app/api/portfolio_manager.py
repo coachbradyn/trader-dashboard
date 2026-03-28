@@ -422,6 +422,15 @@ async def list_holdings(
             current_price=current_price,
             unrealized_pnl=round(unrealized, 2) if unrealized is not None else None,
             unrealized_pnl_pct=round(unrealized_pct, 2) if unrealized_pct is not None else None,
+            position_type=getattr(h, "position_type", "momentum") or "momentum",
+            thesis=getattr(h, "thesis", None),
+            catalyst_date=getattr(h, "catalyst_date", None),
+            catalyst_description=getattr(h, "catalyst_description", None),
+            max_allocation_pct=getattr(h, "max_allocation_pct", None),
+            dca_enabled=getattr(h, "dca_enabled", False) or False,
+            dca_threshold_pct=getattr(h, "dca_threshold_pct", None),
+            avg_cost=getattr(h, "avg_cost", None),
+            total_shares=getattr(h, "total_shares", None),
             created_at=h.created_at,
         ))
 
@@ -468,6 +477,31 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             if body.notes:
                 existing.notes = f"{existing.notes or ''}\n{body.notes}".strip()
 
+            # For accumulation positions, track avg_cost and total_shares
+            pos_type = getattr(body, "position_type", None) or getattr(existing, "position_type", "momentum")
+            if pos_type == "accumulation":
+                old_avg = existing.avg_cost or existing.entry_price
+                old_shares = existing.total_shares or existing.qty - body.qty  # pre-merge qty
+                new_avg = (old_avg * old_shares + body.entry_price * body.qty) / total_qty if total_qty > 0 else body.entry_price
+                existing.avg_cost = round(new_avg, 4)
+                existing.total_shares = round(total_qty, 6)
+
+            # Update archetype fields if provided on merge
+            if body.position_type and body.position_type != "momentum":
+                existing.position_type = body.position_type
+            if body.thesis is not None:
+                existing.thesis = body.thesis
+            if body.catalyst_date is not None:
+                existing.catalyst_date = body.catalyst_date
+            if body.catalyst_description is not None:
+                existing.catalyst_description = body.catalyst_description
+            if body.max_allocation_pct is not None:
+                existing.max_allocation_pct = body.max_allocation_pct
+            if body.dca_enabled:
+                existing.dca_enabled = body.dca_enabled
+            if body.dca_threshold_pct is not None:
+                existing.dca_threshold_pct = body.dca_threshold_pct
+
             await db.commit()
             await db.refresh(existing)
 
@@ -500,10 +534,23 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
                 current_price=current_price,
                 unrealized_pnl=round(unrealized, 2) if unrealized is not None else None,
                 unrealized_pnl_pct=round(unrealized_pct, 2) if unrealized_pct is not None else None,
+                position_type=getattr(existing, "position_type", "momentum") or "momentum",
+                thesis=getattr(existing, "thesis", None),
+                catalyst_date=getattr(existing, "catalyst_date", None),
+                catalyst_description=getattr(existing, "catalyst_description", None),
+                max_allocation_pct=getattr(existing, "max_allocation_pct", None),
+                dca_enabled=getattr(existing, "dca_enabled", False) or False,
+                dca_threshold_pct=getattr(existing, "dca_threshold_pct", None),
+                avg_cost=getattr(existing, "avg_cost", None),
+                total_shares=getattr(existing, "total_shares", None),
                 created_at=existing.created_at,
             )
 
         # No existing holding — create new
+        # For accumulation positions, initialize avg_cost and total_shares
+        init_avg_cost = body.entry_price if body.position_type == "accumulation" else None
+        init_total_shares = body.qty if body.position_type == "accumulation" else None
+
         holding = PortfolioHolding(
             portfolio_id=body.portfolio_id,
             ticker=ticker,
@@ -514,6 +561,15 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             strategy_name=body.strategy_name,
             notes=body.notes,
             is_active=True,
+            position_type=body.position_type,
+            thesis=body.thesis,
+            catalyst_date=body.catalyst_date,
+            catalyst_description=body.catalyst_description,
+            max_allocation_pct=body.max_allocation_pct,
+            dca_enabled=body.dca_enabled,
+            dca_threshold_pct=body.dca_threshold_pct,
+            avg_cost=init_avg_cost,
+            total_shares=init_total_shares,
             created_at=datetime.utcnow(),
         )
         db.add(holding)
@@ -556,6 +612,15 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             current_price=None,
             unrealized_pnl=None,
             unrealized_pnl_pct=None,
+            position_type=holding.position_type or "momentum",
+            thesis=holding.thesis,
+            catalyst_date=holding.catalyst_date,
+            catalyst_description=holding.catalyst_description,
+            max_allocation_pct=holding.max_allocation_pct,
+            dca_enabled=holding.dca_enabled or False,
+            dca_threshold_pct=holding.dca_threshold_pct,
+            avg_cost=holding.avg_cost,
+            total_shares=holding.total_shares,
             created_at=holding.created_at,
         )
     except Exception as e:
@@ -607,6 +672,15 @@ async def update_holding(holding_id: str, body: HoldingUpdate, db: AsyncSession 
         current_price=current_price,
         unrealized_pnl=round(unrealized, 2) if unrealized is not None else None,
         unrealized_pnl_pct=round(unrealized_pct, 2) if unrealized_pct is not None else None,
+        position_type=getattr(holding, "position_type", "momentum") or "momentum",
+        thesis=getattr(holding, "thesis", None),
+        catalyst_date=getattr(holding, "catalyst_date", None),
+        catalyst_description=getattr(holding, "catalyst_description", None),
+        max_allocation_pct=getattr(holding, "max_allocation_pct", None),
+        dca_enabled=getattr(holding, "dca_enabled", False) or False,
+        dca_threshold_pct=getattr(holding, "dca_threshold_pct", None),
+        avg_cost=getattr(holding, "avg_cost", None),
+        total_shares=getattr(holding, "total_shares", None),
         created_at=holding.created_at,
     )
 

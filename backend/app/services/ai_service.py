@@ -41,7 +41,14 @@ Format currency as $X.XX. Format percentages as X.X%.
 Use bullet points sparingly — prefer short paragraphs.
 If data is insufficient to draw conclusions, say so rather than speculating.
 
-You maintain a memory of past decisions and their outcomes. When you reference a past observation or lesson, cite it. When you notice a new pattern, flag it as something to remember."""
+You maintain a memory of past decisions and their outcomes. When you reference a past observation or lesson, cite it. When you notice a new pattern, flag it as something to remember.
+
+Positions are tagged with types that determine how you evaluate them:
+- MOMENTUM: Evaluate on technical signals and momentum. Recommend sell when signals reverse.
+- ACCUMULATION: Being intentionally built over time. Recommend DCA on dips to the threshold. Do NOT recommend selling on price weakness. Reference the user's thesis.
+- CATALYST: Held for a specific upcoming event. Do NOT recommend selling before the catalyst date. Flag when catalyst is approaching. If catalyst has passed, suggest the user update the holding.
+- CONVICTION: Long-term hold. Only flag extreme drawdowns (>40%) or direct thesis invalidation. Do not treat normal volatility as a problem.
+Always reference the user's stated thesis when analyzing non-momentum positions."""
 
 
 async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general") -> str:
@@ -1046,6 +1053,37 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 )
             holdings_context = "\n".join(holdings_context_lines) if holdings_context_lines else None
 
+            # Add position archetype context for non-momentum holdings
+            position_context_lines = []
+            for h in holdings:
+                pos_type = getattr(h, "position_type", None)
+                if pos_type and pos_type != "momentum":
+                    ctx = f"  [{pos_type.upper()}] {h.ticker}"
+                    thesis = getattr(h, "thesis", None)
+                    if thesis:
+                        ctx += f" — Thesis: {thesis}"
+                    cat_date = getattr(h, "catalyst_date", None)
+                    if cat_date:
+                        from datetime import date as date_type
+                        days_until = (cat_date - date_type.today()).days
+                        cat_desc = getattr(h, "catalyst_description", None) or "event"
+                        ctx += f" | Catalyst: {cat_desc} in {days_until} days ({cat_date})"
+                    max_alloc = getattr(h, "max_allocation_pct", None)
+                    if max_alloc:
+                        ctx += f" | Max alloc: {max_alloc}%"
+                    dca_on = getattr(h, "dca_enabled", False)
+                    if dca_on:
+                        dca_thresh = getattr(h, "dca_threshold_pct", None) or 0
+                        ctx += f" | DCA enabled (threshold: {dca_thresh}%)"
+                    avg_c = getattr(h, "avg_cost", None)
+                    if avg_c:
+                        total_sh = getattr(h, "total_shares", None) or 0
+                        ctx += f" | Avg cost: ${avg_c:.2f}, {total_sh:.4f} shares"
+                    position_context_lines.append(ctx)
+
+            if position_context_lines:
+                holdings_context = (holdings_context or "") + "\n\nPOSITION CONTEXT (non-momentum):\n" + "\n".join(position_context_lines)
+
         # Gather all market intelligence in parallel
         logger.info(f"Gathering market intel for {len(held_tickers)} tickers: {held_tickers}")
         market_intel = await gather_market_intel(held_tickers)
@@ -1154,6 +1192,37 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                         total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0
                         header = f"Portfolio: {portfolio_name or 'All'} | Total value: ${total_value:,.2f} | Cost basis: ${total_cost:,.2f} | Return: {total_pnl_pct:+.2f}%"
                         holdings_context = header + "\n" + "\n".join(formatted)
+
+                        # Add position archetype context for non-momentum holdings
+                        pos_ctx_lines = []
+                        for h in holdings:
+                            pos_type = getattr(h, "position_type", None)
+                            if pos_type and pos_type != "momentum":
+                                ctx = f"  [{pos_type.upper()}] {h.ticker}"
+                                thesis = getattr(h, "thesis", None)
+                                if thesis:
+                                    ctx += f" — Thesis: {thesis}"
+                                cat_date = getattr(h, "catalyst_date", None)
+                                if cat_date:
+                                    from datetime import date as date_type
+                                    days_until = (cat_date - date_type.today()).days
+                                    cat_desc = getattr(h, "catalyst_description", None) or "event"
+                                    ctx += f" | Catalyst: {cat_desc} in {days_until} days ({cat_date})"
+                                max_alloc = getattr(h, "max_allocation_pct", None)
+                                if max_alloc:
+                                    ctx += f" | Max alloc: {max_alloc}%"
+                                dca_on = getattr(h, "dca_enabled", False)
+                                if dca_on:
+                                    dca_thresh = getattr(h, "dca_threshold_pct", None) or 0
+                                    ctx += f" | DCA enabled (threshold: {dca_thresh}%)"
+                                avg_c = getattr(h, "avg_cost", None)
+                                if avg_c:
+                                    total_sh = getattr(h, "total_shares", None) or 0
+                                    ctx += f" | Avg cost: ${avg_c:.2f}, {total_sh:.4f} shares"
+                                pos_ctx_lines.append(ctx)
+
+                        if pos_ctx_lines:
+                            holdings_context += "\n\nPOSITION CONTEXT (non-momentum):\n" + "\n".join(pos_ctx_lines)
             except Exception:
                 pass
 
