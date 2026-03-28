@@ -955,8 +955,11 @@ BROKERAGE_PATTERNS = {
             "qty": "quantity",
             "price": "price",
             "amount": "amount",
+            "description": "description",
         },
-        "action_map": {"buy": "buy", "sell": "sell", "stc": "sell", "btc": "buy", "bto": "buy", "sto": "sell"},
+        "action_map": {"buy": "buy", "sell": "sell"},
+        # Note: BTO/STC/OEXP are options — handled by skip logic.
+        # CDIV handled as dividend. SLIP/ACH/INT/GOLD/FUTSWP/ITRF/DCF/DTAX all skipped.
     },
     "schwab": {
         "headers": ["date", "action", "symbol", "quantity", "price", "amount"],
@@ -1008,10 +1011,14 @@ BROKERAGE_PATTERNS = {
     },
 }
 
-# Keywords indicating non-equity transactions to skip
+# Trans codes / action keywords indicating non-equity transactions to skip
+SKIP_TRANS_CODES = {"cdiv", "slip", "int", "gold", "ach", "futswp", "itrf", "dcf", "dtax",
+                    "oexp", "bto", "stc", "btc", "sto", "gmpc"}
 SKIP_KEYWORDS = {"dividend", "interest", "fee", "journal", "transfer", "acat", "reinvest",
-                 "margin", "adjustment", "wire", "ach", "deposit", "withdrawal", "option",
-                 "call", "put", "expired", "assigned", "exercised"}
+                 "margin", "adjustment", "wire", "deposit", "withdrawal",
+                 "expired", "assigned", "exercised", "stock lending",
+                 "gold plan", "gold subscription", "event contracts",
+                 "debit card transfer"}
 
 
 def _clean_numeric(val: str | None) -> float | None:
@@ -1096,8 +1103,44 @@ def _resolve_action(action_val: str, action_map: dict) -> str | None:
     return None
 
 
+def _preprocess_robinhood_csv(content: str) -> str:
+    """
+    Robinhood CSVs have multi-line fields (CUSIP info wraps to next line).
+    Python's csv module handles this if the fields are properly quoted,
+    but Robinhood's quotes can be inconsistent. Pre-process to collapse
+    multi-line values and strip the disclaimer footer.
+    """
+    lines = content.split("\n")
+    cleaned = []
+    for line in lines:
+        # Skip disclaimer footer
+        stripped = line.strip().strip('"')
+        if stripped.startswith("The data provided is for informational"):
+            break
+        if not stripped:
+            # Skip empty lines but don't break — Robinhood has blank lines
+            if cleaned and not cleaned[-1].endswith('"'):
+                # This blank line might be inside a quoted field, skip it
+                continue
+            cleaned.append(line)
+            continue
+        # Check if this line is a continuation (doesn't start with a date pattern or quote-date)
+        # Robinhood data rows start with "M/D/YYYY" pattern
+        if cleaned and not re.match(r'^"?\d{1,2}/\d{1,2}/\d{4}', stripped):
+            # This is a continuation of the previous row (e.g., CUSIP line)
+            # Append to previous line with a space
+            if cleaned:
+                cleaned[-1] = cleaned[-1].rstrip() + " " + stripped
+                continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> list[dict]:
     """Parse CSV content into normalized trade dicts using the given column mapping and action map."""
+    # Pre-process Robinhood-style multi-line CSVs
+    content = _preprocess_robinhood_csv(content)
+
     reader = csv.DictReader(io.StringIO(content))
     trades = []
 
@@ -1106,8 +1149,8 @@ def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> lis
     col_lookup = {f.lower().strip(): f for f in fieldnames}
 
     def get_val(row: dict, mapped_name: str) -> str | None:
-        # mapped_name is the value from our mapping dict (e.g., "activity date")
-        # Try exact match first, then case-insensitive
+        if not mapped_name:
+            return None
         if mapped_name in row:
             return row[mapped_name]
         actual = col_lookup.get(mapped_name.lower().strip())
@@ -1116,17 +1159,28 @@ def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> lis
         return None
 
     for row in reader:
-        # Get action value and check for skip
+        # Get action/trans code value
         action_raw = get_val(row, mapping["action"]) or ""
         action_lower = action_raw.lower().strip()
 
-        # Skip non-equity rows
+        # Skip by trans code (Robinhood uses specific codes)
+        if action_lower in SKIP_TRANS_CODES:
+            continue
+
+        # Also check description for skip keywords
+        description = get_val(row, mapping.get("description", "")) or ""
+        desc_lower = description.lower()
         skip = False
         for kw in SKIP_KEYWORDS:
-            if kw in action_lower:
+            if kw in action_lower or kw in desc_lower:
                 skip = True
                 break
         if skip:
+            continue
+
+        # Check if this is an options trade by looking at description
+        # Options have patterns like "AAPL 1/24/2025 Call $230.00" or "Option Expiration"
+        if re.search(r'\b(call|put)\b.*\$[\d.]+', desc_lower) or "option" in desc_lower:
             continue
 
         # Resolve action
@@ -1139,8 +1193,11 @@ def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> lis
         if not ticker_raw or not ticker_raw.strip():
             continue
         ticker = ticker_raw.strip().upper()
-        # Skip if ticker looks like an option (contains space or more than 6 chars with digits)
+        # Skip if ticker looks like an option or is too long
         if " " in ticker or len(ticker) > 6:
+            continue
+        # Skip empty ticker rows (non-instrument rows like ACH deposits)
+        if not ticker or ticker == "":
             continue
 
         # Parse numeric fields
@@ -1153,7 +1210,7 @@ def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> lis
         if qty_val == 0 or price_val == 0:
             continue
 
-        # Handle negative quantities (some brokerages use negative for sells)
+        # Handle negative quantities
         qty_val = abs(qty_val)
         price_val = abs(price_val)
         if amount_val is not None:
@@ -1409,6 +1466,12 @@ async def confirm_import_trades(
             await db.flush()
 
     await db.commit()
+
+    # Register all imported tickers for price tracking
+    for trade in trades:
+        ticker = trade.get("ticker", "")
+        if ticker:
+            price_service.add_ticker(ticker.upper())
 
     return {
         "imported": imported,
