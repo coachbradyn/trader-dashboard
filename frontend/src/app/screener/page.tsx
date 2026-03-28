@@ -221,17 +221,7 @@ function TickerCard({
         </span>
       </div>
 
-      {/* Sparkline with signal overlays */}
-      {chartData && chartData.length >= 2 && (
-        <div className="mb-2 -mx-1">
-          <Sparkline
-            data={chartData}
-            signalEvents={item.signal_events}
-            tradeEvents={item.trade_events}
-            height={44}
-          />
-        </div>
-      )}
+      {/* Sparkline removed from listing for faster load times — available on detail page */}
 
       {/* Signal counts + last update */}
       <div className="flex items-center gap-3 mb-2 text-xs text-gray-500 font-mono">
@@ -286,7 +276,7 @@ function TickerCard({
       )}
 
       {/* No signals state */}
-      {!hasSignals && !chartData && (
+      {!hasSignals && (
         <div className="text-center py-2">
           <span className="text-xs text-gray-600">Awaiting signals</span>
         </div>
@@ -301,7 +291,6 @@ export default function WatchlistPage() {
   const router = useRouter();
 
   const [watchlist, setWatchlist] = useState<WatchlistTickerData[]>([]);
-  const [chartCache, setChartCache] = useState<Record<string, ChartDataPoint[]>>({});
   const [loading, setLoading] = useState(true);
   const [addInput, setAddInput] = useState("");
   const [adding, setAdding] = useState(false);
@@ -310,14 +299,6 @@ export default function WatchlistPage() {
     try {
       const data = await api.getWatchlist();
       setWatchlist(data);
-      // Fetch chart data for tickers we don't have yet
-      for (const item of data) {
-        if (!chartCache[item.ticker]) {
-          api.getScreenerChart(item.ticker, 60).then((chart) => {
-            setChartCache((prev) => ({ ...prev, [item.ticker]: chart }));
-          }).catch(() => {});
-        }
-      }
     } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -448,7 +429,7 @@ export default function WatchlistPage() {
             <TickerCard
               key={item.id}
               item={item}
-              chartData={chartCache[item.ticker] || null}
+              chartData={null}
               onClick={() => router.push(`/screener/${item.ticker}`)}
             />
           ))}
