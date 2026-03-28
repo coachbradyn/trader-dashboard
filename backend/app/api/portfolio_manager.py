@@ -1361,23 +1361,42 @@ async def confirm_import_trades(
 ):
     """
     Confirm and execute a trade import into a portfolio.
-    Body: { portfolio_id, trades: [{date, ticker, action, qty, price, amount}] }
+    Body: { portfolio_id, trades: [{date, ticker, action, qty, price, amount}], clear_existing: bool }
+
+    Process: First deletes all existing imported holdings (strategy_name="import")
+    for this portfolio, then replays all trades chronologically from scratch.
+    This ensures correct net positions even across multiple CSV uploads.
     """
     portfolio_id = body.get("portfolio_id")
     trades = body.get("trades", [])
+    clear_existing = body.get("clear_existing", True)
 
     if not portfolio_id:
         raise HTTPException(400, "portfolio_id is required")
     if not trades:
         raise HTTPException(400, "No trades to import")
 
+    # Clear existing imported holdings first for a clean replay
+    if clear_existing:
+        existing_imports = await db.execute(
+            select(PortfolioHolding).where(
+                PortfolioHolding.portfolio_id == portfolio_id,
+                PortfolioHolding.strategy_name == "import",
+            )
+        )
+        for h in existing_imports.scalars().all():
+            await db.delete(h)
+        await db.flush()
+
     # Sort trades chronologically (oldest first)
     trades.sort(key=lambda t: t.get("date", ""))
 
+    # Process all trades in memory first, then write to DB
+    # This avoids stale-read issues with repeated queries
+    positions: dict[str, dict] = {}  # ticker -> {qty, total_cost, first_date}
+    trade_history: list[dict] = []
     holdings_created = 0
-    holdings_updated = 0
     holdings_closed = 0
-    imported = 0
 
     for trade in trades:
         ticker = trade.get("ticker", "").upper()
@@ -1385,99 +1404,77 @@ async def confirm_import_trades(
         qty = float(trade.get("qty", 0))
         price = float(trade.get("price", 0))
         date_str = trade.get("date", "")
+        amount = float(trade.get("amount", 0))
 
         if not ticker or not action or qty <= 0 or price <= 0:
             continue
 
-        # Parse date
         try:
             entry_date = datetime.strptime(date_str, "%Y-%m-%d")
         except (ValueError, TypeError):
             entry_date = datetime.utcnow()
 
+        # Track all trades for history
+        trade_history.append({
+            "ticker": ticker,
+            "action": action,
+            "qty": qty,
+            "price": price,
+            "amount": amount,
+            "date": entry_date,
+        })
+
         if action == "buy":
-            # Check for existing active holding with same ticker+portfolio, direction=long
-            result = await db.execute(
-                select(PortfolioHolding).where(
-                    PortfolioHolding.portfolio_id == portfolio_id,
-                    PortfolioHolding.ticker == ticker,
-                    PortfolioHolding.direction == "long",
-                    PortfolioHolding.is_active == True,
-                )
-            )
-            existing = result.scalar_one_or_none()
-
-            if existing:
-                # Merge: weighted average price, sum qty
-                old_cost = existing.entry_price * existing.qty
-                new_cost = price * qty
-                total_qty = existing.qty + qty
-                avg_price = (old_cost + new_cost) / total_qty if total_qty > 0 else price
-
-                existing.entry_price = round(avg_price, 4)
-                existing.qty = round(total_qty, 6)
-                if entry_date < existing.entry_date:
-                    existing.entry_date = entry_date
-                holdings_updated += 1
-            else:
-                # Create new holding
-                holding = PortfolioHolding(
-                    portfolio_id=portfolio_id,
-                    ticker=ticker,
-                    direction="long",
-                    entry_price=round(price, 4),
-                    qty=round(qty, 6),
-                    entry_date=entry_date,
-                    strategy_name="import",
-                    notes=f"Imported from CSV",
-                    is_active=True,
-                    created_at=datetime.utcnow(),
-                )
-                db.add(holding)
-                holdings_created += 1
+            if ticker not in positions:
+                positions[ticker] = {"qty": 0.0, "total_cost": 0.0, "first_date": entry_date}
+            pos = positions[ticker]
+            pos["total_cost"] += price * qty
+            pos["qty"] += qty
+            if entry_date < pos["first_date"]:
+                pos["first_date"] = entry_date
 
         elif action == "sell":
-            # Find matching active holding
-            result = await db.execute(
-                select(PortfolioHolding).where(
-                    PortfolioHolding.portfolio_id == portfolio_id,
-                    PortfolioHolding.ticker == ticker,
-                    PortfolioHolding.direction == "long",
-                    PortfolioHolding.is_active == True,
-                )
-            )
-            existing = result.scalar_one_or_none()
-
-            if existing:
-                remaining = existing.qty - qty
-                if remaining <= 0.0001:
-                    # Full close
-                    existing.is_active = False
-                    existing.qty = 0
+            if ticker in positions and positions[ticker]["qty"] > 0:
+                pos = positions[ticker]
+                sell_qty = min(qty, pos["qty"])
+                # Reduce cost proportionally
+                if pos["qty"] > 0:
+                    cost_per_share = pos["total_cost"] / pos["qty"]
+                    pos["total_cost"] -= cost_per_share * sell_qty
+                pos["qty"] -= sell_qty
+                if pos["qty"] <= 0.0001:
+                    pos["qty"] = 0
+                    pos["total_cost"] = 0
                     holdings_closed += 1
-                else:
-                    existing.qty = round(remaining, 6)
-                    holdings_updated += 1
 
-        imported += 1
-
-        # Flush periodically to avoid stale reads in subsequent iterations
-        if imported % 50 == 0:
-            await db.flush()
+    # Write final positions as holdings (only those with qty > 0)
+    for ticker, pos in positions.items():
+        if pos["qty"] > 0.0001:
+            avg_price = pos["total_cost"] / pos["qty"] if pos["qty"] > 0 else 0
+            holding = PortfolioHolding(
+                portfolio_id=portfolio_id,
+                ticker=ticker,
+                direction="long",
+                entry_price=round(avg_price, 4),
+                qty=round(pos["qty"], 6),
+                entry_date=pos["first_date"],
+                strategy_name="import",
+                notes=f"Imported from CSV ({len([t for t in trade_history if t['ticker'] == ticker])} trades)",
+                is_active=True,
+                created_at=datetime.utcnow(),
+            )
+            db.add(holding)
+            holdings_created += 1
+            price_service.add_ticker(ticker)
 
     await db.commit()
 
-    # Register all imported tickers for price tracking
-    for trade in trades:
-        ticker = trade.get("ticker", "")
-        if ticker:
-            price_service.add_ticker(ticker.upper())
-
     return {
-        "imported": imported,
+        "imported": len(trade_history),
         "holdings_created": holdings_created,
-        "holdings_updated": holdings_updated,
+        "holdings_updated": 0,
         "holdings_closed": holdings_closed,
+        "trade_history": trade_history[:200],  # Return up to 200 trades for display
     }
 
 

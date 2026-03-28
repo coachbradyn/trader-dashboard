@@ -77,6 +77,16 @@ export const api = {
     fetchApi("/settings/portfolios/" + id + "/archive", { method: "PATCH" }),
   deletePortfolio: (id: string) =>
     fetchApi("/settings/portfolios/" + id, { method: "DELETE" }),
+  depositToPortfolio: (id: string, amount: number) =>
+    fetchApi<{ status: string; new_cash: number; new_initial_capital: number }>("/portfolios/" + id + "/deposit", {
+      method: "POST",
+      body: JSON.stringify({ amount }),
+    }),
+  withdrawFromPortfolio: (id: string, amount: number) =>
+    fetchApi<{ status: string; new_cash: number; new_initial_capital: number }>("/portfolios/" + id + "/withdraw", {
+      method: "POST",
+      body: JSON.stringify({ amount }),
+    }),
 
   // Settings - Traders
   getSettingsTraders: () => fetchApi<import("./types").TraderSettings[]>("/settings/traders"),

@@ -224,3 +224,54 @@ async def get_equity(portfolio_id: str, db: AsyncSession = Depends(get_db)):
 @router.get("/portfolios/{portfolio_id}/daily-stats", response_model=list[DailyStatsResponse])
 async def get_daily(portfolio_id: str, db: AsyncSession = Depends(get_db)):
     return await get_daily_stats(portfolio_id, db)
+
+
+@router.post("/portfolios/{portfolio_id}/deposit")
+async def deposit(portfolio_id: str, body: dict, db: AsyncSession = Depends(get_db)):
+    """Add cash to a portfolio (simulates a deposit)."""
+    amount = body.get("amount", 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+    portfolio = result.scalar_one_or_none()
+    if not portfolio:
+        raise HTTPException(404, "Portfolio not found")
+
+    portfolio.cash = (portfolio.cash or 0) + amount
+    portfolio.initial_capital = (portfolio.initial_capital or 0) + amount
+    await db.commit()
+
+    return {
+        "status": "deposited",
+        "amount": amount,
+        "new_cash": portfolio.cash,
+        "new_initial_capital": portfolio.initial_capital,
+    }
+
+
+@router.post("/portfolios/{portfolio_id}/withdraw")
+async def withdraw(portfolio_id: str, body: dict, db: AsyncSession = Depends(get_db)):
+    """Remove cash from a portfolio (simulates a withdrawal)."""
+    amount = body.get("amount", 0)
+    if amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+    portfolio = result.scalar_one_or_none()
+    if not portfolio:
+        raise HTTPException(404, "Portfolio not found")
+
+    if amount > (portfolio.cash or 0):
+        raise HTTPException(400, f"Insufficient cash. Available: ${portfolio.cash:.2f}")
+
+    portfolio.cash = (portfolio.cash or 0) - amount
+    portfolio.initial_capital = max(0, (portfolio.initial_capital or 0) - amount)
+    await db.commit()
+
+    return {
+        "status": "withdrawn",
+        "amount": amount,
+        "new_cash": portfolio.cash,
+        "new_initial_capital": portfolio.initial_capital,
+    }
