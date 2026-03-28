@@ -11,6 +11,8 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import PortfolioAction, BacktestImport, BacktestTrade, PortfolioHolding, HenryMemory, Trader
+from app.models.trade import Trade
+from app.models.portfolio_trade import PortfolioTrade
 from app.schemas.portfolio_manager import (
     HoldingCreate, HoldingUpdate, HoldingResponse,
     ActionResponse, ActionReject, ActionStats,
@@ -1388,15 +1390,61 @@ async def confirm_import_trades(
             await db.delete(h)
         await db.flush()
 
+    # Get or create the synthetic "import" trader for brokerage imports
+    import uuid as uuid_mod
+    from app.utils.auth import generate_api_key, hash_api_key
+
+    result = await db.execute(
+        select(Trader).where(Trader.trader_id == "brokerage-import")
+    )
+    import_trader = result.scalar_one_or_none()
+    if not import_trader:
+        raw_key = generate_api_key()
+        import_trader = Trader(
+            id=str(uuid_mod.uuid4()),
+            trader_id="brokerage-import",
+            display_name="Brokerage Import",
+            strategy_name="Imported Trades",
+            description="Trades imported from brokerage CSV exports",
+            api_key_hash=hash_api_key(raw_key),
+            is_active=True,
+        )
+        db.add(import_trader)
+        await db.flush()
+
+    # Also clear old imported trades for this portfolio
+    if clear_existing:
+        old_pt_result = await db.execute(
+            select(PortfolioTrade).where(PortfolioTrade.portfolio_id == portfolio_id)
+        )
+        old_pts = old_pt_result.scalars().all()
+        old_trade_ids = [pt.trade_id for pt in old_pts]
+        if old_trade_ids:
+            # Only delete trades from the import trader
+            old_trades_result = await db.execute(
+                select(Trade).where(
+                    Trade.id.in_(old_trade_ids),
+                    Trade.trader_id == import_trader.id,
+                )
+            )
+            for t in old_trades_result.scalars().all():
+                # Delete portfolio_trade links first
+                await db.execute(
+                    select(PortfolioTrade).where(PortfolioTrade.trade_id == t.id)
+                )
+                for pt in (await db.execute(select(PortfolioTrade).where(PortfolioTrade.trade_id == t.id))).scalars().all():
+                    await db.delete(pt)
+                await db.delete(t)
+            await db.flush()
+
     # Sort trades chronologically (oldest first)
     trades.sort(key=lambda t: t.get("date", ""))
 
-    # Process all trades in memory first, then write to DB
-    # This avoids stale-read issues with repeated queries
-    positions: dict[str, dict] = {}  # ticker -> {qty, total_cost, first_date}
-    trade_history: list[dict] = []
+    # Process all trades: compute net positions AND create trade records
+    positions: dict[str, dict] = {}  # ticker -> {qty, total_cost, first_date, buys: [...]}
     holdings_created = 0
     holdings_closed = 0
+    trades_created = 0
 
     for trade in trades:
         ticker = trade.get("ticker", "").upper()
@@ -1404,7 +1452,6 @@ async def confirm_import_trades(
         qty = float(trade.get("qty", 0))
         price = float(trade.get("price", 0))
         date_str = trade.get("date", "")
-        amount = float(trade.get("amount", 0))
 
         if not ticker or not action or qty <= 0 or price <= 0:
             continue
@@ -1414,33 +1461,54 @@ async def confirm_import_trades(
         except (ValueError, TypeError):
             entry_date = datetime.utcnow()
 
-        # Track all trades for history
-        trade_history.append({
-            "ticker": ticker,
-            "action": action,
-            "qty": qty,
-            "price": price,
-            "amount": amount,
-            "date": entry_date,
-        })
-
         if action == "buy":
             if ticker not in positions:
-                positions[ticker] = {"qty": 0.0, "total_cost": 0.0, "first_date": entry_date}
+                positions[ticker] = {"qty": 0.0, "total_cost": 0.0, "first_date": entry_date, "buys": []}
             pos = positions[ticker]
             pos["total_cost"] += price * qty
             pos["qty"] += qty
             if entry_date < pos["first_date"]:
                 pos["first_date"] = entry_date
+            pos["buys"].append({"price": price, "qty": qty, "date": entry_date})
 
         elif action == "sell":
             if ticker in positions and positions[ticker]["qty"] > 0:
                 pos = positions[ticker]
                 sell_qty = min(qty, pos["qty"])
-                # Reduce cost proportionally
-                if pos["qty"] > 0:
-                    cost_per_share = pos["total_cost"] / pos["qty"]
-                    pos["total_cost"] -= cost_per_share * sell_qty
+                avg_entry = pos["total_cost"] / pos["qty"] if pos["qty"] > 0 else price
+
+                # Create a closed trade record (entry + exit paired)
+                pnl_dollars = (price - avg_entry) * sell_qty
+                pnl_pct = ((price - avg_entry) / avg_entry * 100) if avg_entry > 0 else 0
+
+                trade_record = Trade(
+                    id=str(uuid_mod.uuid4()),
+                    trader_id=import_trader.id,
+                    ticker=ticker,
+                    direction="long",
+                    entry_price=round(avg_entry, 4),
+                    qty=round(sell_qty, 6),
+                    entry_time=pos["first_date"],
+                    exit_price=round(price, 4),
+                    exit_time=entry_date,
+                    exit_reason="brokerage_sell",
+                    pnl_dollars=round(pnl_dollars, 2),
+                    pnl_percent=round(pnl_pct, 2),
+                    status="closed",
+                    is_simulated=False,
+                    created_at=datetime.utcnow(),
+                )
+                db.add(trade_record)
+                db.add(PortfolioTrade(
+                    id=str(uuid_mod.uuid4()),
+                    portfolio_id=portfolio_id,
+                    trade_id=trade_record.id,
+                ))
+                trades_created += 1
+
+                # Update position
+                cost_per_share = pos["total_cost"] / pos["qty"]
+                pos["total_cost"] -= cost_per_share * sell_qty
                 pos["qty"] -= sell_qty
                 if pos["qty"] <= 0.0001:
                     pos["qty"] = 0
@@ -1459,7 +1527,7 @@ async def confirm_import_trades(
                 qty=round(pos["qty"], 6),
                 entry_date=pos["first_date"],
                 strategy_name="import",
-                notes=f"Imported from CSV ({len([t for t in trade_history if t['ticker'] == ticker])} trades)",
+                notes=f"Imported from CSV",
                 is_active=True,
                 created_at=datetime.utcnow(),
             )
@@ -1470,11 +1538,11 @@ async def confirm_import_trades(
     await db.commit()
 
     return {
-        "imported": len(trade_history),
+        "imported": trades_created,
         "holdings_created": holdings_created,
         "holdings_updated": 0,
         "holdings_closed": holdings_closed,
-        "trade_history": trade_history[:200],  # Return up to 200 trades for display
+        "trades_created": trades_created,
     }
 
 
