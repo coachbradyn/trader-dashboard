@@ -295,6 +295,10 @@ export const api = {
   // News
   getTickerNews: (ticker: string) =>
     fetchApi<import("./types").TickerNewsResponse>("/news/ticker/" + ticker),
+  getTickerThesis: (ticker: string) =>
+    fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean; generated_at?: string }>("/news/ticker/" + ticker + "/thesis"),
+  generateTickerThesis: (ticker: string) =>
+    fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean }>("/news/ticker/" + ticker + "/thesis", { method: "POST" }),
   getNews: (params?: { ticker?: string; limit?: number; hours?: number }) => {
     const sp = new URLSearchParams();
     if (params?.ticker) sp.set("ticker", params.ticker);

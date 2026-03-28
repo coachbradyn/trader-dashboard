@@ -88,6 +88,11 @@ export default function TickerDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [newsData, setNewsData] = useState<TickerNewsResponse | null>(null);
 
+  // Thesis state
+  const [thesisData, setThesisData] = useState<{ bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null>(null);
+  const [thesisLoading, setThesisLoading] = useState(false);
+  const [thesisCached, setThesisCached] = useState(false);
+
   // Monte Carlo state
   const [mcResults, setMcResults] = useState<MonteCarloResponse | null>(null);
   const [mcLoading, setMcLoading] = useState(false);
@@ -98,18 +103,35 @@ export default function TickerDetailPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [d, c, allBt, news] = await Promise.all([
+      const [d, c, allBt, news, thesis] = await Promise.all([
         api.getWatchlistDetail(ticker).catch(() => null),
         api.getScreenerChart(ticker, 90).catch(() => []),
         api.getBacktestImports().catch(() => []),
         api.getTickerNews(ticker).catch(() => null),
+        api.getTickerThesis(ticker).catch(() => null),
       ]);
       setDetail(d);
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
       setNewsData(news);
+      if (thesis?.thesis) {
+        setThesisData(thesis.thesis);
+        setThesisCached(thesis.cached ?? false);
+      }
     } catch {}
   }, [ticker]);
+
+  const generateThesis = async () => {
+    setThesisLoading(true);
+    try {
+      const result = await api.generateTickerThesis(ticker);
+      if (result.thesis) {
+        setThesisData(result.thesis);
+        setThesisCached(false);
+      }
+    } catch {}
+    setThesisLoading(false);
+  };
 
   useEffect(() => {
     fetchAll().finally(() => setLoading(false));
@@ -350,6 +372,78 @@ export default function TickerDetailPage() {
           </Card>
         </div>
       )}
+
+      {/* Bull/Bear Thesis */}
+      <Card>
+        <CardContent className="pt-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>
+              Bull / Bear Thesis
+            </h2>
+            <Button
+              size="sm"
+              onClick={generateThesis}
+              disabled={thesisLoading}
+              className="h-6 text-[10px] bg-ai-blue/10 text-ai-blue hover:bg-ai-blue/20 border border-ai-blue/20"
+            >
+              {thesisLoading ? "Generating..." : thesisData ? "Refresh" : "Generate"}
+            </Button>
+          </div>
+
+          {thesisData ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Bull Case */}
+                <div className="rounded-lg bg-profit/5 border border-profit/10 p-3">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <svg className="w-3.5 h-3.5 text-profit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
+                    </svg>
+                    <span className="text-[10px] font-semibold text-profit uppercase tracking-wider" style={FONT_OUTFIT}>Bull Case</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">{thesisData.bull_case}</p>
+                  {thesisData.key_catalysts && thesisData.key_catalysts.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {thesisData.key_catalysts.map((c, i) => (
+                        <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-profit/10 text-profit/80">{c}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Bear Case */}
+                <div className="rounded-lg bg-loss/5 border border-loss/10 p-3">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <svg className="w-3.5 h-3.5 text-loss" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 6L9 12.75l4.286-4.286a11.948 11.948 0 014.306 6.43l.776 2.898m0 0l3.182-5.511m-3.182 5.51l-5.511-3.181" />
+                    </svg>
+                    <span className="text-[10px] font-semibold text-loss uppercase tracking-wider" style={FONT_OUTFIT}>Bear Case</span>
+                  </div>
+                  <p className="text-xs text-gray-300 leading-relaxed">{thesisData.bear_case}</p>
+                  {thesisData.risk_factors && thesisData.risk_factors.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {thesisData.risk_factors.map((r, i) => (
+                        <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-loss/10 text-loss/80">{r}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {thesisData.sentiment_summary && (
+                <p className="text-[10px] text-gray-500 italic">{thesisData.sentiment_summary}</p>
+              )}
+              {thesisCached && (
+                <span className="text-[9px] text-gray-600">Cached — click Refresh for updated analysis</span>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-600 text-center py-4">
+              Click Generate for Henry&apos;s bull/bear analysis
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Price Chart */}
       {priceChartData.length >= 2 && (

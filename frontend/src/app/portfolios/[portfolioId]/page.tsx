@@ -1336,58 +1336,40 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
         {totalCount === 0 && importStep === "idle" ? (
           <p className="text-xs text-gray-500 text-center py-6">No positions — use Buy to add your first position</p>
         ) : totalCount > 0 ? (
-          <div className="space-y-1">
+          <div className="space-y-2">
             {/* Manual holdings */}
             {holdings.map((h) => (
               <div key={h.id}>
-                <div className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10 cursor-pointer group"
+                <div className="rounded-lg border border-border/50 hover:border-border p-3 cursor-pointer group transition"
                   onClick={() => editingId === h.id ? setEditingId(null) : startEdit(h)}>
-                  <span className="text-white font-semibold w-12">{h.ticker}</span>
-                  <Badge className={`text-[8px] px-1 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
-                    {h.direction.toUpperCase()}
-                  </Badge>
-                  {/* Position type badge */}
-                  {h.position_type === "accumulation" && (
-                    <Badge className="bg-ai-blue/15 text-ai-blue text-[8px] px-1 py-0">ACCUM</Badge>
-                  )}
-                  {h.position_type === "catalyst" && (
-                    <>
-                      <Badge className="bg-amber-500/15 text-amber-400 text-[8px] px-1 py-0">CATALYST</Badge>
-                      {h.catalyst_date && (() => {
-                        const days = Math.ceil((new Date(h.catalyst_date).getTime() - Date.now()) / 86400000);
-                        return days > 0
-                          ? <span className="text-[9px] text-amber-400/70">{days}d to {h.catalyst_description || "event"}</span>
-                          : <span className="text-[9px] text-loss/70">catalyst passed</span>;
-                      })()}
-                    </>
-                  )}
-                  {h.position_type === "conviction" && (
-                    <Badge className="bg-purple-500/15 text-purple-400 text-[8px] px-1 py-0">HOLD</Badge>
-                  )}
-                  {/* Entry info — show avg cost for accumulation, normal for others */}
-                  {h.position_type === "accumulation" && h.avg_cost
-                    ? <span className="text-gray-500">avg ${h.avg_cost.toFixed(2)} x {h.total_shares?.toFixed(2)}</span>
-                    : <span className="text-gray-500">{h.qty} @ {formatCurrency(h.entry_price)}</span>
-                  }
-                  {h.current_price && (
-                    <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(h.current_price)}</span>
-                  )}
-                  {/* Allocation % */}
-                  <span className="text-[9px] text-gray-600 tabular-nums">
-                    {getAllocation(h.current_price ?? h.entry_price, h.qty).toFixed(1)}%
-                  </span>
-                  <div className="ml-auto flex items-center gap-2">
+                  {/* Row 1: Ticker, badges, P&L */}
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-sm font-bold text-white" style={FONT_OUTFIT}>{h.ticker}</span>
+                    <Badge className={`text-[8px] px-1.5 py-0 ${h.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
+                      {h.direction.toUpperCase()}
+                    </Badge>
+                    {h.position_type === "accumulation" && (
+                      <Badge className="bg-ai-blue/15 text-ai-blue text-[8px] px-1.5 py-0">ACCUM</Badge>
+                    )}
+                    {h.position_type === "catalyst" && (
+                      <Badge className="bg-amber-500/15 text-amber-400 text-[8px] px-1.5 py-0">CATALYST</Badge>
+                    )}
+                    {h.position_type === "conviction" && (
+                      <Badge className="bg-purple-500/15 text-purple-400 text-[8px] px-1.5 py-0">HOLD</Badge>
+                    )}
+                    {/* Allocation */}
+                    <span className="text-[9px] text-gray-600 tabular-nums ml-auto hidden sm:inline">
+                      {getAllocation(h.current_price ?? h.entry_price, h.qty).toFixed(1)}%
+                    </span>
+                    {/* P&L — always visible */}
                     {h.unrealized_pnl != null && (
-                      <div className="text-right">
-                        <span className={`font-semibold ${pnlColor(h.unrealized_pnl)}`}>
-                          {formatCurrency(h.unrealized_pnl)}
-                        </span>
-                        <span className={`ml-1.5 ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
-                          ({formatPercent(h.unrealized_pnl_pct ?? 0)})
+                      <div className="text-right sm:ml-0 ml-auto">
+                        <span className={`text-sm font-mono font-semibold ${pnlColor(h.unrealized_pnl_pct ?? 0)}`}>
+                          {formatPercent(h.unrealized_pnl_pct ?? 0)}
                         </span>
                       </div>
                     )}
-                    {/* Henry notification — recent actions for this ticker */}
+                    {/* Henry notification */}
                     {actionsByTicker[h.ticker] && actionsByTicker[h.ticker].length > 0 && (
                       <div className="relative"
                         onMouseEnter={() => setHoveredAlert(h.ticker)}
@@ -1405,7 +1387,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                         {hoveredAlert === h.ticker && (
                           <div className="absolute right-0 top-7 z-50 w-72 p-3 rounded-lg bg-surface border border-border shadow-xl">
                             <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>
-                              Recent Henry Actions — {h.ticker}
+                              Henry — {h.ticker}
                             </div>
                             <div className="space-y-2">
                               {actionsByTicker[h.ticker].map((a) => (
@@ -1427,7 +1409,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                                   <p className="text-gray-400 leading-snug line-clamp-2">{a.reasoning}</p>
                                   {a.confidence > 0 && (
                                     <div className="flex items-center gap-1 mt-0.5">
-                                      <span className="text-[8px] text-gray-600">Confidence:</span>
+                                      <span className="text-[8px] text-gray-600">Conf:</span>
                                       <div className="flex gap-px">
                                         {Array.from({ length: 10 }).map((_, i) => (
                                           <div key={i} className={`w-1.5 h-1 rounded-sm ${i < a.confidence ? "bg-ai-blue" : "bg-gray-800"}`} />
@@ -1442,17 +1424,32 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                         )}
                       </div>
                     )}
-                    <button onClick={(e) => { e.stopPropagation(); startEdit(h); }} className="text-gray-600 hover:text-ai-blue transition" title="Edit">
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+                    <button onClick={(e) => { e.stopPropagation(); startEdit(h); }} className="text-gray-600 hover:text-ai-blue opacity-0 group-hover:opacity-100 transition" title="Edit">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" /></svg>
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDelete(h.id); }} className="text-gray-600 hover:text-loss transition" title="Remove">
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(h.id); }} className="text-gray-600 hover:text-loss opacity-0 group-hover:opacity-100 transition" title="Remove">
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                   </div>
+                  {/* Row 2: Entry details + allocation (mobile-friendly) */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-gray-500">
+                    {h.position_type === "accumulation" && h.avg_cost
+                      ? <span>avg {formatCurrency(h.avg_cost)} × {h.total_shares?.toFixed(2)}</span>
+                      : <span>{h.qty} @ {formatCurrency(h.entry_price)}</span>
+                    }
+                    {h.current_price && <span>→ {formatCurrency(h.current_price)}</span>}
+                    {h.unrealized_pnl != null && (
+                      <span className={pnlColor(h.unrealized_pnl)}>{formatCurrency(h.unrealized_pnl)}</span>
+                    )}
+                    <span className="sm:hidden">{getAllocation(h.current_price ?? h.entry_price, h.qty).toFixed(1)}% alloc</span>
+                    {h.position_type === "catalyst" && h.catalyst_date && (() => {
+                      const days = Math.ceil((new Date(h.catalyst_date).getTime() - Date.now()) / 86400000);
+                      return days > 0
+                        ? <span className="text-amber-400/70">{days}d to {h.catalyst_description || "event"}</span>
+                        : <span className="text-loss/70">catalyst passed</span>;
+                    })()}
+                  </div>
                 </div>
-                {h.thesis && editingId !== h.id && (
-                  <div className="text-[9px] text-gray-600 pl-12 -mt-0.5 mb-1 italic">&quot;{h.thesis}&quot;</div>
-                )}
                 {/* Inline edit form */}
                 {editingId === h.id && (
                   <div className="ml-12 mr-2 mb-2 p-3 rounded-lg border border-ai-blue/20 bg-ai-blue/5">
