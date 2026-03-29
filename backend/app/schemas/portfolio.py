@@ -13,6 +13,9 @@ class PortfolioResponse(BaseModel):
     total_return_pct: float = 0.0
     open_positions: int = 0
     is_active: bool
+    execution_mode: str = "local"
+    max_order_amount: float | None = None
+    has_alpaca_credentials: bool = False
     created_at: datetime
 
     class Config:

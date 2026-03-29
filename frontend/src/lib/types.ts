@@ -9,6 +9,9 @@ export interface Portfolio {
   total_return_pct: number;
   open_positions: number;
   is_active: boolean;
+  execution_mode?: string;  // "local" | "paper" | "live"
+  max_order_amount?: number;
+  has_alpaca_credentials?: boolean;
   created_at: string;
 }
 
@@ -164,6 +167,10 @@ export interface PortfolioSettings {
   max_pct_per_trade: number | null;
   max_open_positions: number | null;
   max_drawdown_pct: number | null;
+  execution_mode?: string;  // "local" | "paper" | "live"
+  max_order_amount?: number | null;
+  has_alpaca_credentials?: boolean;
+  alpaca_key_preview?: string | null;
   created_at: string;
   strategies: Array<{
     trader_id: string;
@@ -171,6 +178,37 @@ export interface PortfolioSettings {
     display_name: string;
     direction_filter: string | null;
   }>;
+}
+
+export interface AlpacaConnectionTest {
+  status: string;
+  account_id?: string;
+  buying_power?: number;
+  equity?: number;
+  cash?: number;
+  portfolio_value?: number;
+  paper?: boolean;
+  message?: string;
+}
+
+export interface OrderResult {
+  status: string;
+  order_id?: string;
+  symbol?: string;
+  qty?: string;
+  side?: string;
+  filled_price?: number;
+  filled_qty?: number;
+  paper?: boolean;
+  message?: string;
+  holding_updated?: boolean;
+  mode?: string;
+  fill?: {
+    status?: string;
+    filled_price?: number;
+    filled_qty?: number;
+    filled_at?: string;
+  };
 }
 
 export interface TraderSettings {

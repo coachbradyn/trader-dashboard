@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { formatCurrency, formatTimeAgo, formatDate } from "@/lib/formatters";
-import type { PortfolioSettings, TraderSettings, AllowlistedKey } from "@/lib/types";
+import type { PortfolioSettings, TraderSettings, AllowlistedKey, AlpacaConnectionTest } from "@/lib/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -106,6 +106,17 @@ export default function SettingsPage() {
   const [pfMaxPct, setPfMaxPct] = useState(25); const [pfMaxPos, setPfMaxPos] = useState(10); const [pfMaxDD, setPfMaxDD] = useState(20);
   const [pfStrats, setPfStrats] = useState<Record<string, { assigned: boolean; direction: string | null }>>({});
 
+  // Execution state
+  const [execMode, setExecMode] = useState<"local" | "paper" | "live">("local");
+  const [alpacaApiKey, setAlpacaApiKey] = useState("");
+  const [alpacaSecretKey, setAlpacaSecretKey] = useState("");
+  const [maxOrderAmount, setMaxOrderAmount] = useState(1000);
+  const [liveConfirmText, setLiveConfirmText] = useState("");
+  const [liveConfirmed, setLiveConfirmed] = useState(false);
+  const [connectionTest, setConnectionTest] = useState<AlpacaConnectionTest | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [savingCreds, setSavingCreds] = useState(false);
+
   const [traders, setTraders] = useState<TraderSettings[]>([]);
   const [tradersLoading, setTradersLoading] = useState(true);
   const [keys, setKeys] = useState<AllowlistedKey[]>([]);
@@ -138,6 +149,8 @@ export default function SettingsPage() {
   useEffect(() => {
     if (isCreatingPf) {
       setPfName(""); setPfDesc(""); setPfCapital(10000); setPfMaxPct(25); setPfMaxPos(10); setPfMaxDD(20);
+      setExecMode("local"); setAlpacaApiKey(""); setAlpacaSecretKey(""); setMaxOrderAmount(1000);
+      setLiveConfirmText(""); setLiveConfirmed(false); setConnectionTest(null);
       const init: Record<string, { assigned: boolean; direction: string | null }> = {};
       traders.forEach((t) => { init[t.id] = { assigned: false, direction: null }; });
       setPfStrats(init); return;
@@ -146,6 +159,9 @@ export default function SettingsPage() {
     if (!pf) return;
     setPfName(pf.name); setPfDesc(pf.description || ""); setPfCapital(pf.initial_capital);
     setPfMaxPct(pf.max_pct_per_trade ?? 25); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
+    setExecMode((pf.execution_mode as "local" | "paper" | "live") || "local");
+    setMaxOrderAmount(pf.max_order_amount ?? 1000);
+    setAlpacaApiKey(""); setAlpacaSecretKey(""); setLiveConfirmText(""); setLiveConfirmed(false); setConnectionTest(null);
     const s: Record<string, { assigned: boolean; direction: string | null }> = {};
     traders.forEach((t) => {
       const m = pf.strategies.find((st) => st.trader_id === t.id);
@@ -226,6 +242,42 @@ export default function SettingsPage() {
     catch { flash("Revoke failed", "error"); } finally { setSaving(false); }
   };
 
+  const handleTestConnection = async () => {
+    if (!selectedPortfolio) return;
+    setTestingConnection(true); setConnectionTest(null);
+    try {
+      const result = await api.testAlpacaConnection(selectedPortfolio);
+      setConnectionTest(result);
+      if (result.status === "connected") flash("Connected to Alpaca");
+      else flash(result.message || "Connection failed", "error");
+    } catch { flash("Connection test failed", "error"); }
+    finally { setTestingConnection(false); }
+  };
+
+  const handleSaveCreds = async () => {
+    if (!selectedPortfolio) return;
+    setSavingCreds(true);
+    try {
+      const data: Record<string, unknown> = { execution_mode: execMode, max_order_amount: maxOrderAmount };
+      if (alpacaApiKey) data.alpaca_api_key = alpacaApiKey;
+      if (alpacaSecretKey) data.alpaca_secret_key = alpacaSecretKey;
+      await api.updatePortfolio(selectedPortfolio, { portfolio: data });
+      flash("Execution settings saved");
+      await fetchPortfolios();
+    } catch { flash("Save failed", "error"); }
+    finally { setSavingCreds(false); }
+  };
+
+  const handleKillSwitch = async () => {
+    setSaving(true);
+    try {
+      const r = await api.killSwitch();
+      flash(`Kill switch activated - ${r.portfolios_affected} portfolio(s) set to Local`);
+      await fetchPortfolios();
+    } catch { flash("Kill switch failed", "error"); }
+    finally { setSaving(false); }
+  };
+
   const copyClip = (t: string) => { navigator.clipboard.writeText(t); flash("Copied to clipboard"); };
 
   const activePfs = portfolios.filter((p) => p.status === "active");
@@ -284,7 +336,11 @@ export default function SettingsPage() {
                         style={{ animationDelay: `${200 + i * 60}ms` }}>
                         <div className="flex items-start justify-between mb-2">
                           <span className="font-semibold text-sm text-white">{pf.name}</span>
-                          <Badge className="bg-profit/15 text-profit text-[10px]">active</Badge>
+                          <div className="flex items-center gap-1.5">
+                            {pf.execution_mode === "paper" && <Badge className="bg-screener-amber/15 text-screener-amber text-[10px]">PAPER</Badge>}
+                            {pf.execution_mode === "live" && <Badge className="bg-loss/15 text-loss text-[10px]">LIVE</Badge>}
+                            <Badge className="bg-profit/15 text-profit text-[10px]">active</Badge>
+                          </div>
                         </div>
                         <div className="flex items-center gap-4 text-xs text-gray-500">
                           <span className="font-mono">{formatCurrency(pf.cash)}</span>
@@ -363,6 +419,95 @@ export default function SettingsPage() {
                       )}
                     </CardContent></Card>
 
+                    {/* Trading Execution */}
+                    {!isCreatingPf && (
+                      <Card><CardContent className="space-y-4">
+                        <SectionTitle>Trading Execution</SectionTitle>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-400 font-medium min-w-[40px]">Mode</span>
+                          <div className="inline-flex rounded-md border border-border overflow-hidden">
+                            {(["local", "paper", "live"] as const).map((m) => (
+                              <button key={m} type="button"
+                                onClick={() => { setExecMode(m); if (m !== "live") { setLiveConfirmText(""); setLiveConfirmed(false); } }}
+                                className={`px-4 py-1.5 text-[11px] font-mono font-medium transition-all uppercase ${
+                                  execMode === m
+                                    ? m === "live" ? "bg-loss/20 text-loss" : m === "paper" ? "bg-screener-amber/20 text-screener-amber" : "bg-primary/20 text-primary"
+                                    : "bg-surface-light/40 text-gray-500 hover:text-gray-300"
+                                }`}
+                              >{m}</button>
+                            ))}
+                          </div>
+                          {curPf?.has_alpaca_credentials && execMode !== "local" && (
+                            <Badge className="bg-profit/15 text-profit text-[10px] ml-2">Keys configured</Badge>
+                          )}
+                        </div>
+
+                        {execMode !== "local" && (
+                          <div className="space-y-3 pt-1">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className="text-xs text-gray-400 mb-1.5 block">Alpaca API Key</label>
+                                <Input type="password" value={alpacaApiKey} onChange={(e) => setAlpacaApiKey(e.target.value)}
+                                  placeholder={curPf?.alpaca_key_preview || "Enter API key..."} className="font-mono text-sm" />
+                              </div>
+                              <div>
+                                <label className="text-xs text-gray-400 mb-1.5 block">Alpaca Secret Key</label>
+                                <Input type="password" value={alpacaSecretKey} onChange={(e) => setAlpacaSecretKey(e.target.value)}
+                                  placeholder="Enter secret key..." className="font-mono text-sm" />
+                              </div>
+                            </div>
+                            <div className="max-w-[200px]">
+                              <label className="text-xs text-gray-400 mb-1.5 block">Max Order $ (per trade)</label>
+                              <Input type="number" value={maxOrderAmount} onChange={(e) => setMaxOrderAmount(parseFloat(e.target.value) || 0)}
+                                min={0} step={100} className="font-mono" />
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Button variant="outline" size="sm" onClick={handleTestConnection} disabled={testingConnection}>
+                                {testingConnection ? "Testing..." : "Test Connection"}
+                              </Button>
+                              <Button size="sm" onClick={handleSaveCreds} disabled={savingCreds}>
+                                {savingCreds ? "Saving..." : "Save Credentials"}
+                              </Button>
+                            </div>
+                            {connectionTest && connectionTest.status === "connected" && (
+                              <div className="p-3 rounded-lg border border-profit/30 bg-profit/5 text-sm space-y-1">
+                                <div className="text-profit font-medium text-xs">Connected to Alpaca {connectionTest.paper ? "(Paper)" : "(Live)"}</div>
+                                <div className="grid grid-cols-2 gap-2 text-xs text-gray-300" style={FONT_MONO}>
+                                  <span>Equity: ${connectionTest.equity?.toLocaleString()}</span>
+                                  <span>Buying Power: ${connectionTest.buying_power?.toLocaleString()}</span>
+                                  <span>Cash: ${connectionTest.cash?.toLocaleString()}</span>
+                                  <span>Portfolio: ${connectionTest.portfolio_value?.toLocaleString()}</span>
+                                </div>
+                              </div>
+                            )}
+                            {connectionTest && connectionTest.status === "error" && (
+                              <div className="p-3 rounded-lg border border-loss/30 bg-loss/5 text-xs text-loss">{connectionTest.message}</div>
+                            )}
+                          </div>
+                        )}
+
+                        {execMode === "live" && !liveConfirmed && (
+                          <div className="border border-loss/50 bg-loss/5 p-4 rounded-lg space-y-3">
+                            <div className="flex items-center gap-2 text-loss text-sm font-semibold">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                              </svg>
+                              LIVE TRADING -- Real money at risk
+                            </div>
+                            <div className="text-xs text-gray-400">Type &quot;CONFIRM&quot; to enable live trading for this portfolio.</div>
+                            <div className="flex items-center gap-3">
+                              <Input value={liveConfirmText} onChange={(e) => { setLiveConfirmText(e.target.value); setLiveConfirmed(e.target.value === "CONFIRM"); }}
+                                placeholder='Type "CONFIRM"' className="max-w-[200px] text-sm" />
+                              <Button size="sm" disabled={!liveConfirmed} onClick={handleSaveCreds}
+                                className="bg-loss/20 text-loss border-loss/30 hover:bg-loss/30">
+                                Enable Live Trading
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent></Card>
+                    )}
+
                     <div className="flex items-center gap-3 pt-1">
                       <Button onClick={handleSavePf} disabled={saving} className="min-w-[120px]">{saving ? "Saving..." : isCreatingPf ? "Create Portfolio" : "Save Changes"}</Button>
                       {!isCreatingPf && curPf?.status === "active" && <Button variant="destructive" size="sm" onClick={handleArchivePf} disabled={saving}>Archive</Button>}
@@ -373,6 +518,24 @@ export default function SettingsPage() {
                 )}
               </div>
             </div>
+            {/* Kill Switch */}
+            <Card className="mt-6 border-loss/20">
+              <CardContent className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <svg className="w-5 h-5 text-loss" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                    </svg>
+                    <span className="text-sm font-semibold text-loss">Emergency Kill Switch</span>
+                  </div>
+                  <p className="text-xs text-gray-500">Immediately disables all Alpaca execution across ALL portfolios. Sets every portfolio to &quot;Local&quot; mode.</p>
+                </div>
+                <Button variant="destructive" size="sm" onClick={handleKillSwitch} disabled={saving}
+                  className="bg-loss text-white hover:bg-loss/80 whitespace-nowrap min-w-[180px]">
+                  DISABLE ALL TRADING
+                </Button>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* ═══ STRATEGIES TAB ═══ */}

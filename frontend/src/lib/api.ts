@@ -112,6 +112,27 @@ export const api = {
   revokeKey: (id: string) =>
     fetchApi("/settings/keys/" + id, { method: "DELETE" }),
 
+  // Execution
+  testAlpacaConnection: (portfolioId: string) =>
+    fetchApi<import("./types").AlpacaConnectionTest>("/execution/test-connection", {
+      method: "POST",
+      body: JSON.stringify({ portfolio_id: portfolioId }),
+    }),
+  submitOrder: (data: { portfolio_id: string; ticker: string; qty: number; side: "buy" | "sell" }) =>
+    fetchApi<import("./types").OrderResult>("/execution/order", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  killSwitch: () =>
+    fetchApi<{ status: string; portfolios_affected: number }>("/execution/kill-switch", { method: "POST" }),
+  syncAlpacaPositions: (portfolioId: string) =>
+    fetchApi<{ status: string; synced: number; created: number }>("/execution/sync", {
+      method: "POST",
+      body: JSON.stringify({ portfolio_id: portfolioId }),
+    }),
+  getAlpacaPositions: (portfolioId: string) =>
+    fetchApi<Array<{ symbol: string; qty: number; avg_entry_price: number; current_price: number; unrealized_pl: number }>>("/execution/positions?portfolio_id=" + portfolioId),
+
   // Screener
   getScreenerAlerts: (params?: { ticker?: string; indicator?: string; signal?: string; hours?: number }) => {
     const sp = new URLSearchParams();

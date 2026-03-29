@@ -21,6 +21,10 @@ class Portfolio(Base):
     max_drawdown_pct: Mapped[float | None] = mapped_column(Float)
     is_ai_managed: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="active")  # "active" / "archived"
+    execution_mode: Mapped[str] = mapped_column(String(10), default="local")  # local, paper, live
+    alpaca_api_key: Mapped[str | None] = mapped_column(String(255))
+    alpaca_secret_key: Mapped[str | None] = mapped_column(String(255))
+    max_order_amount: Mapped[float | None] = mapped_column(Float, default=1000.0)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")

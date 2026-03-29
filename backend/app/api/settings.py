@@ -51,6 +51,10 @@ async def list_portfolios(db: AsyncSession = Depends(get_db)):
             max_pct_per_trade=p.max_pct_per_trade,
             max_open_positions=p.max_open_positions,
             max_drawdown_pct=p.max_drawdown_pct,
+            execution_mode=p.execution_mode or "local",
+            max_order_amount=p.max_order_amount,
+            has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
+            alpaca_key_preview=(p.alpaca_api_key[:4] + "...") if p.alpaca_api_key and len(p.alpaca_api_key) >= 4 else None,
             created_at=p.created_at,
             strategies=strats,
         ))
@@ -81,6 +85,9 @@ async def create_portfolio(body: PortfolioCreate, db: AsyncSession = Depends(get
         max_pct_per_trade=portfolio.max_pct_per_trade,
         max_open_positions=portfolio.max_open_positions,
         max_drawdown_pct=portfolio.max_drawdown_pct,
+        execution_mode=portfolio.execution_mode or "local",
+        max_order_amount=portfolio.max_order_amount,
+        has_alpaca_credentials=False,
         created_at=portfolio.created_at,
         strategies=[],
     )
@@ -104,6 +111,14 @@ async def update_portfolio(portfolio_id: str, body: PortfolioFullUpdate, db: Asy
             portfolio.max_open_positions = body.portfolio.max_open_positions
         if body.portfolio.max_drawdown_pct is not None:
             portfolio.max_drawdown_pct = body.portfolio.max_drawdown_pct
+        if body.portfolio.execution_mode is not None:
+            portfolio.execution_mode = body.portfolio.execution_mode
+        if body.portfolio.alpaca_api_key is not None:
+            portfolio.alpaca_api_key = body.portfolio.alpaca_api_key
+        if body.portfolio.alpaca_secret_key is not None:
+            portfolio.alpaca_secret_key = body.portfolio.alpaca_secret_key
+        if body.portfolio.max_order_amount is not None:
+            portfolio.max_order_amount = body.portfolio.max_order_amount
 
     if body.strategies is not None:
         # Remove existing strategy links

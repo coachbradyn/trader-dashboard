@@ -16,6 +16,7 @@ from app.api import analytics as analytics_router
 from app.api import watchlist as watchlist_router
 from app.api import ai_portfolio as ai_portfolio_router
 from app.api import news as news_router
+from app.api import execution as execution_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -170,6 +171,19 @@ async def _ensure_schema():
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_published_at ON news_cache (published_at)"))
                     connection.execute(text("CREATE INDEX IF NOT EXISTS ix_news_cache_fetched_at ON news_cache (fetched_at)"))
                     logger.info("Created missing table: news_cache")
+
+                # Add execution columns to portfolios if missing
+                portfolio_cols = [c["name"] for c in insp.get_columns("portfolios")]
+                new_portfolio_cols = {
+                    "execution_mode": "ALTER TABLE portfolios ADD COLUMN execution_mode VARCHAR(10) DEFAULT 'local'",
+                    "alpaca_api_key": "ALTER TABLE portfolios ADD COLUMN alpaca_api_key VARCHAR(255)",
+                    "alpaca_secret_key": "ALTER TABLE portfolios ADD COLUMN alpaca_secret_key VARCHAR(255)",
+                    "max_order_amount": "ALTER TABLE portfolios ADD COLUMN max_order_amount FLOAT DEFAULT 1000.0",
+                }
+                for col_name, sql in new_portfolio_cols.items():
+                    if col_name not in portfolio_cols:
+                        connection.execute(text(sql))
+                        logger.info(f"Added missing column: portfolios.{col_name}")
 
                 # Add position archetype columns to portfolio_holdings if missing
                 holding_cols = [c["name"] for c in insp.get_columns("portfolio_holdings")]
@@ -327,6 +341,7 @@ app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
 app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
 app.include_router(ai_portfolio_router.router, prefix="/api", tags=["ai-portfolio"])
 app.include_router(news_router.router, prefix="/api", tags=["news"])
+app.include_router(execution_router.router, prefix="/api", tags=["execution"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

@@ -908,7 +908,37 @@ async def approve_action(action_id: str, db: AsyncSession = Depends(get_db)):
         expires_days=30,
     ))
 
-    return {"status": "approved", "action_id": action_id, "action_type": action.action_type, "ticker": action.ticker}
+    # Execute via Alpaca if portfolio has execution_mode != "local"
+    order_result = None
+    from app.models import Portfolio
+    p_result = await db.execute(select(Portfolio).where(Portfolio.id == action.portfolio_id))
+    p = p_result.scalar_one_or_none()
+    if p and p.execution_mode in ("paper", "live"):
+        from app.services.alpaca_service import alpaca_service
+        is_paper = p.execution_mode == "paper"
+        side = "buy" if action.action_type in ("BUY", "ADD", "DCA") else "sell"
+        if p.alpaca_api_key and p.alpaca_secret_key and action.suggested_qty:
+            order_result = await alpaca_service.submit_order(
+                api_key=p.alpaca_api_key,
+                secret_key=p.alpaca_secret_key,
+                paper=is_paper,
+                ticker=action.ticker,
+                qty=action.suggested_qty,
+                side=side,
+            )
+            logger.info(
+                f"ACTION APPROVE ORDER | portfolio={p.id} mode={p.execution_mode} "
+                f"action={action.action_type} ticker={action.ticker} qty={action.suggested_qty} "
+                f"order_result={order_result.get('status', 'unknown')}"
+            )
+
+    return {
+        "status": "approved",
+        "action_id": action_id,
+        "action_type": action.action_type,
+        "ticker": action.ticker,
+        "order_result": order_result,
+    }
 
 
 @router.post("/actions/{action_id}/reject")

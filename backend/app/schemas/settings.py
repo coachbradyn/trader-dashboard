@@ -15,6 +15,10 @@ class PortfolioUpdate(BaseModel):
     max_pct_per_trade: float | None = None
     max_open_positions: int | None = None
     max_drawdown_pct: float | None = None
+    execution_mode: str | None = None
+    alpaca_api_key: str | None = None
+    alpaca_secret_key: str | None = None
+    max_order_amount: float | None = None
 
 class StrategyAssignment(BaseModel):
     trader_id: str  # Trader UUID
@@ -51,6 +55,10 @@ class PortfolioSettingsResponse(BaseModel):
     max_pct_per_trade: float | None = None
     max_open_positions: int | None = None
     max_drawdown_pct: float | None = None
+    execution_mode: str = "local"
+    max_order_amount: float | None = None
+    has_alpaca_credentials: bool = False
+    alpaca_key_preview: str | None = None
     created_at: datetime
     strategies: list[dict] = []  # [{trader_id, trader_slug, display_name, direction_filter}]
 

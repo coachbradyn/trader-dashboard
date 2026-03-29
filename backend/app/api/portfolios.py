@@ -106,6 +106,9 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
         total_return_pct=round(total_return, 2),
         open_positions=open_pos,
         is_active=p.is_active,
+        execution_mode=p.execution_mode or "local",
+        max_order_amount=p.max_order_amount,
+        has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
         created_at=p.created_at,
     )
 

@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
   BacktestImportData, PortfolioHolding, ActionStats, PortfolioAction,
-  ImportedTrade, ImportPreview, ImportResult,
+  ImportedTrade, ImportPreview, ImportResult, OrderResult,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -738,11 +738,12 @@ function ActionQueue({ portfolioId }: { portfolioId: string }) {
 
 // ── Holdings CRUD (inline) ──────────────────────────────────────────
 
-function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
+function PositionsManager({ portfolioId, holdings, positions, onRefresh, executionMode }: {
   portfolioId: string;
   holdings: PortfolioHolding[];
   positions: Position[];
   onRefresh: () => void;
+  executionMode?: string;
 }) {
   const [mode, setMode] = useState<"buy" | "sell" | null>(null);
   const [ticker, setTicker] = useState("");
@@ -750,6 +751,11 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Execution confirmation
+  const [confirmingOrder, setConfirmingOrder] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState<{ side: "buy" | "sell"; ticker: string; qty: number; price?: number } | null>(null);
+  const [orderResult, setOrderResult] = useState<OrderResult | null>(null);
 
   // Position archetype fields
   const [positionType, setPositionType] = useState<"momentum" | "accumulation" | "catalyst" | "conviction">("momentum");
@@ -804,8 +810,28 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
     return ((price * qty) / totalValue) * 100;
   };
 
+  const isAlpacaMode = executionMode === "paper" || executionMode === "live";
+
+  const executeAlpacaOrder = async (side: "buy" | "sell", orderTicker: string, orderQty: number) => {
+    setSubmitting(true); setOrderResult(null);
+    try {
+      const result = await api.submitOrder({ portfolio_id: portfolioId, ticker: orderTicker, qty: orderQty, side });
+      setOrderResult(result);
+      setTicker(""); setPrice(""); setQty(""); setMode(null);
+      setPositionType("momentum"); setThesis(""); setCatalystDate(""); setCatalystDescription("");
+      setMaxAllocationPct(""); setDcaEnabled(false); setDcaThresholdPct("");
+      onRefresh();
+    } catch { setOrderResult({ status: "error", message: "Order submission failed" }); }
+    setSubmitting(false); setConfirmingOrder(false); setPendingOrder(null);
+  };
+
   const handleBuy = async () => {
     if (!ticker || !price || !qty) return;
+    if (isAlpacaMode) {
+      setPendingOrder({ side: "buy", ticker: ticker.toUpperCase(), qty: parseFloat(qty), price: parseFloat(price) });
+      setConfirmingOrder(true);
+      return;
+    }
     setSubmitting(true);
     try {
       const payload: Parameters<typeof api.createHolding>[0] = {
@@ -840,6 +866,11 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
 
   const handleSell = async () => {
     if (!ticker || !qty) return;
+    if (isAlpacaMode) {
+      setPendingOrder({ side: "sell", ticker: ticker.toUpperCase(), qty: parseFloat(qty) });
+      setConfirmingOrder(true);
+      return;
+    }
     setSubmitting(true);
     const t = ticker.toUpperCase();
     const matching = holdings.find((h) => h.ticker === t && h.is_active);
@@ -1021,11 +1052,16 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
                 {formatCurrency(totalValue)} ({formatPercent(totalValue > 0 ? totalUnrealized / totalValue * 100 : 0)})
               </span>
             )}
-            <Button size="sm" onClick={() => { setMode(mode === "buy" ? null : "buy"); if (importStep !== "idle") resetImport(); }}
+            {isAlpacaMode && (
+              <Badge className={`text-[9px] ${executionMode === "live" ? "bg-loss/15 text-loss" : "bg-screener-amber/15 text-screener-amber"}`}>
+                {executionMode === "live" ? "LIVE" : "PAPER"}
+              </Badge>
+            )}
+            <Button size="sm" onClick={() => { setMode(mode === "buy" ? null : "buy"); if (importStep !== "idle") resetImport(); setConfirmingOrder(false); setOrderResult(null); }}
               className={`text-[10px] h-7 ${mode === "buy" ? "bg-profit text-white" : "bg-profit/10 text-profit border-profit/20 hover:bg-profit/20"}`}>
               {mode === "buy" ? "Cancel" : "Buy"}
             </Button>
-            <Button size="sm" onClick={() => { setMode(mode === "sell" ? null : "sell"); if (importStep !== "idle") resetImport(); }}
+            <Button size="sm" onClick={() => { setMode(mode === "sell" ? null : "sell"); if (importStep !== "idle") resetImport(); setConfirmingOrder(false); setOrderResult(null); }}
               className={`text-[10px] h-7 ${mode === "sell" ? "bg-loss text-white" : "bg-loss/10 text-loss border-loss/20 hover:bg-loss/20"}`}>
               {mode === "sell" ? "Cancel" : "Sell"}
             </Button>
@@ -1110,6 +1146,50 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh }: {
               className="h-8 text-[10px] bg-loss hover:bg-loss/80">
               {submitting ? "..." : "Sell"}
             </Button>
+          </div>
+        )}
+
+        {/* ── Alpaca Order Confirmation ── */}
+        {confirmingOrder && pendingOrder && (
+          <div className="mb-4 p-3 rounded-lg border border-screener-amber/30 bg-screener-amber/5">
+            <div className="text-xs text-screener-amber font-semibold mb-2" style={FONT_OUTFIT}>
+              Confirm {executionMode === "live" ? "LIVE" : "PAPER"} Order
+            </div>
+            <p className="text-xs text-gray-300 mb-3" style={FONT_MONO}>
+              {pendingOrder.side.toUpperCase()} {pendingOrder.qty} {pendingOrder.ticker} @ market
+              {executionMode === "live" ? " — REAL MONEY" : " — paper account"}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => executeAlpacaOrder(pendingOrder.side, pendingOrder.ticker, pendingOrder.qty)}
+                disabled={submitting}
+                className={`text-[10px] h-7 ${pendingOrder.side === "buy" ? "bg-profit hover:bg-profit/80" : "bg-loss hover:bg-loss/80"}`}>
+                {submitting ? "Submitting..." : `Confirm ${pendingOrder.side.toUpperCase()}`}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { setConfirmingOrder(false); setPendingOrder(null); }}
+                className="text-[10px] h-7">Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Order Result ── */}
+        {orderResult && (
+          <div className={`mb-4 p-3 rounded-lg border text-xs font-mono ${
+            orderResult.status === "error" ? "border-loss/30 bg-loss/5 text-loss" :
+            "border-profit/30 bg-profit/5 text-profit"
+          }`}>
+            {orderResult.status === "error" ? (
+              <span>{orderResult.message}</span>
+            ) : (
+              <div className="space-y-1">
+                <div>Order {orderResult.status}: {orderResult.side?.toUpperCase()} {orderResult.qty} {orderResult.symbol} @ market</div>
+                {orderResult.fill?.filled_price && (
+                  <div>Filled @ ${orderResult.fill.filled_price.toFixed(2)} | Qty: {orderResult.fill.filled_qty}</div>
+                )}
+                {orderResult.holding_updated && <div className="text-gray-400">Holdings updated</div>}
+                <div className="text-gray-500">Mode: {orderResult.mode || "unknown"} | Order ID: {orderResult.order_id?.slice(0, 8)}...</div>
+              </div>
+            )}
+            <button onClick={() => setOrderResult(null)} className="text-[9px] text-gray-500 hover:text-gray-300 mt-1 underline">dismiss</button>
           </div>
         )}
 
@@ -1726,7 +1806,7 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
         </TabsList>
 
         <TabsContent value="positions" className="mt-4 space-y-4">
-          <PositionsManager portfolioId={portfolioId} holdings={holdings || []} positions={positions || []} onRefresh={() => {}} />
+          <PositionsManager portfolioId={portfolioId} holdings={holdings || []} positions={positions || []} onRefresh={() => {}} executionMode={portfolio?.execution_mode} />
         </TabsContent>
 
         <TabsContent value="trades" className="mt-4">
