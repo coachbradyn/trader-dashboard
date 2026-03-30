@@ -697,20 +697,26 @@ YESTERDAY'S ACTIVITY:
 CUMULATIVE STRATEGY PERFORMANCE (30 days):
 {stats_text}
 
-Write a 5-section briefing:
+Write a 6-section briefing. ALL recommendations must be specific to the holdings listed above. Do not give advice about stocks not in the portfolio.
 
 1. **MARKET OVERVIEW** — What happened overnight, where are futures/indices, VIX regime, any gap risks on held tickers. Reference specific numbers.
 
 2. **NEWS & EVENTS** — Key headlines affecting your portfolio or watchlist. Flag any earnings within the week for held tickers. Mention sector rotation (what's leading/lagging) and whether your holdings are in favorable sectors.
 
-3. **PORTFOLIO STATUS** — Open positions P&L, manual holdings status, any positions approaching stops or with extended hold times. Total exposure and concentration risk. Evaluate each strategy against its stated description — is it performing as designed?
+3. **PORTFOLIO STATUS** — For EACH holding: current P&L, key levels, and a brief assessment. Respect position types: don't recommend selling accumulation or catalyst positions on price weakness. Reference the user's thesis for non-momentum positions. Show total exposure and concentration risk.
 
-4. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson. If this confirms or contradicts a previous memory/observation, say so.
+4. **PRICE TARGETS** — For each held ticker, provide:
+   - Entry target: a price level where adding to the position makes sense (or "fully allocated" if at max)
+   - Exit/trim target: a price level to consider taking profits or reducing exposure
+   - Stop level: where the thesis breaks and the position should be reconsidered
+   Base these on technical levels, backtest data, and the position's archetype.
 
-5. **TODAY'S GAME PLAN** — Specific levels to watch on held tickers, which strategies are in favorable conditions given today's VIX/trend, any trades to be cautious about. If earnings are upcoming for a held ticker, flag the risk.
+5. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson.
+
+6. **TODAY'S GAME PLAN** — Specific levels to watch on held tickers, which strategies are in favorable conditions given today's VIX/trend, any trades to be cautious about.
 
 Be specific. Use dollar amounts and percentages. Reference actual headlines and sector data. No generic advice like "stay disciplined" — give me actionable intelligence.
-Keep it under 500 words."""
+Keep it under 600 words."""
 
     # Use async call that includes strategy descriptions + memory
     from app.services.ai_provider import call_ai
@@ -1242,7 +1248,62 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     f"{req.question}"
                 )
 
+            # Check cache for portfolio-specific recommendations (5-day TTL)
+            import hashlib
+            cache_key = None
+            if req.portfolio_id:
+                # Cache key = hash of question + portfolio_id (ignores market data changes)
+                q_hash = hashlib.md5(req.question.lower().strip().encode()).hexdigest()[:12]
+                cache_key = f"query:{req.portfolio_id}:{q_hash}"
+
+                try:
+                    from app.models.henry_cache import HenryCache
+                    async with async_session() as db:
+                        cached = await db.execute(
+                            select(HenryCache).where(
+                                HenryCache.cache_key == cache_key,
+                                HenryCache.is_stale == False,
+                                HenryCache.generated_at >= datetime.utcnow() - timedelta(days=5),
+                            )
+                        )
+                        hit = cached.scalar_one_or_none()
+                        if hit:
+                            import json
+                            content = json.loads(hit.content) if isinstance(hit.content, str) else hit.content
+                            return {
+                                "answer": content.get("answer", ""),
+                                "trades_in_context": content.get("trades_in_context", 0),
+                                "cached": True,
+                                "cached_at": hit.generated_at.isoformat(),
+                            }
+                except Exception:
+                    pass
+
             result = await query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
+
+            # Cache the result for 5 days
+            if cache_key and result:
+                try:
+                    import json as _json
+                    from app.models.henry_cache import HenryCache
+                    async with async_session() as db:
+                        # Upsert: delete old cache for this key
+                        old = await db.execute(select(HenryCache).where(HenryCache.cache_key == cache_key))
+                        old_hit = old.scalar_one_or_none()
+                        if old_hit:
+                            await db.delete(old_hit)
+                            await db.flush()
+                        db.add(HenryCache(
+                            cache_key=cache_key,
+                            cache_type="portfolio_query",
+                            content=_json.dumps({"answer": result, "trades_in_context": len(all_trades)}),
+                            ticker=None,
+                            strategy=None,
+                        ))
+                        await db.commit()
+                except Exception:
+                    pass
+
             return {"answer": result, "trades_in_context": len(all_trades)}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
