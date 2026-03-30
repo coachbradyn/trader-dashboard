@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import PortfolioAction, BacktestImport, BacktestTrade, PortfolioHolding, HenryMemory, Trader
+from app.models.portfolio import Portfolio
 from app.models.trade import Trade
 from app.models.portfolio_trade import PortfolioTrade
 from app.schemas.portfolio_manager import (
@@ -479,6 +480,13 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             if body.notes:
                 existing.notes = f"{existing.notes or ''}\n{body.notes}".strip()
 
+            # Deduct cash from portfolio (buy = deploy capital)
+            trade_cost = body.entry_price * body.qty
+            portfolio_result = await db.execute(select(Portfolio).where(Portfolio.id == body.portfolio_id))
+            portfolio = portfolio_result.scalar_one_or_none()
+            if portfolio:
+                portfolio.cash = max(0, (portfolio.cash or 0) - trade_cost)
+
             # For accumulation positions, track avg_cost and total_shares
             pos_type = getattr(body, "position_type", None) or getattr(existing, "position_type", "momentum")
             if pos_type == "accumulation":
@@ -549,6 +557,13 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             )
 
         # No existing holding — create new
+        # Deduct cash from portfolio (buy = deploy capital)
+        trade_cost = body.entry_price * body.qty
+        portfolio_result = await db.execute(select(Portfolio).where(Portfolio.id == body.portfolio_id))
+        portfolio = portfolio_result.scalar_one_or_none()
+        if portfolio:
+            portfolio.cash = max(0, (portfolio.cash or 0) - trade_cost)
+
         # For accumulation positions, initialize avg_cost and total_shares
         init_avg_cost = body.entry_price if body.position_type == "accumulation" else None
         init_total_shares = body.qty if body.position_type == "accumulation" else None
@@ -694,9 +709,89 @@ async def delete_holding(holding_id: str, db: AsyncSession = Depends(get_db)):
     if not holding:
         raise HTTPException(404, "Holding not found")
 
+    # Return cash to portfolio (closing position = capital returns)
+    if holding.is_active:
+        current_price = price_service.get_price(holding.ticker)
+        sell_value = (current_price or holding.entry_price) * holding.qty
+        portfolio_result = await db.execute(select(Portfolio).where(Portfolio.id == holding.portfolio_id))
+        portfolio = portfolio_result.scalar_one_or_none()
+        if portfolio:
+            portfolio.cash = (portfolio.cash or 0) + sell_value
+
     await db.delete(holding)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.get("/holdings/by-ticker/{ticker}")
+async def get_holdings_by_ticker(ticker: str, db: AsyncSession = Depends(get_db)):
+    """Get all holdings for a specific ticker across all portfolios. Used by stock profile page."""
+    result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.ticker == ticker.upper(),
+            PortfolioHolding.is_active == True,
+        )
+    )
+    holdings = result.scalars().all()
+
+    return [
+        {
+            "id": h.id,
+            "portfolio_id": h.portfolio_id,
+            "ticker": h.ticker,
+            "direction": h.direction,
+            "entry_price": h.entry_price,
+            "qty": h.qty,
+            "entry_date": h.entry_date.isoformat() if h.entry_date else None,
+            "strategy_name": h.strategy_name,
+            "position_type": getattr(h, "position_type", "momentum") or "momentum",
+            "thesis": getattr(h, "thesis", None),
+            "catalyst_date": str(getattr(h, "catalyst_date", None)) if getattr(h, "catalyst_date", None) else None,
+            "catalyst_description": getattr(h, "catalyst_description", None),
+            "max_allocation_pct": getattr(h, "max_allocation_pct", None),
+            "dca_enabled": getattr(h, "dca_enabled", False) or False,
+            "dca_threshold_pct": getattr(h, "dca_threshold_pct", None),
+            "avg_cost": getattr(h, "avg_cost", None),
+            "total_shares": getattr(h, "total_shares", None),
+        }
+        for h in holdings
+    ]
+
+
+@router.put("/holdings/by-ticker/{ticker}/thesis")
+async def update_ticker_thesis(ticker: str, body: dict, db: AsyncSession = Depends(get_db)):
+    """Update thesis and position type for all holdings of a specific ticker."""
+    result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.ticker == ticker.upper(),
+            PortfolioHolding.is_active == True,
+        )
+    )
+    holdings = result.scalars().all()
+    if not holdings:
+        raise HTTPException(404, f"No active holdings found for {ticker.upper()}")
+
+    updated = 0
+    for h in holdings:
+        if "thesis" in body:
+            h.thesis = body["thesis"]
+        if "position_type" in body:
+            h.position_type = body["position_type"]
+        if "catalyst_date" in body:
+            from datetime import date as date_type
+            h.catalyst_date = date_type.fromisoformat(body["catalyst_date"]) if body["catalyst_date"] else None
+        if "catalyst_description" in body:
+            h.catalyst_description = body["catalyst_description"]
+        if "max_allocation_pct" in body:
+            h.max_allocation_pct = body["max_allocation_pct"]
+        if "dca_enabled" in body:
+            h.dca_enabled = body["dca_enabled"]
+        if "dca_threshold_pct" in body:
+            h.dca_threshold_pct = body["dca_threshold_pct"]
+        updated += 1
+
+    await db.commit()
+    return {"status": "updated", "holdings_updated": updated}
 
 
 # ══════════════════════════════════════════════════════════════════════
