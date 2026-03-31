@@ -323,6 +323,19 @@ async def add_tickers(req: AddTickersRequest, db: AsyncSession = Depends(get_db)
             added.append(ticker)
 
     await db.commit()
+
+    # Fetch fundamentals immediately for newly added tickers (non-blocking)
+    if added:
+        async def _fetch_fundamentals_for_new_tickers(tickers: list[str]):
+            try:
+                from app.services.fmp_service import refresh_ticker
+                for t in tickers:
+                    await refresh_ticker(t)
+            except Exception:
+                pass
+
+        asyncio.create_task(_fetch_fundamentals_for_new_tickers(added))
+
     return {"added": added, "count": len(added)}
 
 

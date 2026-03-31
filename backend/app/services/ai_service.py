@@ -51,7 +51,11 @@ Positions are tagged with types that determine how you evaluate them:
 Always reference the user's stated thesis when analyzing non-momentum positions."""
 
 
-async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general") -> str:
+WEB_SEARCH_GUIDANCE = """
+You have access to web search. Use it when you lack critical context about a stock — for example, upcoming catalysts, recent earnings results, FDA decisions, analyst actions, or why a stock is moving significantly. Do not search for basic price data (you already have that). Search for the WHY behind moves and the WHAT's COMING that your existing data doesn't cover. When you find important information through search, highlight it in your analysis so the user knows you researched it."""
+
+
+async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general", enable_web_search: bool = False) -> str:
     """
     Build a dynamic system prompt that includes strategy descriptions,
     memories, prior context notes, track record, and strategy stats.
@@ -254,6 +258,43 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
     except Exception:
         pass  # news_cache table may not exist yet
 
+    # Pull fundamentals data for the specific ticker — separate session
+    if ticker:
+        try:
+            from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt
+            fund = await get_fundamentals(ticker)
+            if fund:
+                fund_text = format_fundamentals_for_prompt(fund)
+                if fund_text:
+                    sections.append(f"FUNDAMENTALS ({ticker}):\n  {fund_text}")
+        except Exception:
+            pass  # ticker_fundamentals table may not exist yet
+
+        # Pull research notes from henry_context for this ticker
+        try:
+            from app.models import HenryContext
+            async with async_session() as db:
+                research_result = await db.execute(
+                    select(HenryContext)
+                    .where(
+                        HenryContext.ticker == ticker,
+                        HenryContext.context_type == "research",
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                    )
+                    .order_by(HenryContext.created_at.desc())
+                    .limit(5)
+                )
+                research_notes = research_result.scalars().all()
+                if research_notes:
+                    research_lines = [f"  - {r.content}" for r in research_notes]
+                    sections.append(f"RESEARCH NOTES ({ticker}):\n" + "\n".join(research_lines))
+        except Exception:
+            pass
+
+    # Add web search guidance if enabled
+    if enable_web_search:
+        sections.append(WEB_SEARCH_GUIDANCE.strip())
+
     return "\n\n".join(sections)
 
 
@@ -299,11 +340,11 @@ def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = Non
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
-async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general") -> str:
+async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general", enable_web_search: bool = False) -> str:
     """Async wrapper that builds the dynamic system prompt and routes through the dual AI provider."""
     from app.services.ai_provider import call_ai
     system = await _build_system_prompt(ticker=ticker, strategy=strategy, scope=scope)
-    return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens)
+    return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens, enable_web_search=enable_web_search)
 
 
 async def save_memory(
@@ -825,8 +866,8 @@ If the question involves a comparison, use a small table.
 Keep it under 200 words unless the question requires more detail."""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt()
-    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question)
+    system = await _build_system_prompt(enable_web_search=True)
+    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question, enable_web_search=True)
 
 
 # ─── FEATURE 4: STRATEGY CONFLICT RESOLUTION ────────────────────────────────
@@ -907,8 +948,8 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"recommendation": "LONG" or "SHORT" or "STAY_FLAT", "confidence": 1-10, "reasoning": "one paragraph max"}}"""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt(ticker=ticker, scope="signal")
-    raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500)
+    system = await _build_system_prompt(ticker=ticker, scope="signal", enable_web_search=True)
+    raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500, enable_web_search=True)
 
     # Parse JSON response
     try:
@@ -1281,6 +1322,18 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
             result = await query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
 
+            # Extract and save research findings (non-blocking)
+            if result:
+                try:
+                    from app.services.research_service import extract_and_save_research
+                    # Try to extract a ticker from the question for scoped research
+                    import re
+                    ticker_match = re.search(r'\b([A-Z]{1,5})\b', req.question)
+                    q_ticker = ticker_match.group(1) if ticker_match else None
+                    asyncio.create_task(extract_and_save_research(result, ticker=q_ticker))
+                except Exception:
+                    pass
+
             # Cache the result for 5 days
             if cache_key and result:
                 try:
@@ -1317,3 +1370,148 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ─── HENRY CONTEXT & STATS ENDPOINTS ──────────────────────────────────
+
+    @app.get("/api/ai/context")
+    async def get_henry_context(ticker: str = None, context_type: str = None, limit: int = 50):
+        """Return Henry's context entries, optionally filtered by ticker or type."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                query = (
+                    select(HenryContext)
+                    .where(
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow())
+                    )
+                    .order_by(HenryContext.created_at.desc())
+                    .limit(limit)
+                )
+                if ticker:
+                    query = query.where(HenryContext.ticker == ticker.upper())
+                if context_type:
+                    query = query.where(HenryContext.context_type == context_type)
+
+                result = await db.execute(query)
+                contexts = result.scalars().all()
+
+            return [
+                {
+                    "id": c.id,
+                    "ticker": c.ticker,
+                    "strategy": c.strategy,
+                    "context_type": c.context_type,
+                    "content": c.content,
+                    "confidence": c.confidence,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                    "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+                }
+                for c in contexts
+            ]
+        except Exception as e:
+            return []
+
+    @app.delete("/api/ai/context/{context_id}")
+    async def delete_henry_context(context_id: str):
+        """Delete a specific henry_context entry."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(HenryContext).where(HenryContext.id == context_id)
+                )
+                ctx = result.scalar_one_or_none()
+                if not ctx:
+                    raise HTTPException(404, "Context entry not found")
+                await db.delete(ctx)
+                await db.commit()
+            return {"deleted": context_id}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    @app.get("/api/ai/stats")
+    async def get_henry_stats():
+        """Return Henry's computed stats."""
+        try:
+            from app.database import async_session
+            from app.models import HenryStats
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(HenryStats)
+                    .order_by(HenryStats.computed_at.desc())
+                    .limit(50)
+                )
+                stats = result.scalars().all()
+
+            return [
+                {
+                    "id": s.id,
+                    "stat_type": s.stat_type,
+                    "ticker": s.ticker,
+                    "strategy": s.strategy,
+                    "data": s.data,
+                    "period_days": s.period_days,
+                    "computed_at": s.computed_at.isoformat() if s.computed_at else None,
+                }
+                for s in stats
+            ]
+        except Exception:
+            return []
+
+    @app.get("/api/ai/fundamentals/{ticker}")
+    async def get_ticker_fundamentals(ticker: str):
+        """Return cached fundamentals for a ticker."""
+        try:
+            from app.services.fmp_service import get_fundamentals
+            fund = await get_fundamentals(ticker.upper())
+            if not fund:
+                raise HTTPException(404, f"No fundamentals for {ticker}")
+            return {
+                "ticker": fund.ticker,
+                "company_name": fund.company_name,
+                "sector": fund.sector,
+                "industry": fund.industry,
+                "market_cap": fund.market_cap,
+                "description": fund.description,
+                "company_description": getattr(fund, "company_description", None),
+                "earnings_date": fund.earnings_date.isoformat() if fund.earnings_date else None,
+                "earnings_time": fund.earnings_time,
+                "analyst_target_low": fund.analyst_target_low,
+                "analyst_target_high": fund.analyst_target_high,
+                "analyst_target_consensus": fund.analyst_target_consensus,
+                "analyst_rating": fund.analyst_rating,
+                "analyst_count": fund.analyst_count,
+                "eps_estimate_current": fund.eps_estimate_current,
+                "eps_actual_last": fund.eps_actual_last,
+                "eps_surprise_last": fund.eps_surprise_last,
+                "revenue_estimate_current": fund.revenue_estimate_current,
+                "revenue_actual_last": fund.revenue_actual_last,
+                "pe_ratio": fund.pe_ratio,
+                "forward_pe": getattr(fund, "forward_pe", None),
+                "beta": getattr(fund, "beta", None),
+                "profit_margin": getattr(fund, "profit_margin", None),
+                "roe": getattr(fund, "roe", None),
+                "debt_to_equity": getattr(fund, "debt_to_equity", None),
+                "dcf_value": getattr(fund, "dcf_value", None),
+                "dcf_diff_pct": getattr(fund, "dcf_diff_pct", None),
+                "dividend_yield": getattr(fund, "dividend_yield", None),
+                "short_interest_pct": fund.short_interest_pct,
+                "insider_net_90d": getattr(fund, "insider_net_90d", None),
+                "institutional_ownership_pct": getattr(fund, "institutional_ownership_pct", None),
+                "insider_transactions_90d": fund.insider_transactions_90d,
+                "updated_at": fund.updated_at.isoformat() if fund.updated_at else None,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))

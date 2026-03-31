@@ -17,6 +17,7 @@ from app.api import watchlist as watchlist_router
 from app.api import ai_portfolio as ai_portfolio_router
 from app.api import news as news_router
 from app.api import execution as execution_router
+from app.api import fmp_scanner as fmp_scanner_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -203,6 +204,76 @@ async def _ensure_schema():
                         connection.execute(text(sql))
                         logger.info(f"Added missing column: portfolio_holdings.{col_name}")
 
+                if "ticker_fundamentals" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE ticker_fundamentals (
+                            id VARCHAR(36) PRIMARY KEY,
+                            ticker VARCHAR(20) NOT NULL UNIQUE,
+                            company_name VARCHAR(200),
+                            sector VARCHAR(100),
+                            industry VARCHAR(200),
+                            market_cap FLOAT,
+                            description TEXT,
+                            earnings_date DATE,
+                            earnings_time VARCHAR(10),
+                            analyst_target_low FLOAT,
+                            analyst_target_high FLOAT,
+                            analyst_target_consensus FLOAT,
+                            analyst_rating VARCHAR(30),
+                            analyst_count INTEGER,
+                            eps_estimate_current FLOAT,
+                            eps_actual_last FLOAT,
+                            eps_surprise_last FLOAT,
+                            revenue_estimate_current FLOAT,
+                            revenue_actual_last FLOAT,
+                            pe_ratio FLOAT,
+                            short_interest_pct FLOAT,
+                            insider_transactions_90d TEXT,
+                            updated_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_ticker_fundamentals_ticker ON ticker_fundamentals (ticker)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ticker_fundamentals_updated_at ON ticker_fundamentals (updated_at)"))
+                    logger.info("Created missing table: ticker_fundamentals")
+
+                # Add expanded fundamentals columns if missing
+                tf_cols = [c["name"] for c in insp.get_columns("ticker_fundamentals")] if "ticker_fundamentals" in tables else []
+                new_tf_cols = {
+                    "beta": "ALTER TABLE ticker_fundamentals ADD COLUMN beta FLOAT",
+                    "forward_pe": "ALTER TABLE ticker_fundamentals ADD COLUMN forward_pe FLOAT",
+                    "profit_margin": "ALTER TABLE ticker_fundamentals ADD COLUMN profit_margin FLOAT",
+                    "roe": "ALTER TABLE ticker_fundamentals ADD COLUMN roe FLOAT",
+                    "debt_to_equity": "ALTER TABLE ticker_fundamentals ADD COLUMN debt_to_equity FLOAT",
+                    "revenue_growth_yoy": "ALTER TABLE ticker_fundamentals ADD COLUMN revenue_growth_yoy FLOAT",
+                    "dcf_value": "ALTER TABLE ticker_fundamentals ADD COLUMN dcf_value FLOAT",
+                    "dcf_diff_pct": "ALTER TABLE ticker_fundamentals ADD COLUMN dcf_diff_pct FLOAT",
+                    "dividend_yield": "ALTER TABLE ticker_fundamentals ADD COLUMN dividend_yield FLOAT",
+                    "insider_net_90d": "ALTER TABLE ticker_fundamentals ADD COLUMN insider_net_90d FLOAT",
+                    "institutional_ownership_pct": "ALTER TABLE ticker_fundamentals ADD COLUMN institutional_ownership_pct FLOAT",
+                    "company_description": "ALTER TABLE ticker_fundamentals ADD COLUMN company_description TEXT",
+                }
+                for col_name, sql in new_tf_cols.items():
+                    if col_name not in tf_cols:
+                        connection.execute(text(sql))
+                        logger.info(f"Added missing column: ticker_fundamentals.{col_name}")
+
+                # Create fmp_cache table if missing
+                if "fmp_cache" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE fmp_cache (
+                            id VARCHAR(36) PRIMARY KEY,
+                            endpoint VARCHAR(200) NOT NULL,
+                            params_hash VARCHAR(64) NOT NULL,
+                            response_data JSON,
+                            cached_at TIMESTAMP DEFAULT NOW(),
+                            cache_tier VARCHAR(20) NOT NULL DEFAULT 'daily'
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_fmp_cache_endpoint ON fmp_cache (endpoint)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_fmp_cache_params_hash ON fmp_cache (params_hash)"))
+                    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_fmp_cache_endpoint_params ON fmp_cache (endpoint, params_hash)"))
+                    logger.info("Created missing table: fmp_cache")
+
                 if "ai_usage" not in tables:
                     connection.execute(text("""
                         CREATE TABLE ai_usage (
@@ -342,6 +413,7 @@ app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
 app.include_router(ai_portfolio_router.router, prefix="/api", tags=["ai-portfolio"])
 app.include_router(news_router.router, prefix="/api", tags=["news"])
 app.include_router(execution_router.router, prefix="/api", tags=["execution"])
+app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

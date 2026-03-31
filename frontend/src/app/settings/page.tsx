@@ -317,6 +317,7 @@ export default function SettingsPage() {
             <TabsTrigger value="strategies">Strategies</TabsTrigger>
             <TabsTrigger value="backtests">Backtests</TabsTrigger>
             <TabsTrigger value="henry">Henry AI</TabsTrigger>
+            <TabsTrigger value="scanner">Scanner</TabsTrigger>
           </TabsList>
 
           {/* ═══ PORTFOLIOS TAB ═══ */}
@@ -661,6 +662,11 @@ export default function SettingsPage() {
           <TabsContent value="henry">
             <HenryConfigTab flash={flash} />
           </TabsContent>
+
+          {/* ── SCANNER CONFIG TAB ──────────────────────────── */}
+          <TabsContent value="scanner">
+            <ScannerConfigTab flash={flash} />
+          </TabsContent>
         </Tabs>
       </div>
       {toast && <Toast message={toast.message} type={toast.type} />}
@@ -742,6 +748,120 @@ function BacktestsTab({ flash }: { flash: (msg: string, type?: "success" | "erro
 }
 
 /* ── Henry AI Config Tab ───────────────────────────────────────── */
+function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
+  const [criteria, setCriteria] = useState({
+    min_price: 5,
+    min_volume: 500000,
+    min_market_cap: 500000000,
+    max_market_cap: 0,
+    technical_filters: {
+      oversold_rsi: 35,
+      trending_rsi_min: 50,
+      trending_adx_min: 20,
+    },
+    fundamental_filters: {
+      prefer_analyst_buy: true,
+      prefer_insider_buying: true,
+      flag_earnings_within_days: 5,
+    },
+  });
+  const [fmpUsage, setFmpUsage] = useState<{ calls_today: number; limit: number; remaining: number; throttled: boolean } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.getScannerCriteria().catch(() => null),
+      api.getFmpUsage().catch(() => null),
+    ]).then(([c, u]) => {
+      if (c) setCriteria(prev => ({ ...prev, ...c as typeof prev }));
+      if (u) setFmpUsage(u as typeof fmpUsage);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateScannerCriteria(criteria);
+      flash("Scanner criteria updated");
+    } catch { flash("Save failed", "error"); }
+    setSaving(false);
+  };
+
+  if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
+
+  return (
+    <div className="settings-panel p-6 space-y-6">
+      <SectionTitle>Scanner Screening Criteria</SectionTitle>
+      <p className="text-xs text-gray-500">Configure what stocks Henry scans for during proactive market scanning.</p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <RangeField label="Min Price ($)" value={criteria.min_price}
+          onChange={(v) => setCriteria({ ...criteria, min_price: v })}
+          min={1} max={50} step={1} suffix="$" />
+        <RangeField label="Min Volume" value={criteria.min_volume / 1000}
+          onChange={(v) => setCriteria({ ...criteria, min_volume: v * 1000 })}
+          min={100} max={5000} step={100} suffix="K" />
+        <RangeField label="Min Market Cap ($M)" value={criteria.min_market_cap / 1e6}
+          onChange={(v) => setCriteria({ ...criteria, min_market_cap: v * 1e6 })}
+          min={100} max={10000} step={100} suffix="M" />
+      </div>
+
+      <Separator className="my-4" />
+      <SectionTitle>Technical Filters</SectionTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <RangeField label="Oversold RSI Threshold" value={criteria.technical_filters.oversold_rsi}
+          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, oversold_rsi: v } })}
+          min={20} max={40} step={1} suffix="" />
+        <RangeField label="Trending RSI Min" value={criteria.technical_filters.trending_rsi_min}
+          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, trending_rsi_min: v } })}
+          min={40} max={70} step={1} suffix="" />
+        <RangeField label="Trending ADX Min" value={criteria.technical_filters.trending_adx_min}
+          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, trending_adx_min: v } })}
+          min={15} max={40} step={1} suffix="" />
+      </div>
+
+      <div className="pt-2">
+        <Button onClick={handleSave} disabled={saving} className="min-w-[140px]">
+          {saving ? "Saving..." : "Save Criteria"}
+        </Button>
+      </div>
+
+      {/* FMP Status */}
+      {fmpUsage && (
+        <>
+          <Separator className="my-4" />
+          <SectionTitle>FMP API Status</SectionTitle>
+          <Card><CardContent className="pt-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <div className="stat-label">Calls Today</div>
+                <div className="text-sm font-mono text-white">{fmpUsage.calls_today}</div>
+              </div>
+              <div>
+                <div className="stat-label">Limit</div>
+                <div className="text-sm font-mono text-white">{fmpUsage.limit}</div>
+              </div>
+              <div>
+                <div className="stat-label">Status</div>
+                <div className={`text-sm font-mono ${fmpUsage.throttled ? "text-loss" : "text-profit"}`}>
+                  {fmpUsage.throttled ? "Throttled" : "Active"}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 w-full bg-gray-700 rounded-full h-2">
+              <div className={`h-2 rounded-full transition-all ${
+                fmpUsage.calls_today / fmpUsage.limit > 0.8 ? "bg-loss" :
+                fmpUsage.calls_today / fmpUsage.limit > 0.5 ? "bg-amber-400" : "bg-profit"
+              }`} style={{ width: `${Math.min(100, (fmpUsage.calls_today / fmpUsage.limit) * 100)}%` }} />
+            </div>
+          </CardContent></Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function HenryConfigTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
   const [config, setConfig] = useState({
     min_confidence: 5,

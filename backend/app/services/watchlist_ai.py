@@ -216,9 +216,21 @@ Be direct and specific. Use numbers. No fluff."""
             system = """You are Henry, an AI trading analyst. You're writing a brief watchlist summary for a specific ticker.
 Be concise (2-4 sentences), data-driven, and actionable. Format currency as $X.XX. Format percentages as X.X%."""
 
-            # Call AI (routes through dual provider system)
+            # Inject fundamentals context if available
+            try:
+                from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt
+                fund = await get_fundamentals(ticker)
+                if fund:
+                    fund_text = format_fundamentals_for_prompt(fund)
+                    if fund_text:
+                        prompt = f"FUNDAMENTALS:\n  {fund_text}\n\n{prompt}"
+            except Exception:
+                pass
+
+            # Call AI (routes through dual provider system) with web search enabled
             from app.services.ai_provider import call_ai
-            summary_text = await call_ai(system, prompt, function_name="watchlist_summary", max_tokens=500)
+            system += "\n\n" + "You have access to web search. Use it when you lack critical context about a stock — for example, upcoming catalysts, recent earnings results, FDA decisions, analyst actions, or why a stock is moving significantly. Do not search for basic price data (you already have that). Search for the WHY behind moves and the WHAT's COMING that your existing data doesn't cover. When you find important information through search, highlight it in your analysis so the user knows you researched it."
+            summary_text = await call_ai(system, prompt, function_name="watchlist_summary", max_tokens=500, enable_web_search=True)
 
             if not summary_text or summary_text == "AI analysis temporarily unavailable.":
                 logger.error(f"AI call failed for watchlist summary of {ticker}")
@@ -244,6 +256,14 @@ Be concise (2-4 sentences), data-driven, and actionable. Format currency as $X.X
 
             await db.commit()
             logger.info(f"Watchlist summary generated for {ticker}")
+
+            # Extract and save research findings from the summary (non-blocking)
+            try:
+                from app.services.research_service import extract_and_save_research
+                import asyncio
+                asyncio.create_task(extract_and_save_research(summary_text, ticker=ticker))
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Watchlist summary generation failed for {ticker}: {e}", exc_info=True)

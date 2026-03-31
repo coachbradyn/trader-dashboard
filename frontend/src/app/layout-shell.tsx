@@ -1,31 +1,15 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { api } from "@/lib/api";
 
 const NAV_LINKS = [
-  {
-    href: "/ai",
-    label: "Home",
-    dot: "bg-ai-blue",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955a1.126 1.126 0 011.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
-      </svg>
-    ),
-  },
+  { href: "/ai", label: "Home", dot: "bg-ai-blue" },
+  { href: "/screener", label: "Watchlist", dot: "bg-amber-500" },
   { href: "/portfolios", label: "Portfolios" },
-  {
-    href: "/screener",
-    label: "Watchlist",
-    dot: "bg-amber-500",
-  },
-  {
-    href: "/ai-portfolio",
-    label: "AI Portfolio",
-    dot: "bg-ai-blue",
-  },
+  { href: "/scanner", label: "Scanner", dot: "bg-ai-blue" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -121,6 +105,71 @@ function Navbar() {
   );
 }
 
+function KillSwitchBanner() {
+  const [autoTrading, setAutoTrading] = useState(false);
+  const [killed, setKilled] = useState(false);
+  const [killing, setKilling] = useState(false);
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const portfolios = await api.getPortfolios();
+      const hasAutoTrading = portfolios.some(
+        (p) => p.execution_mode && p.execution_mode !== "local" && p.is_active
+      );
+      setAutoTrading(hasAutoTrading);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    checkStatus();
+    const interval = setInterval(checkStatus, 30000);
+    return () => clearInterval(interval);
+  }, [checkStatus]);
+
+  const handleKill = async () => {
+    if (!confirm("KILL SWITCH: This will disable ALL auto-trading across ALL portfolios. Continue?")) return;
+    setKilling(true);
+    try {
+      await api.killSwitch();
+      setKilled(true);
+      setAutoTrading(false);
+    } catch {}
+    setKilling(false);
+  };
+
+  if (!autoTrading && !killed) return null;
+
+  return (
+    <div className={`${killed ? "bg-loss/20 border-b border-loss/30" : "bg-profit/10 border-b border-profit/20"} px-3 sm:px-4`}>
+      <div className="max-w-7xl mx-auto flex items-center justify-between h-8 text-[11px] font-mono">
+        {killed ? (
+          <>
+            <div className="flex items-center gap-2 text-loss">
+              <span className="w-2 h-2 rounded-full bg-loss" />
+              AUTO-TRADING STOPPED
+            </div>
+            <span className="text-loss/60">Kill switch activated</span>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2 text-profit">
+              <span className="w-2 h-2 rounded-full bg-profit animate-pulse" />
+              AUTO-TRADING ACTIVE
+            </div>
+            <button
+              onClick={handleKill}
+              disabled={killing}
+              className="text-[10px] font-semibold uppercase tracking-wider px-3 py-0.5 rounded bg-loss/20 text-loss border border-loss/30 hover:bg-loss/30 transition disabled:opacity-50"
+            >
+              {killing ? "Stopping..." : "KILL SWITCH"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isLogin = pathname === "/login";
@@ -131,6 +180,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <KillSwitchBanner />
       <Navbar />
       <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">{children}</main>
     </>
