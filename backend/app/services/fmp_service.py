@@ -35,9 +35,9 @@ FMP_BASE = "https://financialmodelingprep.com"
 
 _rate_limit_date: str = ""
 _rate_limit_count: int = 0
-_RATE_WARN = 250
-_RATE_HARD = 275
-_RATE_DAILY_LIMIT = 300
+_RATE_WARN = 700
+_RATE_HARD = 900
+_RATE_DAILY_LIMIT = 1000
 
 
 def _increment_rate_counter() -> None:
@@ -198,32 +198,64 @@ async def _fmp_get(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# ENDPOINT METHODS
+# ENDPOINT METHODS (using FMP /stable/ API)
 # ══════════════════════════════════════════════════════════════════════
 
 async def get_quote(ticker: str) -> dict | list | None:
     """Real-time quote for a single ticker."""
-    return await _fmp_get(f"/api/v3/quote/{ticker}", cache_tier="realtime")
+    return await _fmp_get("/stable/quote", params={"symbol": ticker}, cache_tier="realtime")
 
 
 async def get_batch_quotes(tickers: list[str]) -> dict | list | None:
     """Real-time quotes for multiple tickers."""
-    csv = ",".join(tickers)
-    return await _fmp_get(f"/api/v3/quote/{csv}", cache_tier="realtime")
+    return await _fmp_get("/stable/batch-quote", params={"symbol": ",".join(tickers)}, cache_tier="realtime")
 
 
 async def get_historical_daily(ticker: str, days: int = 90) -> dict | list | None:
     """Historical daily OHLCV."""
     return await _fmp_get(
-        f"/api/v3/historical-price-full/{ticker}",
-        params={"timeseries": str(days)},
+        "/stable/historical-price-eod-full",
+        params={"symbol": ticker, "timeseries": str(days)},
         cache_tier="intraday",
     )
 
 
 async def get_intraday(ticker: str, interval: str = "5min") -> dict | list | None:
     """Intraday chart data."""
-    return await _fmp_get(f"/api/v3/historical-chart/{interval}/{ticker}", cache_tier="realtime")
+    return await _fmp_get(
+        "/stable/historical-chart",
+        params={"symbol": ticker, "timeframe": interval},
+        cache_tier="realtime",
+    )
+
+
+# Mapping of indicator names to their stable API path segments
+_INDICATOR_PATHS = {
+    "rsi": "rsi",
+    "sma": "sma",
+    "ema": "ema",
+    "wma": "wma",
+    "dema": "dema",
+    "tema": "tema",
+    "adx": "adx",
+    "williams": "williams",
+    "standardDeviation": "standarddeviation",
+    "standarddeviation": "standarddeviation",
+}
+
+# Mapping of interval aliases to FMP timeframe format
+_TIMEFRAME_MAP = {
+    "daily": "1day",
+    "1day": "1day",
+    "1hour": "1hour",
+    "1h": "1hour",
+    "4hour": "4hour",
+    "4h": "4hour",
+    "30min": "30min",
+    "15min": "15min",
+    "5min": "5min",
+    "1min": "1min",
+}
 
 
 async def get_technical_indicator(
@@ -232,10 +264,12 @@ async def get_technical_indicator(
     period: int = 14,
     interval: str = "daily",
 ) -> dict | list | None:
-    """Technical indicator (RSI, SMA, EMA, ADX, etc.)."""
+    """Technical indicator via /stable/technical-indicators/{type}."""
+    ind_path = _INDICATOR_PATHS.get(indicator.lower(), indicator.lower())
+    timeframe = _TIMEFRAME_MAP.get(interval, interval)
     return await _fmp_get(
-        f"/api/v3/technical_indicator/{interval}/{ticker}",
-        params={"type": indicator, "period": str(period)},
+        f"/stable/technical-indicators/{ind_path}",
+        params={"symbol": ticker, "periodLength": str(period), "timeframe": timeframe},
         cache_tier="intraday",
     )
 
@@ -243,8 +277,8 @@ async def get_technical_indicator(
 async def get_income_statement(ticker: str, period: str = "quarter") -> dict | list | None:
     """Income statement."""
     return await _fmp_get(
-        f"/api/v3/income-statement/{ticker}",
-        params={"period": period},
+        "/stable/income-statement",
+        params={"symbol": ticker, "period": period},
         cache_tier="daily",
     )
 
@@ -252,8 +286,8 @@ async def get_income_statement(ticker: str, period: str = "quarter") -> dict | l
 async def get_balance_sheet(ticker: str, period: str = "quarter") -> dict | list | None:
     """Balance sheet statement."""
     return await _fmp_get(
-        f"/api/v3/balance-sheet-statement/{ticker}",
-        params={"period": period},
+        "/stable/balance-sheet-statement",
+        params={"symbol": ticker, "period": period},
         cache_tier="daily",
     )
 
@@ -261,26 +295,26 @@ async def get_balance_sheet(ticker: str, period: str = "quarter") -> dict | list
 async def get_cash_flow(ticker: str, period: str = "quarter") -> dict | list | None:
     """Cash flow statement."""
     return await _fmp_get(
-        f"/api/v3/cash-flow-statement/{ticker}",
-        params={"period": period},
+        "/stable/cashflow-statement",
+        params={"symbol": ticker, "period": period},
         cache_tier="daily",
     )
 
 
 async def get_financial_ratios(ticker: str) -> dict | list | None:
     """Financial ratios."""
-    return await _fmp_get(f"/api/v3/ratios/{ticker}", cache_tier="daily")
+    return await _fmp_get("/stable/ratios", params={"symbol": ticker}, cache_tier="daily")
 
 
 async def get_dcf(ticker: str) -> dict | list | None:
     """Discounted cash flow valuation."""
-    return await _fmp_get(f"/api/v3/discounted-cash-flow/{ticker}", cache_tier="daily")
+    return await _fmp_get("/stable/dcf-advanced", params={"symbol": ticker}, cache_tier="daily")
 
 
 async def get_insider_trading(ticker: str) -> dict | list | None:
     """Insider trading transactions."""
     return await _fmp_get(
-        f"/api/v4/insider-trading",
+        "/stable/insider-trading",
         params={"symbol": ticker},
         cache_tier="daily",
     )
@@ -288,13 +322,13 @@ async def get_insider_trading(ticker: str) -> dict | list | None:
 
 async def get_institutional_holders(ticker: str) -> dict | list | None:
     """Institutional holders."""
-    return await _fmp_get(f"/api/v3/institutional-holder/{ticker}", cache_tier="daily")
+    return await _fmp_get("/stable/institutional-holder", params={"symbol": ticker}, cache_tier="daily")
 
 
 async def get_earnings_calendar(from_date: str, to_date: str) -> dict | list | None:
     """Earnings calendar for a date range."""
     return await _fmp_get(
-        f"/api/v3/earning_calendar",
+        "/stable/earning-calendar",
         params={"from": from_date, "to": to_date},
         cache_tier="daily",
     )
@@ -302,33 +336,33 @@ async def get_earnings_calendar(from_date: str, to_date: str) -> dict | list | N
 
 async def get_economic_calendar() -> dict | list | None:
     """Economic calendar."""
-    return await _fmp_get(f"/api/v3/economic_calendar", cache_tier="daily")
+    return await _fmp_get("/stable/economic-calendar", cache_tier="daily")
 
 
 async def get_gainers() -> dict | list | None:
     """Market gainers."""
-    return await _fmp_get(f"/api/v3/stock_market/gainers", cache_tier="intraday")
+    return await _fmp_get("/stable/biggest-gainers", cache_tier="intraday")
 
 
 async def get_losers() -> dict | list | None:
     """Market losers."""
-    return await _fmp_get(f"/api/v3/stock_market/losers", cache_tier="intraday")
+    return await _fmp_get("/stable/biggest-losers", cache_tier="intraday")
 
 
 async def get_most_active() -> dict | list | None:
     """Most active stocks."""
-    return await _fmp_get(f"/api/v3/stock_market/actives", cache_tier="intraday")
+    return await _fmp_get("/stable/most-active", cache_tier="intraday")
 
 
 async def get_sector_performance() -> dict | list | None:
     """Sector performance."""
-    return await _fmp_get(f"/api/v3/sector-performance", cache_tier="intraday")
+    return await _fmp_get("/stable/historical-sector-performance", cache_tier="intraday")
 
 
 async def run_screener(params: dict) -> dict | list | None:
     """Stock screener with arbitrary filter params."""
     return await _fmp_get(
-        f"/api/v3/stock-screener",
+        "/stable/company-screener",
         params=params,
         cache_tier="intraday",
     )
@@ -525,7 +559,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
     data: dict = {"ticker": ticker, "updated_at": datetime.utcnow()}
 
     # 1. Company profile
-    profile = await _fmp_get(f"/api/v3/profile/{ticker}", cache_tier="daily")
+    profile = await _fmp_get("/stable/profile", {"symbol": ticker}, cache_tier="daily")
     if profile and isinstance(profile, list) and len(profile) > 0:
         p = profile[0]
         data["company_name"] = p.get("companyName")
@@ -544,7 +578,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
             data["company_description"] = desc[:5000] if len(desc) > 5000 else desc
 
     # 2. Earnings calendar -- next upcoming date
-    earnings = await _fmp_get(f"/api/v3/earning_calendar", {"symbol": ticker}, cache_tier="daily")
+    earnings = await _fmp_get("/stable/earning-calendar", {"symbol": ticker}, cache_tier="daily")
     if earnings and isinstance(earnings, list):
         today = date.today()
         future_earnings = [
@@ -560,14 +594,14 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
                 data["earnings_time"] = "bmo" if "bmo" in time_str.lower() or "before" in time_str.lower() else "amc"
 
     # 3. Analyst estimates -- current quarter EPS/revenue
-    estimates = await _fmp_get(f"/api/v3/analyst-estimates/{ticker}", cache_tier="daily")
+    estimates = await _fmp_get("/stable/analyst-estimates", {"symbol": ticker}, cache_tier="daily")
     if estimates and isinstance(estimates, list) and len(estimates) > 0:
         est = estimates[0]
         data["eps_estimate_current"] = est.get("estimatedEpsAvg")
         data["revenue_estimate_current"] = est.get("estimatedRevenueAvg")
 
     # 4. Price target consensus
-    targets = await _fmp_get(f"/api/v4/price-target-consensus", {"symbol": ticker}, cache_tier="daily")
+    targets = await _fmp_get("/stable/price-target-summary", {"symbol": ticker}, cache_tier="daily")
     if targets and isinstance(targets, list) and len(targets) > 0:
         t = targets[0]
         data["analyst_target_low"] = t.get("targetLow")
@@ -575,7 +609,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
         data["analyst_target_consensus"] = t.get("targetConsensus")
 
     # 5. Analyst grades -- consensus rating
-    grades = await _fmp_get(f"/api/v3/grade/{ticker}", cache_tier="daily")
+    grades = await _fmp_get("/stable/upgrades-downgrades", {"symbol": ticker}, cache_tier="daily")
     if grades and isinstance(grades, list) and len(grades) > 0:
         recent_grades = grades[:20]
         grade_counts: dict = {}
@@ -589,7 +623,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
             data["analyst_count"] = sum(grade_counts.values())
 
     # 6. Earnings surprises -- last quarter
-    surprises = await _fmp_get(f"/api/v3/earnings-surprises/{ticker}", cache_tier="daily")
+    surprises = await _fmp_get("/stable/earnings-surprises", {"symbol": ticker}, cache_tier="daily")
     if surprises and isinstance(surprises, list) and len(surprises) > 0:
         last = surprises[0]
         data["eps_actual_last"] = last.get("actualEarningResult")
@@ -599,7 +633,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
             data["eps_surprise_last"] = round((actual - estimated) / abs(estimated) * 100, 2)
 
     # 7. Key metrics -- PE ratio, short interest
-    metrics = await _fmp_get(f"/api/v3/key-metrics/{ticker}", {"period": "quarter"}, cache_tier="daily")
+    metrics = await _fmp_get("/stable/key-metrics", {"symbol": ticker, "period": "quarter"}, cache_tier="daily")
     if metrics and isinstance(metrics, list) and len(metrics) > 0:
         m = metrics[0]
         data["pe_ratio"] = m.get("peRatio")
