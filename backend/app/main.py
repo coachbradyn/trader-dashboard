@@ -203,6 +203,38 @@ async def _ensure_schema():
                         connection.execute(text(sql))
                         logger.info(f"Added missing column: portfolio_holdings.{col_name}")
 
+                if "ticker_fundamentals" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE ticker_fundamentals (
+                            id VARCHAR(36) PRIMARY KEY,
+                            ticker VARCHAR(20) NOT NULL UNIQUE,
+                            company_name VARCHAR(200),
+                            sector VARCHAR(100),
+                            industry VARCHAR(200),
+                            market_cap FLOAT,
+                            description TEXT,
+                            earnings_date DATE,
+                            earnings_time VARCHAR(10),
+                            analyst_target_low FLOAT,
+                            analyst_target_high FLOAT,
+                            analyst_target_consensus FLOAT,
+                            analyst_rating VARCHAR(30),
+                            analyst_count INTEGER,
+                            eps_estimate_current FLOAT,
+                            eps_actual_last FLOAT,
+                            eps_surprise_last FLOAT,
+                            revenue_estimate_current FLOAT,
+                            revenue_actual_last FLOAT,
+                            pe_ratio FLOAT,
+                            short_interest_pct FLOAT,
+                            insider_transactions_90d TEXT,
+                            updated_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """))
+                    connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_ticker_fundamentals_ticker ON ticker_fundamentals (ticker)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ticker_fundamentals_updated_at ON ticker_fundamentals (updated_at)"))
+                    logger.info("Created missing table: ticker_fundamentals")
+
                 if "ai_usage" not in tables:
                     connection.execute(text("""
                         CREATE TABLE ai_usage (

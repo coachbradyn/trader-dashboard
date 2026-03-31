@@ -51,7 +51,11 @@ Positions are tagged with types that determine how you evaluate them:
 Always reference the user's stated thesis when analyzing non-momentum positions."""
 
 
-async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general") -> str:
+WEB_SEARCH_GUIDANCE = """
+You have access to web search. Use it when you lack critical context about a stock — for example, upcoming catalysts, recent earnings results, FDA decisions, analyst actions, or why a stock is moving significantly. Do not search for basic price data (you already have that). Search for the WHY behind moves and the WHAT's COMING that your existing data doesn't cover. When you find important information through search, highlight it in your analysis so the user knows you researched it."""
+
+
+async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general", enable_web_search: bool = False) -> str:
     """
     Build a dynamic system prompt that includes strategy descriptions,
     memories, prior context notes, track record, and strategy stats.
@@ -254,6 +258,43 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
     except Exception:
         pass  # news_cache table may not exist yet
 
+    # Pull fundamentals data for the specific ticker — separate session
+    if ticker:
+        try:
+            from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt
+            fund = await get_fundamentals(ticker)
+            if fund:
+                fund_text = format_fundamentals_for_prompt(fund)
+                if fund_text:
+                    sections.append(f"FUNDAMENTALS ({ticker}):\n  {fund_text}")
+        except Exception:
+            pass  # ticker_fundamentals table may not exist yet
+
+        # Pull research notes from henry_context for this ticker
+        try:
+            from app.models import HenryContext
+            async with async_session() as db:
+                research_result = await db.execute(
+                    select(HenryContext)
+                    .where(
+                        HenryContext.ticker == ticker,
+                        HenryContext.context_type == "research",
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                    )
+                    .order_by(HenryContext.created_at.desc())
+                    .limit(5)
+                )
+                research_notes = research_result.scalars().all()
+                if research_notes:
+                    research_lines = [f"  - {r.content}" for r in research_notes]
+                    sections.append(f"RESEARCH NOTES ({ticker}):\n" + "\n".join(research_lines))
+        except Exception:
+            pass
+
+    # Add web search guidance if enabled
+    if enable_web_search:
+        sections.append(WEB_SEARCH_GUIDANCE.strip())
+
     return "\n\n".join(sections)
 
 
@@ -299,11 +340,11 @@ def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = Non
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
-async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general") -> str:
+async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general", enable_web_search: bool = False) -> str:
     """Async wrapper that builds the dynamic system prompt and routes through the dual AI provider."""
     from app.services.ai_provider import call_ai
     system = await _build_system_prompt(ticker=ticker, strategy=strategy, scope=scope)
-    return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens)
+    return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens, enable_web_search=enable_web_search)
 
 
 async def save_memory(
@@ -825,8 +866,8 @@ If the question involves a comparison, use a small table.
 Keep it under 200 words unless the question requires more detail."""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt()
-    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question)
+    system = await _build_system_prompt(enable_web_search=True)
+    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question, enable_web_search=True)
 
 
 # ─── FEATURE 4: STRATEGY CONFLICT RESOLUTION ────────────────────────────────
@@ -907,8 +948,8 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"recommendation": "LONG" or "SHORT" or "STAY_FLAT", "confidence": 1-10, "reasoning": "one paragraph max"}}"""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt(ticker=ticker, scope="signal")
-    raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500)
+    system = await _build_system_prompt(ticker=ticker, scope="signal", enable_web_search=True)
+    raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500, enable_web_search=True)
 
     # Parse JSON response
     try:
@@ -1280,6 +1321,18 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     pass
 
             result = await query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
+
+            # Extract and save research findings (non-blocking)
+            if result:
+                try:
+                    from app.services.research_service import extract_and_save_research
+                    # Try to extract a ticker from the question for scoped research
+                    import re
+                    ticker_match = re.search(r'\b([A-Z]{1,5})\b', req.question)
+                    q_ticker = ticker_match.group(1) if ticker_match else None
+                    asyncio.create_task(extract_and_save_research(result, ticker=q_ticker))
+                except Exception:
+                    pass
 
             # Cache the result for 5 days
             if cache_key and result:

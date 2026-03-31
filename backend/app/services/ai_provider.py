@@ -48,6 +48,7 @@ async def call_ai(
     function_name: str = "general",
     max_tokens: int = 1500,
     question_text: str = None,  # For escalation check on ask_henry
+    enable_web_search: bool = False,
 ) -> str:
     """
     Route AI call to the appropriate provider based on function_name.
@@ -72,16 +73,19 @@ async def call_ai(
     start = time.monotonic()
     was_fallback = False
 
+    # Only enable web search on Claude calls (not Gemini — cost/latency)
+    use_web_search = enable_web_search and provider == "claude"
+
     if provider == "gemini":
         result, model, in_tok, out_tok = await _call_gemini(system, prompt, max_tokens)
         if result is None:
             # Fallback to Claude
             logger.warning(f"Gemini failed for {function_name}, falling back to Claude")
-            result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens)
+            result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens, web_search=enable_web_search)
             provider = "claude"
             was_fallback = True
     else:
-        result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens)
+        result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens, web_search=use_web_search)
 
     latency = int((time.monotonic() - start) * 1000)
 
@@ -99,8 +103,9 @@ async def call_ai(
     return result or "AI analysis temporarily unavailable."
 
 
-async def _call_claude(system: str, prompt: str, max_tokens: int) -> tuple:
-    """Call Claude API. Returns (text, model, input_tokens, output_tokens)."""
+async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bool = False) -> tuple:
+    """Call Claude API. Returns (text, model, input_tokens, output_tokens).
+    When web_search=True, adds web search tool and handles multi-turn tool use."""
     try:
         import anthropic
     except ImportError:
@@ -113,20 +118,62 @@ async def _call_claude(system: str, prompt: str, max_tokens: int) -> tuple:
         "claude-haiku-4-5-20251001",
     ]
 
+    tools = None
+    if web_search:
+        tools = [{"type": "web_search_20260209", "name": "web_search"}]
+
     try:
         client = anthropic.Anthropic()
         for model in MODELS:
             try:
-                response = client.messages.create(
+                kwargs = dict(
                     model=model,
                     max_tokens=max_tokens,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
-                    timeout=45.0,
+                    timeout=60.0 if web_search else 45.0,
                 )
+                if tools:
+                    kwargs["tools"] = tools
+
+                response = client.messages.create(**kwargs)
+
+                # Handle web search: Claude may use web search and return multiple
+                # content blocks. We need to loop if stop_reason is "tool_use" (for
+                # user-defined tools), but web_search is a server-side tool — Claude
+                # handles it internally. The response may include web_search_tool_result
+                # blocks alongside text blocks. We just extract all text blocks.
+                # If stop_reason is "pause_turn", re-send to let server continue.
+                messages = kwargs["messages"]
+                max_continuations = 3
+                for _ in range(max_continuations):
+                    if response.stop_reason == "pause_turn":
+                        messages = [
+                            {"role": "user", "content": prompt},
+                            {"role": "assistant", "content": response.content},
+                        ]
+                        response = client.messages.create(
+                            model=model,
+                            max_tokens=max_tokens,
+                            system=system,
+                            messages=messages,
+                            tools=tools,
+                            timeout=60.0,
+                        )
+                    else:
+                        break
+
+                # Extract text from all text blocks in the response
+                text_parts = []
+                for block in response.content:
+                    if block.type == "text":
+                        text_parts.append(block.text)
+
+                result_text = "\n".join(text_parts) if text_parts else None
+
                 usage = response.usage
                 return (
-                    response.content[0].text,
+                    result_text,
                     model,
                     usage.input_tokens if usage else None,
                     usage.output_tokens if usage else None,

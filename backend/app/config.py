@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     ai_routing_mode: str = "dual"  # "dual", "claude_only", "gemini_only"
 
+    # Financial data
+    fmp_api_key: str = ""  # Financial Modeling Prep API key
+
     # Price polling
     price_poll_interval_market: int = 15  # seconds during market hours
     price_poll_interval_closed: int = 60  # seconds outside market hours

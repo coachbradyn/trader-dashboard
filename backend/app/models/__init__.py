@@ -22,6 +22,7 @@ from app.models.watchlist_summary import WatchlistSummary
 from app.models.henry_cache import HenryCache
 from app.models.news_cache import NewsCache
 from app.models.ai_usage import AIUsage
+from app.models.ticker_fundamentals import TickerFundamentals
 
 __all__ = [
     "Trader",
@@ -48,4 +49,5 @@ __all__ = [
     "HenryCache",
     "NewsCache",
     "AIUsage",
+    "TickerFundamentals",
 ]

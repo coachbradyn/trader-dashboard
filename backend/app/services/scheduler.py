@@ -323,6 +323,28 @@ async def _run_ai_portfolio_review():
         logger.error(f"AI portfolio review failed: {e}")
 
 
+async def _refresh_fundamentals():
+    """Daily refresh of FMP fundamentals for all watchlist tickers."""
+    logger.info("Refreshing fundamentals data...")
+    try:
+        from app.services.fmp_service import refresh_all_watchlist_tickers
+        refreshed = await refresh_all_watchlist_tickers()
+        logger.info(f"Fundamentals refresh complete: {refreshed} tickers updated")
+    except Exception as e:
+        logger.error(f"Fundamentals refresh failed: {e}")
+
+
+async def _run_auto_research():
+    """Run auto-research for tickers needing context."""
+    logger.info("Running auto-research...")
+    try:
+        from app.services.research_service import run_auto_research
+        count = await run_auto_research()
+        logger.info(f"Auto-research complete: {count} tickers researched")
+    except Exception as e:
+        logger.error(f"Auto-research failed: {e}")
+
+
 async def _cleanup_expired_context():
     """Delete expired HenryContext rows and old non-outcome rows."""
     logger.info("Cleaning up expired Henry context...")
@@ -434,12 +456,29 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Daily fundamentals refresh at 5:00 PM ET (after market close)
+    scheduler.add_job(
+        _refresh_fundamentals,
+        CronTrigger(hour=17, minute=0, timezone=ET, day_of_week="mon-fri"),
+        id="fundamentals_refresh",
+        replace_existing=True,
+    )
+
+    # Auto-research at 9:00 AM ET (before market open, after fundamentals are fresh)
+    scheduler.add_job(
+        _run_auto_research,
+        CronTrigger(hour=9, minute=0, timezone=ET, day_of_week="mon-fri"),
+        id="auto_research",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "
         "screener (every 30m), thresholds (hourly M-F 10AM-3PM), "
         "portfolio review (daily 10:00 AM), "
-        "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight)"
+        "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight), "
+        "fundamentals refresh (daily 5:00 PM), auto-research (daily 9:00 AM)"
     )
 
 
