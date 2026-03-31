@@ -304,13 +304,20 @@ export default function ScannerPage() {
     return () => clearInterval(interval);
   }, [fetchAll]);
 
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+
   const handleRunScan = async () => {
     setRunning(true);
+    setScanMessage(null);
     try {
-      await api.runScanner();
-      // Refresh after a brief delay
-      setTimeout(fetchAll, 3000);
-    } catch {}
+      const res = await api.runScanner() as Record<string, unknown>;
+      const msg = (res.message as string) || `Scan ${res.status}`;
+      setScanMessage(msg);
+      // Refresh results
+      await fetchAll();
+    } catch (e) {
+      setScanMessage(`Scan failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
     setRunning(false);
   };
 
@@ -347,6 +354,19 @@ export default function ScannerPage() {
         onRunScan={handleRunScan}
         stats={stats}
       />
+
+      {/* Scan status message */}
+      {scanMessage && (
+        <div className={`text-xs font-mono px-4 py-2 rounded-lg mb-4 ${
+          scanMessage.includes("fail") || scanMessage.includes("error")
+            ? "bg-loss/10 text-loss border border-loss/20"
+            : scanMessage.includes("0 opportunities")
+            ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+            : "bg-profit/10 text-profit border border-profit/20"
+        }`}>
+          {scanMessage}
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (

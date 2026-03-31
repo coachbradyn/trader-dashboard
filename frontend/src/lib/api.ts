@@ -336,8 +336,22 @@ export const api = {
     fetchApi<import("./types").ScannerOpportunity[]>("/scanner/results"),
   getScannerHistory: () =>
     fetchApi<import("./types").ScannerOpportunity[]>("/scanner/history"),
-  runScanner: () =>
-    fetchApi<{ status: string }>("/scanner/run", { method: "POST" }),
+  runScanner: async () => {
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+    try {
+      const res = await fetch(`${API_URL}/scanner/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+      return res.json() as Promise<{ status: string; message?: string; count?: number }>;
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
   getScannerCriteria: () =>
     fetchApi<Record<string, unknown>>("/scanner/criteria"),
   updateScannerCriteria: (criteria: Record<string, unknown>) =>

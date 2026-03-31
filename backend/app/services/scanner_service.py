@@ -895,7 +895,13 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
             cand["fundamentals_summary"] = "No cached fundamentals."
 
     # 6. AI analysis
+    logger.info(f"Scanner: sending {len(survivors)} candidates to AI for analysis")
     opportunities = await _ai_analyze_candidates(survivors)
+    logger.info(f"Scanner: AI returned {len(opportunities)} opportunities")
+
+    if not opportunities:
+        logger.info("Scanner: no opportunities after AI analysis")
+        return []
 
     # 7. Create PortfolioAction entries
     created_actions = await _create_opportunity_actions(opportunities)
@@ -1005,11 +1011,31 @@ No markdown, no backticks. Just the JSON array."""
         return result
 
     except json.JSONDecodeError:
-        logger.warning("Scanner AI: failed to parse JSON response")
-        return []
+        logger.warning(f"Scanner AI: failed to parse JSON response: {raw[:300] if raw else 'empty'}")
+        # Fallback: return top candidates without AI ranking
+        return _fallback_opportunities(candidates)
     except Exception as e:
-        logger.error(f"Scanner AI analysis failed: {e}")
-        return []
+        logger.error(f"Scanner AI analysis failed: {e}", exc_info=True)
+        # Fallback: return top candidates without AI ranking
+        return _fallback_opportunities(candidates)
+
+
+def _fallback_opportunities(candidates: list[dict]) -> list[dict]:
+    """When AI analysis fails, return top candidates with basic reasoning."""
+    results = []
+    for c in candidates[:5]:
+        ticker = c.get("ticker", "")
+        if not ticker:
+            continue
+        results.append({
+            "ticker": ticker,
+            "direction": "long",
+            "confidence": 5,
+            "reasoning": _build_fallback_reasoning(c),
+            "suggested_price": c.get("price"),
+            "setup_type": "scanner",
+        })
+    return results
 
 
 def _build_fallback_reasoning(candidate: dict) -> str:

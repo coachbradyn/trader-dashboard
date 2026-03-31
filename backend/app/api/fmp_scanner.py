@@ -53,7 +53,7 @@ async def get_scanner_history(limit: int = 50):
 
 @router.post("/run")
 async def run_scanner_manual():
-    """Manually trigger a scanner run. Returns immediately, runs in background."""
+    """Trigger a scanner run. Runs synchronously and returns results."""
     from app.services.scanner_service import run_scanner
     from app.services.fmp_service import get_api_usage
 
@@ -61,18 +61,21 @@ async def run_scanner_manual():
     if usage["throttled"]:
         raise HTTPException(429, detail="FMP API rate limit reached. Scanner cannot run.")
 
-    async def _run():
-        try:
-            await run_scanner()
-        except Exception as e:
-            logger.error(f"Manual scanner run failed: {e}")
-
-    asyncio.create_task(_run())
-    return {
-        "status": "running",
-        "message": "Scanner started in background. Check /scanner/results for updates.",
-        "fmp_usage": usage,
-    }
+    try:
+        results = await run_scanner()
+        return {
+            "status": "complete",
+            "message": f"Scanner found {len(results)} opportunities.",
+            "count": len(results),
+            "fmp_usage": get_api_usage(),
+        }
+    except Exception as e:
+        logger.error(f"Manual scanner run failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Scanner failed: {type(e).__name__}: {str(e)[:200]}",
+            "fmp_usage": get_api_usage(),
+        }
 
 
 # ── GET /scanner/criteria ──────────────────────────────────────────
