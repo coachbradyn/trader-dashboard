@@ -382,6 +382,126 @@ async def get_technical_snapshot(ticker: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# DERIVED INDICATORS (computed from FMP primitive data)
+# ══════════════════════════════════════════════════════════════════════
+
+async def compute_macd(ticker: str, timeframe: str = "daily") -> dict:
+    """Compute MACD from EMA 12 and EMA 26. Returns macd, signal, histogram, and previous values."""
+    ema12_data = await get_technical_indicator(ticker, "ema", period=12, interval=timeframe)
+    ema26_data = await get_technical_indicator(ticker, "ema", period=26, interval=timeframe)
+
+    result = {"macd": None, "signal": None, "histogram": None, "prev_macd": None, "prev_signal": None}
+
+    if not ema12_data or not ema26_data:
+        return result
+    if not isinstance(ema12_data, list) or not isinstance(ema26_data, list):
+        return result
+    if len(ema12_data) < 10 or len(ema26_data) < 10:
+        return result
+
+    # FMP returns newest first — compute MACD line for recent bars
+    macd_values = []
+    for i in range(min(len(ema12_data), len(ema26_data), 30)):
+        e12 = ema12_data[i].get("ema") or ema12_data[i].get("value")
+        e26 = ema26_data[i].get("ema") or ema26_data[i].get("value")
+        if e12 is not None and e26 is not None:
+            macd_values.append(e12 - e26)
+        else:
+            macd_values.append(None)
+
+    if len(macd_values) < 10 or macd_values[0] is None:
+        return result
+
+    # Signal line = 9-period EMA of MACD values (simple average approximation)
+    valid_macd = [v for v in macd_values[:9] if v is not None]
+    signal = sum(valid_macd) / len(valid_macd) if valid_macd else None
+
+    # Previous bar signal
+    prev_valid = [v for v in macd_values[1:10] if v is not None]
+    prev_signal = sum(prev_valid) / len(prev_valid) if prev_valid else None
+
+    histogram = (macd_values[0] - signal) if macd_values[0] is not None and signal is not None else None
+
+    return {
+        "macd": macd_values[0],
+        "signal": signal,
+        "histogram": histogram,
+        "prev_macd": macd_values[1] if len(macd_values) > 1 else None,
+        "prev_signal": prev_signal,
+    }
+
+
+async def compute_bollinger(ticker: str, period: int = 20, timeframe: str = "daily") -> dict:
+    """Compute Bollinger Bands from SMA and Standard Deviation."""
+    sma_data = await get_technical_indicator(ticker, "sma", period=period, interval=timeframe)
+    std_data = await get_technical_indicator(ticker, "standardDeviation", period=period, interval=timeframe)
+    quote = await get_quote(ticker)
+
+    result = {"upper": None, "lower": None, "middle": None, "bandwidth": None, "price_position": None, "price": None}
+
+    sma_val = None
+    std_val = None
+    if sma_data and isinstance(sma_data, list) and len(sma_data) > 0:
+        sma_val = sma_data[0].get("sma") or sma_data[0].get("value")
+    if std_data and isinstance(std_data, list) and len(std_data) > 0:
+        std_val = std_data[0].get("standardDeviation") or std_data[0].get("value")
+
+    price = None
+    if quote and isinstance(quote, list) and len(quote) > 0:
+        price = quote[0].get("price")
+
+    if sma_val is None or std_val is None:
+        return result
+
+    upper = sma_val + 2 * std_val
+    lower = sma_val - 2 * std_val
+    bandwidth = (upper - lower) / sma_val if sma_val != 0 else None
+
+    price_position = None
+    if price is not None and upper != lower:
+        price_position = (price - lower) / (upper - lower)  # 0 = at lower band, 1 = at upper band
+
+    return {
+        "upper": upper,
+        "lower": lower,
+        "middle": sma_val,
+        "bandwidth": bandwidth,
+        "price_position": price_position,
+        "price": price,
+    }
+
+
+async def get_volume_surge(ticker: str, avg_period: int = 20) -> dict:
+    """Compare current volume to N-day average volume."""
+    quote = await get_quote(ticker)
+    hist = await get_historical_daily(ticker, days=avg_period + 5)
+
+    current_vol = None
+    if quote and isinstance(quote, list) and len(quote) > 0:
+        current_vol = quote[0].get("volume")
+
+    avg_vol = None
+    if hist and isinstance(hist, dict) and "historical" in hist:
+        volumes = [d.get("volume", 0) for d in hist["historical"][:avg_period] if d.get("volume")]
+        if volumes:
+            avg_vol = sum(volumes) / len(volumes)
+    elif hist and isinstance(hist, list) and len(hist) > 0:
+        volumes = [d.get("volume", 0) for d in hist[:avg_period] if d.get("volume")]
+        if volumes:
+            avg_vol = sum(volumes) / len(volumes)
+
+    surge_ratio = None
+    if current_vol and avg_vol and avg_vol > 0:
+        surge_ratio = current_vol / avg_vol
+
+    return {
+        "current_volume": current_vol,
+        "avg_volume": avg_vol,
+        "surge_ratio": surge_ratio,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
 # FUNDAMENTAL DATA FETCHING (existing + expanded)
 # ══════════════════════════════════════════════════════════════════════
 

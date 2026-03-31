@@ -220,18 +220,24 @@ export default function TickerDetailPage() {
   const [mcTrades, setMcTrades] = useState(100);
   const [mcCapital, setMcCapital] = useState(10000);
 
+  // Fundamentals state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [fundamentals, setFundamentals] = useState<Record<string, any> | null>(null);
+
   const fetchAll = useCallback(async () => {
     try {
-      const [d, c, allBt, news, thesis] = await Promise.all([
+      const [d, c, allBt, news, thesis, fund] = await Promise.all([
         api.getWatchlistDetail(ticker).catch(() => null),
         api.getScreenerChart(ticker, 90).catch(() => []),
         api.getBacktestImports().catch(() => []),
         api.getTickerNews(ticker).catch(() => null),
         api.getTickerThesis(ticker).catch(() => null),
+        api.getTickerFundamentals(ticker).catch(() => null),
       ]);
       setDetail(d);
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
+      if (fund) setFundamentals(fund);
       setNewsData(news);
       if (thesis?.thesis) {
         setThesisData(thesis.thesis);
@@ -581,6 +587,146 @@ export default function TickerDetailPage() {
           <CardContent className="pt-5">
             <h2 className="text-sm font-semibold text-white mb-3" style={FONT_OUTFIT}>Price (90d)</h2>
             <CandlestickChart data={priceChartData} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Fundamentals Section ── */}
+      {fundamentals && (
+        <Card>
+          <CardContent className="pt-5">
+            <h2 className="text-sm font-semibold text-white mb-3" style={FONT_OUTFIT}>Fundamentals</h2>
+
+            {/* Company info */}
+            {(fundamentals.company_name || fundamentals.description) && (
+              <div className="mb-4">
+                {fundamentals.company_name && <span className="text-xs text-white font-medium">{fundamentals.company_name}</span>}
+                {fundamentals.description && <p className="text-[10px] text-gray-400 mt-0.5 leading-relaxed">{fundamentals.description}</p>}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {fundamentals.sector && <Badge variant="outline" className="text-[9px]">{fundamentals.sector}</Badge>}
+                  {fundamentals.industry && <Badge variant="outline" className="text-[9px]">{fundamentals.industry}</Badge>}
+                  {fundamentals.market_cap != null && (
+                    <Badge variant="outline" className="text-[9px] font-mono">
+                      {fundamentals.market_cap >= 1e12 ? `$${(fundamentals.market_cap/1e12).toFixed(1)}T` : fundamentals.market_cap >= 1e9 ? `$${(fundamentals.market_cap/1e9).toFixed(1)}B` : `$${(fundamentals.market_cap/1e6).toFixed(0)}M`}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Key Metrics Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-4">
+              {[
+                ["P/E", fundamentals.pe_ratio, (v: number) => v.toFixed(1)],
+                ["Fwd P/E", fundamentals.forward_pe, (v: number) => v.toFixed(1)],
+                ["Beta", fundamentals.beta, (v: number) => v.toFixed(2)],
+                ["Margin", fundamentals.profit_margin, (v: number) => `${(v * 100).toFixed(1)}%`],
+                ["ROE", fundamentals.roe, (v: number) => `${(v * 100).toFixed(1)}%`],
+                ["D/E", fundamentals.debt_to_equity, (v: number) => v.toFixed(2)],
+                ["Div Yield", fundamentals.dividend_yield, (v: number) => `${v.toFixed(2)}%`],
+                ["Short %", fundamentals.short_interest_pct, (v: number) => `${v.toFixed(1)}%`],
+              ].filter(([, val]) => val != null).map(([label, val, fmt]) => (
+                <div key={label as string} className="px-2 py-1.5 rounded-lg bg-surface-light/20 border border-border/20">
+                  <div className="text-[9px] text-gray-500" style={FONT_OUTFIT}>{label as string}</div>
+                  <div className={`text-xs font-mono ${label === "Short %" && (val as number) > 10 ? "text-loss" : "text-white"}`}>
+                    {(fmt as (v: number) => string)(val as number)}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Analyst Consensus */}
+            {(fundamentals.analyst_target_consensus || fundamentals.analyst_rating) && (
+              <div className="mb-4 p-3 rounded-lg bg-surface-light/10 border border-border/20">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] text-gray-400" style={FONT_OUTFIT}>Analyst Consensus</span>
+                  <div className="flex items-center gap-2">
+                    {fundamentals.analyst_rating && (
+                      <Badge className={`text-[9px] ${
+                        fundamentals.analyst_rating.toLowerCase().includes("buy") ? "bg-profit/15 text-profit" :
+                        fundamentals.analyst_rating.toLowerCase().includes("sell") ? "bg-loss/15 text-loss" :
+                        "bg-amber-500/15 text-amber-400"
+                      }`}>{fundamentals.analyst_rating}</Badge>
+                    )}
+                    {fundamentals.analyst_count && <span className="text-[9px] text-gray-500 font-mono">{fundamentals.analyst_count} analysts</span>}
+                  </div>
+                </div>
+                {fundamentals.analyst_target_low != null && fundamentals.analyst_target_high != null && fundamentals.analyst_target_consensus != null && (
+                  <div>
+                    <div className="relative h-2 rounded-full bg-surface-light/30 mb-1">
+                      {(() => {
+                        const lo = fundamentals.analyst_target_low;
+                        const hi = fundamentals.analyst_target_high;
+                        const cons = fundamentals.analyst_target_consensus;
+                        const range = hi - lo || 1;
+                        const consPct = ((cons - lo) / range) * 100;
+                        return (
+                          <>
+                            <div className="absolute h-full bg-ai-blue/30 rounded-full" style={{ left: "0%", width: "100%" }} />
+                            <div className="absolute top-0 h-full w-0.5 bg-ai-blue" style={{ left: `${consPct}%` }} title={`Consensus: $${cons.toFixed(2)}`} />
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex justify-between text-[9px] font-mono text-gray-500">
+                      <span>${fundamentals.analyst_target_low.toFixed(2)}</span>
+                      <span className="text-ai-blue">${fundamentals.analyst_target_consensus.toFixed(2)}</span>
+                      <span>${fundamentals.analyst_target_high.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* DCF Valuation */}
+            {fundamentals.dcf_value != null && (
+              <div className="flex items-center gap-3 mb-3 text-[10px] font-mono">
+                <span className="text-gray-400">DCF Value: <span className="text-white">${fundamentals.dcf_value.toFixed(2)}</span></span>
+                {fundamentals.dcf_diff_pct != null && (
+                  <span className={fundamentals.dcf_diff_pct > 0 ? "text-profit" : "text-loss"}>
+                    {fundamentals.dcf_diff_pct > 0 ? `${fundamentals.dcf_diff_pct.toFixed(1)}% undervalued` : `${Math.abs(fundamentals.dcf_diff_pct).toFixed(1)}% overvalued`}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Earnings + EPS */}
+            <div className="flex flex-wrap gap-4 mb-3 text-[10px] font-mono">
+              {fundamentals.earnings_date && (
+                <div>
+                  <span className="text-gray-500">Earnings: </span>
+                  <span className="text-white">{fundamentals.earnings_date}</span>
+                  {fundamentals.earnings_time && <span className="text-gray-500 ml-1">({fundamentals.earnings_time.toUpperCase()})</span>}
+                  {(() => {
+                    const d = Math.ceil((new Date(fundamentals.earnings_date).getTime() - Date.now()) / 86400000);
+                    return d >= 0 ? <span className={`ml-1 ${d <= 7 ? "text-amber-400" : "text-gray-400"}`}>({d}d)</span> : null;
+                  })()}
+                </div>
+              )}
+              {fundamentals.eps_estimate_current != null && <span className="text-gray-500">EPS Est: <span className="text-white">${fundamentals.eps_estimate_current.toFixed(2)}</span></span>}
+              {fundamentals.eps_actual_last != null && <span className="text-gray-500">Last EPS: <span className="text-white">${fundamentals.eps_actual_last.toFixed(2)}</span></span>}
+              {fundamentals.eps_surprise_last != null && (
+                <span className={fundamentals.eps_surprise_last >= 0 ? "text-profit" : "text-loss"}>
+                  Surprise: {fundamentals.eps_surprise_last >= 0 ? "+" : ""}{fundamentals.eps_surprise_last.toFixed(1)}%
+                </span>
+              )}
+            </div>
+
+            {/* Insider + Institutional */}
+            <div className="flex flex-wrap gap-4 text-[10px] font-mono">
+              {fundamentals.insider_net_90d != null && fundamentals.insider_net_90d !== 0 && (
+                <span className={fundamentals.insider_net_90d > 0 ? "text-profit" : "text-loss"}>
+                  Insider 90d: {fundamentals.insider_net_90d > 0 ? "Net buying" : "Net selling"} ${Math.abs(fundamentals.insider_net_90d / 1e6).toFixed(1)}M
+                </span>
+              )}
+              {fundamentals.institutional_ownership_pct != null && (
+                <span className="text-gray-400">Institutional: {fundamentals.institutional_ownership_pct.toFixed(1)}%</span>
+              )}
+            </div>
+
+            {fundamentals.updated_at && (
+              <div className="text-[9px] text-gray-600 mt-3">Updated {formatTimeAgo(fundamentals.updated_at)}</div>
+            )}
           </CardContent>
         </Card>
       )}

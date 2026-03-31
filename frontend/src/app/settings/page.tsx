@@ -747,24 +747,44 @@ function BacktestsTab({ flash }: { flash: (msg: string, type?: "success" | "erro
   );
 }
 
-/* ── Henry AI Config Tab ───────────────────────────────────────── */
+/* ── Scanner Config Tab (Full FMP) ─────────────────────────────── */
+
+interface TechRule {
+  enabled: boolean; indicator: string; period: number; timeframe: string;
+  condition: string; value: number; compare_indicator: { indicator: string; period: number } | null; label: string;
+}
+
+const INDICATOR_OPTIONS = ["rsi","adx","sma","ema","wma","dema","tema","williams","standardDeviation","macd","bollinger_lower","bollinger_upper","price"];
+const CONDITION_OPTIONS = ["above","below","crosses_above","crosses_below","increasing","decreasing"];
+const TIMEFRAME_OPTIONS = ["daily","1hour","15min","5min"];
+const MARKET_CAP_PRESETS: Record<string, [number | null, number | null]> = {
+  "Any": [null, null], "Micro (<$300M)": [null, 3e8], "Small ($300M-$2B)": [3e8, 2e9],
+  "Mid ($2B-$10B)": [2e9, 1e10], "Large ($10B-$200B)": [1e10, 2e11], "Mega (>$200B)": [2e11, null],
+};
+
+const SCAN_PRESETS: Record<string, { label: string; desc: string; color: string }> = {
+  momentum: { label: "Momentum", desc: "Large cap stocks in established uptrends", color: "border-amber-500/40 text-amber-400" },
+  oversold_bounce: { label: "Oversold Bounce", desc: "Pullback buying in uptrends", color: "border-profit/40 text-profit" },
+  breakout: { label: "Breakout", desc: "New trends with volume confirmation", color: "border-ai-blue/40 text-ai-blue" },
+  value_catalyst: { label: "Value + Catalyst", desc: "Fundamentally solid with upcoming events", color: "border-ai-purple/40 text-ai-purple" },
+};
+
 function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
-  const [criteria, setCriteria] = useState({
-    min_price: 5,
-    min_volume: 500000,
-    min_market_cap: 500000000,
-    max_market_cap: 0,
-    technical_filters: {
-      oversold_rsi: 35,
-      trending_rsi_min: 50,
-      trending_adx_min: 20,
-    },
-    fundamental_filters: {
-      prefer_analyst_buy: true,
-      prefer_insider_buying: true,
-      flag_earnings_within_days: 5,
-    },
+  const [screener, setScreener] = useState<Record<string, unknown>>({
+    priceMoreThan: 5, priceLessThan: null, marketCapMoreThan: 5e8, marketCapLessThan: null,
+    volumeMoreThan: 500000, volumeLessThan: null, betaMoreThan: null, betaLessThan: null,
+    dividendMoreThan: null, dividendLessThan: null, sector: "", industry: "", country: "US",
+    exchange: "NYSE,NASDAQ", isEtf: false, isFund: false, isActivelyTrading: true, limit: 50,
   });
+  const [rules, setRules] = useState<TechRule[]>([
+    { enabled: true, indicator: "rsi", period: 14, timeframe: "daily", condition: "below", value: 35, compare_indicator: null, label: "Oversold RSI" },
+    { enabled: true, indicator: "price", period: 0, timeframe: "daily", condition: "above", value: 0, compare_indicator: { indicator: "sma", period: 200 }, label: "Price above SMA 200" },
+    { enabled: false, indicator: "adx", period: 14, timeframe: "daily", condition: "above", value: 20, compare_indicator: null, label: "ADX trending" },
+    { enabled: false, indicator: "ema", period: 9, timeframe: "daily", condition: "above", value: 0, compare_indicator: { indicator: "ema", period: 21 }, label: "EMA 9 > EMA 21" },
+    { enabled: false, indicator: "macd", period: 0, timeframe: "daily", condition: "crosses_above", value: 0, compare_indicator: { indicator: "macd_signal", period: 0 }, label: "MACD crossover" },
+  ]);
+  const [volumeFilter, setVolumeFilter] = useState({ enabled: false, surge_multiplier: 1.5, avg_period: 20 });
+  const [activePreset, setActivePreset] = useState<string | null>(null);
   const [fmpUsage, setFmpUsage] = useState<{ calls_today: number; limit: number; remaining: number; throttled: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -774,86 +794,248 @@ function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "
       api.getScannerCriteria().catch(() => null),
       api.getFmpUsage().catch(() => null),
     ]).then(([c, u]) => {
-      if (c) setCriteria(prev => ({ ...prev, ...c as typeof prev }));
+      if (c && typeof c === "object") {
+        const cr = c as Record<string, unknown>;
+        if (cr.screener) setScreener(prev => ({ ...prev, ...(cr.screener as Record<string, unknown>) }));
+        if (cr.technical_rules && Array.isArray(cr.technical_rules)) setRules(cr.technical_rules as TechRule[]);
+        if (cr.volume_filter) setVolumeFilter(prev => ({ ...prev, ...(cr.volume_filter as Record<string, unknown>) }));
+        if (cr.active_preset) setActivePreset(cr.active_preset as string);
+      }
       if (u) setFmpUsage(u as typeof fmpUsage);
     }).finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateScannerCriteria(criteria);
-      flash("Scanner criteria updated");
+      await api.updateScannerCriteria({ screener, technical_rules: rules, volume_filter: volumeFilter, active_preset: activePreset });
+      flash("Scanner criteria saved");
     } catch { flash("Save failed", "error"); }
     setSaving(false);
   };
 
-  if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
+  const applyPreset = async (name: string) => {
+    setActivePreset(name);
+    try {
+      // Fetch preset from backend
+      const preset = await api.updateScannerCriteria({ active_preset: name } as Record<string, unknown>);
+      if (preset && typeof preset === "object") {
+        const p = preset as Record<string, unknown>;
+        if (p.screener) setScreener(prev => ({ ...prev, ...(p.screener as Record<string, unknown>) }));
+        if (p.technical_rules && Array.isArray(p.technical_rules)) setRules(p.technical_rules as TechRule[]);
+        if (p.volume_filter) setVolumeFilter(prev => ({ ...prev, ...(p.volume_filter as Record<string, unknown>) }));
+      }
+      flash(`Applied "${SCAN_PRESETS[name]?.label}" preset`);
+    } catch { flash("Failed to apply preset", "error"); }
+  };
+
+  const updateRule = (idx: number, field: string, val: unknown) => {
+    setRules(prev => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r));
+  };
+  const removeRule = (idx: number) => setRules(prev => prev.filter((_, i) => i !== idx));
+  const addRule = () => setRules(prev => [...prev, {
+    enabled: true, indicator: "rsi", period: 14, timeframe: "daily",
+    condition: "above", value: 50, compare_indicator: null, label: "New rule",
+  }]);
+
+  const sf = (key: string, val: unknown) => setScreener(prev => ({ ...prev, [key]: val }));
+  const numOrNull = (v: string) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+  // Safe getter for Input value — converts null/undefined/object to "" for the DOM
+  const sv = (key: string): string | number => { const v = screener[key]; return v == null || typeof v === "object" ? "" : v as string | number; };
+
+  if (loading) return <div className="p-8"><Skeleton className="h-60 rounded-xl" /></div>;
 
   return (
     <div className="settings-panel p-6 space-y-6">
-      <SectionTitle>Scanner Screening Criteria</SectionTitle>
-      <p className="text-xs text-gray-500">Configure what stocks Henry scans for during proactive market scanning.</p>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-        <RangeField label="Min Price ($)" value={criteria.min_price}
-          onChange={(v) => setCriteria({ ...criteria, min_price: v })}
-          min={1} max={50} step={1} suffix="$" />
-        <RangeField label="Min Volume" value={criteria.min_volume / 1000}
-          onChange={(v) => setCriteria({ ...criteria, min_volume: v * 1000 })}
-          min={100} max={5000} step={100} suffix="K" />
-        <RangeField label="Min Market Cap ($M)" value={criteria.min_market_cap / 1e6}
-          onChange={(v) => setCriteria({ ...criteria, min_market_cap: v * 1e6 })}
-          min={100} max={10000} step={100} suffix="M" />
+      {/* ── Presets ── */}
+      <SectionTitle>Scan Presets</SectionTitle>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {Object.entries(SCAN_PRESETS).map(([key, p]) => (
+          <button key={key} onClick={() => applyPreset(key)}
+            className={`text-left p-3 rounded-lg border transition text-xs ${activePreset === key ? p.color + " bg-surface-light/40" : "border-border/40 text-gray-400 hover:border-border"}`}>
+            <div className="font-semibold mb-0.5" style={FONT_OUTFIT}>{p.label}</div>
+            <div className="text-[10px] opacity-70">{p.desc}</div>
+          </button>
+        ))}
       </div>
 
-      <Separator className="my-4" />
-      <SectionTitle>Technical Filters</SectionTitle>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-        <RangeField label="Oversold RSI Threshold" value={criteria.technical_filters.oversold_rsi}
-          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, oversold_rsi: v } })}
-          min={20} max={40} step={1} suffix="" />
-        <RangeField label="Trending RSI Min" value={criteria.technical_filters.trending_rsi_min}
-          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, trending_rsi_min: v } })}
-          min={40} max={70} step={1} suffix="" />
-        <RangeField label="Trending ADX Min" value={criteria.technical_filters.trending_adx_min}
-          onChange={(v) => setCriteria({ ...criteria, technical_filters: { ...criteria.technical_filters, trending_adx_min: v } })}
-          min={15} max={40} step={1} suffix="" />
+      <Separator />
+
+      {/* ── Market Filters ── */}
+      <SectionTitle>Market Filters (FMP Screener)</SectionTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Price Range ($)</label>
+          <div className="flex gap-2">
+            <Input type="number" placeholder="Min" value={sv("priceMoreThan")} onChange={e => sf("priceMoreThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+            <Input type="number" placeholder="Max" value={sv("priceLessThan")} onChange={e => sf("priceLessThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Market Cap</label>
+          <select value={Object.entries(MARKET_CAP_PRESETS).find(([, [lo, hi]]) => lo === screener.marketCapMoreThan && hi === screener.marketCapLessThan)?.[0] || "Custom"}
+            onChange={e => { const p = MARKET_CAP_PRESETS[e.target.value]; if (p) { sf("marketCapMoreThan", p[0]); sf("marketCapLessThan", p[1]); } }}
+            className="w-full h-8 text-xs rounded-lg border border-input bg-transparent px-2 text-white">
+            {Object.keys(MARKET_CAP_PRESETS).map(k => <option key={k} value={k}>{k}</option>)}
+            <option value="Custom">Custom</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Min Volume</label>
+          <Input type="number" value={sv("volumeMoreThan")} onChange={e => sf("volumeMoreThan", numOrNull(e.target.value))} className="h-8 text-xs" placeholder="500000" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Beta Range</label>
+          <div className="flex gap-2">
+            <Input type="number" step="0.1" placeholder="Min" value={sv("betaMoreThan")} onChange={e => sf("betaMoreThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+            <Input type="number" step="0.1" placeholder="Max" value={sv("betaLessThan")} onChange={e => sf("betaLessThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Dividend Yield (%)</label>
+          <div className="flex gap-2">
+            <Input type="number" step="0.1" placeholder="Min" value={sv("dividendMoreThan")} onChange={e => sf("dividendMoreThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+            <Input type="number" step="0.1" placeholder="Max" value={sv("dividendLessThan")} onChange={e => sf("dividendLessThan", numOrNull(e.target.value))} className="h-8 text-xs" />
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Sector</label>
+          <Input value={String(screener.sector || "")} onChange={e => sf("sector", e.target.value)} className="h-8 text-xs" placeholder="Technology,Healthcare" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Industry</label>
+          <Input value={String(screener.industry || "")} onChange={e => sf("industry", e.target.value)} className="h-8 text-xs" placeholder="e.g. Semiconductors" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Country</label>
+          <Input value={String(screener.country || "")} onChange={e => sf("country", e.target.value)} className="h-8 text-xs" placeholder="US" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-400 mb-1 block" style={FONT_OUTFIT}>Exchange</label>
+          <Input value={String(screener.exchange || "")} onChange={e => sf("exchange", e.target.value)} className="h-8 text-xs" placeholder="NYSE,NASDAQ" />
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-4 text-xs">
+        {([["isEtf", "Exclude ETFs", true], ["isFund", "Exclude Funds", true], ["isActivelyTrading", "Active Only", false]] as const).map(([key, lbl, invert]) => (
+          <label key={key} className="flex items-center gap-2 cursor-pointer text-gray-400">
+            <button onClick={() => sf(key, !screener[key])}
+              className={`w-8 h-4 rounded-full transition ${(invert ? !screener[key] : screener[key]) ? "bg-profit" : "bg-gray-600"}`}>
+              <div className={`w-3.5 h-3.5 rounded-full bg-white transition-transform ${(invert ? !screener[key] : screener[key]) ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+            {lbl}
+          </label>
+        ))}
+        <div className="flex items-center gap-2 text-gray-400">
+          <span>Max results:</span>
+          <Input type="number" value={sv("limit") || 50} onChange={e => sf("limit", parseInt(e.target.value) || 50)} className="h-6 w-16 text-xs" />
+        </div>
       </div>
 
-      <div className="pt-2">
+      <Separator />
+
+      {/* ── Technical Rules ── */}
+      <div className="flex items-center justify-between">
+        <SectionTitle>Technical Rules (AND logic)</SectionTitle>
+        <Button variant="outline" size="sm" onClick={addRule} className="text-[10px] h-7">+ Add Rule</Button>
+      </div>
+      <p className="text-[10px] text-gray-500">All enabled rules must pass for a stock to be selected. Rules are evaluated in order — put fast filters first.</p>
+      <div className="space-y-2">
+        {rules.map((r, i) => (
+          <div key={i} className={`flex flex-wrap items-center gap-2 p-2.5 rounded-lg border text-[10px] font-mono ${r.enabled ? "border-border/60 bg-surface-light/20" : "border-border/20 bg-surface-light/5 opacity-50"}`}>
+            <button onClick={() => updateRule(i, "enabled", !r.enabled)}
+              className={`w-3 h-3 rounded-full border ${r.enabled ? "bg-profit border-profit" : "border-gray-500"}`} />
+            <select value={r.indicator} onChange={e => updateRule(i, "indicator", e.target.value)}
+              className="bg-transparent border border-border/40 rounded px-1.5 py-0.5 text-white">
+              {INDICATOR_OPTIONS.map(o => <option key={o} value={o}>{o.toUpperCase()}</option>)}
+            </select>
+            {!["price","macd","bollinger_lower","bollinger_upper"].includes(r.indicator) && (
+              <Input type="number" value={r.period} onChange={e => updateRule(i, "period", parseInt(e.target.value) || 14)}
+                className="h-6 w-12 text-[10px] text-center" title="Period" />
+            )}
+            <select value={r.condition} onChange={e => updateRule(i, "condition", e.target.value)}
+              className="bg-transparent border border-border/40 rounded px-1.5 py-0.5 text-white">
+              {CONDITION_OPTIONS.map(o => <option key={o} value={o}>{o.replace("_", " ")}</option>)}
+            </select>
+            {r.compare_indicator ? (
+              <div className="flex items-center gap-1">
+                <select value={r.compare_indicator.indicator} onChange={e => updateRule(i, "compare_indicator", { ...r.compare_indicator!, indicator: e.target.value })}
+                  className="bg-transparent border border-border/40 rounded px-1.5 py-0.5 text-white">
+                  {INDICATOR_OPTIONS.map(o => <option key={o} value={o}>{o.toUpperCase()}</option>)}
+                </select>
+                <Input type="number" value={r.compare_indicator.period} onChange={e => updateRule(i, "compare_indicator", { ...r.compare_indicator!, period: parseInt(e.target.value) || 0 })}
+                  className="h-6 w-12 text-[10px] text-center" />
+                <button onClick={() => updateRule(i, "compare_indicator", null)} className="text-gray-500 hover:text-white" title="Switch to value">&#x21c4;</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1">
+                <Input type="number" step="any" value={r.value} onChange={e => updateRule(i, "value", parseFloat(e.target.value) || 0)}
+                  className="h-6 w-16 text-[10px] text-center" />
+                <button onClick={() => updateRule(i, "compare_indicator", { indicator: "sma", period: 200 })} className="text-gray-500 hover:text-white" title="Compare to indicator">&#x21c4;</button>
+              </div>
+            )}
+            <select value={r.timeframe} onChange={e => updateRule(i, "timeframe", e.target.value)}
+              className="bg-transparent border border-border/40 rounded px-1.5 py-0.5 text-gray-400">
+              {TIMEFRAME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <Input value={r.label} onChange={e => updateRule(i, "label", e.target.value)}
+              className="h-6 flex-1 min-w-[100px] text-[10px] text-gray-400 border-transparent hover:border-border/40" placeholder="Label" />
+            <button onClick={() => removeRule(i)} className="text-loss/40 hover:text-loss ml-auto">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <Separator />
+
+      {/* ── Volume Filter ── */}
+      <SectionTitle>Volume Surge Filter</SectionTitle>
+      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-400">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <button onClick={() => setVolumeFilter(prev => ({ ...prev, enabled: !prev.enabled }))}
+            className={`w-8 h-4 rounded-full transition ${volumeFilter.enabled ? "bg-profit" : "bg-gray-600"}`}>
+            <div className={`w-3.5 h-3.5 rounded-full bg-white transition-transform ${volumeFilter.enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+          </button>
+          Enable
+        </label>
+        <div className="flex items-center gap-1">
+          Volume &ge;
+          <Input type="number" step="0.1" value={volumeFilter.surge_multiplier} onChange={e => setVolumeFilter(prev => ({ ...prev, surge_multiplier: parseFloat(e.target.value) || 1 }))}
+            className="h-6 w-14 text-xs text-center" />
+          &times; {volumeFilter.avg_period}-day avg
+        </div>
+        <div className="flex items-center gap-1">
+          Avg period:
+          <Input type="number" value={volumeFilter.avg_period} onChange={e => setVolumeFilter(prev => ({ ...prev, avg_period: parseInt(e.target.value) || 20 }))}
+            className="h-6 w-14 text-xs text-center" />
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* ── Save ── */}
+      <div className="flex items-center gap-4">
         <Button onClick={handleSave} disabled={saving} className="min-w-[140px]">
-          {saving ? "Saving..." : "Save Criteria"}
+          {saving ? "Saving..." : "Save All Criteria"}
         </Button>
+        {activePreset && <span className="text-[10px] text-gray-500">Preset: {SCAN_PRESETS[activePreset]?.label}</span>}
       </div>
 
-      {/* FMP Status */}
+      {/* ── FMP Status ── */}
       {fmpUsage && (
         <>
-          <Separator className="my-4" />
+          <Separator />
           <SectionTitle>FMP API Status</SectionTitle>
           <Card><CardContent className="pt-4">
             <div className="grid grid-cols-3 gap-4">
-              <div>
-                <div className="stat-label">Calls Today</div>
-                <div className="text-sm font-mono text-white">{fmpUsage.calls_today}</div>
-              </div>
-              <div>
-                <div className="stat-label">Limit</div>
-                <div className="text-sm font-mono text-white">{fmpUsage.limit}</div>
-              </div>
-              <div>
-                <div className="stat-label">Status</div>
-                <div className={`text-sm font-mono ${fmpUsage.throttled ? "text-loss" : "text-profit"}`}>
-                  {fmpUsage.throttled ? "Throttled" : "Active"}
-                </div>
-              </div>
+              <div><div className="stat-label">Calls Today</div><div className="text-sm font-mono text-white">{fmpUsage.calls_today}</div></div>
+              <div><div className="stat-label">Limit</div><div className="text-sm font-mono text-white">{fmpUsage.limit}</div></div>
+              <div><div className="stat-label">Status</div><div className={`text-sm font-mono ${fmpUsage.throttled ? "text-loss" : "text-profit"}`}>{fmpUsage.throttled ? "Throttled" : "Active"}</div></div>
             </div>
             <div className="mt-3 w-full bg-gray-700 rounded-full h-2">
-              <div className={`h-2 rounded-full transition-all ${
-                fmpUsage.calls_today / fmpUsage.limit > 0.8 ? "bg-loss" :
-                fmpUsage.calls_today / fmpUsage.limit > 0.5 ? "bg-amber-400" : "bg-profit"
-              }`} style={{ width: `${Math.min(100, (fmpUsage.calls_today / fmpUsage.limit) * 100)}%` }} />
+              <div className={`h-2 rounded-full transition-all ${fmpUsage.calls_today / fmpUsage.limit > 0.8 ? "bg-loss" : fmpUsage.calls_today / fmpUsage.limit > 0.5 ? "bg-amber-400" : "bg-profit"}`}
+                style={{ width: `${Math.min(100, (fmpUsage.calls_today / fmpUsage.limit) * 100)}%` }} />
             </div>
           </CardContent></Card>
         </>

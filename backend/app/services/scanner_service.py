@@ -2,9 +2,9 @@
 Scanner Service
 ===============
 Automated stock scanning pipeline:
-1. Screen stocks via FMP screener API
-2. Fetch technical snapshots for top candidates
-3. Filter to actionable setups (oversold or trending)
+1. Screen stocks via FMP screener API (full parameter support)
+2. Cascading technical rule evaluation (minimises API calls)
+3. Derived-indicator evaluation (MACD, Bollinger, volume surge)
 4. Enrich with cached fundamentals
 5. Send shortlist to Claude for AI-powered opportunity ranking
 6. Create PortfolioAction entries with action_type=OPPORTUNITY
@@ -30,21 +30,98 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════
 
 DEFAULT_SCANNER_CRITERIA = {
-    "min_price": 5.0,
-    "min_volume": 500000,
-    "min_market_cap": 500000000,
-    "max_market_cap": None,
-    "sectors": [],  # empty = all
-    "technical_filters": {
-        "oversold_rsi": 35,
-        "trending_rsi_min": 50,
-        "trending_adx_min": 20,
+    # ── Screener filters (passed directly to FMP /api/v3/stock-screener) ──
+    "screener": {
+        "priceMoreThan": 5.0,
+        "priceLessThan": None,
+        "marketCapMoreThan": 500000000,
+        "marketCapLessThan": None,
+        "volumeMoreThan": 500000,
+        "volumeLessThan": None,
+        "betaMoreThan": None,
+        "betaLessThan": None,
+        "dividendMoreThan": None,
+        "dividendLessThan": None,
+        "sector": "",          # comma-separated or empty for all
+        "industry": "",
+        "country": "US",
+        "exchange": "NYSE,NASDAQ",
+        "isEtf": False,
+        "isFund": False,
+        "isActivelyTrading": True,
+        "limit": 50,
     },
-    "fundamental_filters": {
-        "prefer_analyst_buy": True,
-        "prefer_insider_buying": True,
-        "flag_earnings_within_days": 5,
+    # ── Technical filter rules (evaluated in sequence, all must pass) ──
+    "technical_rules": [
+        {
+            "enabled": True,
+            "indicator": "rsi",
+            "period": 14,
+            "timeframe": "daily",
+            "condition": "below",   # above | below | crosses_above | crosses_below | increasing | decreasing
+            "value": 35,
+            "compare_indicator": None,  # null = compare to value; or {"indicator": "sma", "period": 200}
+            "label": "Oversold RSI"
+        },
+        {
+            "enabled": True,
+            "indicator": "price",
+            "period": 0,
+            "timeframe": "daily",
+            "condition": "above",
+            "value": 0,
+            "compare_indicator": {"indicator": "sma", "period": 200},
+            "label": "Price above SMA 200 (uptrend)"
+        },
+        {
+            "enabled": False,
+            "indicator": "adx",
+            "period": 14,
+            "timeframe": "daily",
+            "condition": "above",
+            "value": 20,
+            "compare_indicator": None,
+            "label": "ADX trending"
+        },
+        {
+            "enabled": False,
+            "indicator": "ema",
+            "period": 9,
+            "timeframe": "daily",
+            "condition": "above",
+            "value": 0,
+            "compare_indicator": {"indicator": "ema", "period": 21},
+            "label": "EMA 9 > EMA 21 (momentum)"
+        },
+        {
+            "enabled": False,
+            "indicator": "macd",
+            "period": 0,
+            "timeframe": "daily",
+            "condition": "crosses_above",
+            "value": 0,
+            "compare_indicator": {"indicator": "macd_signal", "period": 0},
+            "label": "MACD bullish crossover"
+        },
+        {
+            "enabled": False,
+            "indicator": "bollinger_lower",
+            "period": 20,
+            "timeframe": "daily",
+            "condition": "below",
+            "value": 0,
+            "compare_indicator": None,
+            "label": "Price below lower Bollinger Band"
+        },
+    ],
+    # ── Volume filter ──
+    "volume_filter": {
+        "enabled": False,
+        "surge_multiplier": 1.5,   # current vol must be N x average
+        "avg_period": 20,
     },
+    # ── Presets (stored for UI reference, not used by scanner directly) ──
+    "active_preset": None,  # "momentum" | "oversold_bounce" | "breakout" | "value_catalyst" | null
 }
 
 SCANNER_CACHE_KEY = "scanner:criteria"
@@ -108,23 +185,361 @@ async def update_scanner_criteria(criteria: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# PRESET CONFIGURATIONS
+# ══════════════════════════════════════════════════════════════════════
+
+def get_preset_criteria(preset_name: str) -> dict:
+    """Return full criteria dict for a named preset."""
+    presets = {
+        "momentum": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 10000000000,  # >10B large cap
+                "volumeMoreThan": 1000000,
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 40, "compare_indicator": None,
+                    "label": "RSI above 40",
+                },
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "below", "value": 65, "compare_indicator": None,
+                    "label": "RSI below 65",
+                },
+                {
+                    "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 25, "compare_indicator": None,
+                    "label": "ADX > 25 (strong trend)",
+                },
+                {
+                    "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "sma", "period": 200},
+                    "label": "Price above SMA 200",
+                },
+                {
+                    "enabled": True, "indicator": "ema", "period": 9, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "ema", "period": 21},
+                    "label": "EMA 9 > EMA 21 (momentum)",
+                },
+            ],
+            "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
+            "active_preset": "momentum",
+        },
+        "oversold_bounce": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 2000000000,  # >2B mid+
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "below", "value": 30, "compare_indicator": None,
+                    "label": "RSI < 30 (oversold)",
+                },
+                {
+                    "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "sma", "period": 200},
+                    "label": "Price above SMA 200 (uptrend)",
+                },
+            ],
+            "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
+            "active_preset": "oversold_bounce",
+        },
+        "breakout": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 500000000,
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
+                    "condition": "crosses_above", "value": 20, "compare_indicator": None,
+                    "label": "ADX crosses above 20 (breakout)",
+                },
+                {
+                    "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "ema", "period": 50},
+                    "label": "Price above EMA 50",
+                },
+            ],
+            "volume_filter": {"enabled": True, "surge_multiplier": 2.0, "avg_period": 20},
+            "active_preset": "breakout",
+        },
+        "value_catalyst": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 2000000000,
+                "betaLessThan": 1.5,
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "sma", "period": 200},
+                    "label": "Price above SMA 200",
+                },
+            ],
+            "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
+            "active_preset": "value_catalyst",
+        },
+    }
+    preset = presets.get(preset_name)
+    if not preset:
+        logger.warning(f"Unknown preset '{preset_name}', returning defaults")
+        return DEFAULT_SCANNER_CRITERIA.copy()
+    return preset
+
+
+# ══════════════════════════════════════════════════════════════════════
 # MAIN SCANNER PIPELINE
 # ══════════════════════════════════════════════════════════════════════
+
+def _build_screener_params(screener_cfg: dict) -> dict:
+    """Convert the screener section of criteria into FMP query params.
+    Skips None values.  For booleans, only passes if True."""
+    params: dict = {}
+    for key, value in screener_cfg.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            if value:
+                params[key] = "true"
+            # skip False booleans
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        params[key] = str(value)
+    return params
+
+
+async def _fetch_indicator_for_ticker(
+    ticker: str,
+    indicator: str,
+    period: int,
+    timeframe: str,
+) -> tuple[float | None, float | None, float | None]:
+    """Fetch a single indicator and return (current, prev, 3-bars-ago).
+    Returns (None, None, None) on failure."""
+    from app.services.fmp_service import get_technical_indicator, get_quote
+
+    try:
+        # Special handling for 'price' indicator
+        if indicator == "price":
+            quote = await get_quote(ticker)
+            if quote and isinstance(quote, list) and len(quote) > 0:
+                price = quote[0].get("price")
+                return (price, price, price)  # price doesn't have history here
+            return (None, None, None)
+
+        # Derived indicators handled separately
+        if indicator in ("macd", "macd_signal", "bollinger_lower", "bollinger_upper"):
+            return (None, None, None)  # handled by derived evaluator
+
+        data = await get_technical_indicator(ticker, indicator, period=period, interval=timeframe)
+        if not data or not isinstance(data, list) or len(data) < 1:
+            return (None, None, None)
+
+        # FMP returns newest first
+        def _extract(entry: dict) -> float | None:
+            return entry.get(indicator) or entry.get("value")
+
+        current = _extract(data[0]) if len(data) > 0 else None
+        prev = _extract(data[1]) if len(data) > 1 else None
+        three_ago = _extract(data[3]) if len(data) > 3 else None
+        return (current, prev, three_ago)
+    except Exception as e:
+        logger.debug(f"Failed to fetch {indicator}({period}) for {ticker}: {e}")
+        return (None, None, None)
+
+
+def _evaluate_condition(
+    condition: str,
+    current: float | None,
+    prev: float | None,
+    three_ago: float | None,
+    compare_value: float | None,
+) -> bool:
+    """Evaluate a single condition.  Returns False if data is missing."""
+    if current is None:
+        return False
+
+    target = compare_value
+    if target is None:
+        return False
+
+    if condition == "above":
+        return current > target
+    elif condition == "below":
+        return current < target
+    elif condition == "crosses_above":
+        if prev is None:
+            return False
+        return prev <= target and current > target
+    elif condition == "crosses_below":
+        if prev is None:
+            return False
+        return prev >= target and current < target
+    elif condition == "increasing":
+        if three_ago is None:
+            return False
+        return current > three_ago
+    elif condition == "decreasing":
+        if three_ago is None:
+            return False
+        return current < three_ago
+    else:
+        logger.warning(f"Unknown condition: {condition}")
+        return False
+
+
+async def _evaluate_technical_rules(
+    tickers: list[str],
+    rules: list[dict],
+    screener_map: dict[str, dict],
+) -> list[dict]:
+    """Cascading technical evaluation.
+    For each enabled rule, fetch the indicator only for surviving tickers.
+    Returns surviving stocks with their collected indicator data attached.
+    """
+    from app.services.fmp_service import (
+        get_technical_indicator, get_quote,
+        compute_macd, compute_bollinger,
+    )
+
+    # Build candidate dicts: ticker -> collected indicator data
+    candidates: dict[str, dict] = {
+        t: {"ticker": t, "screener_data": screener_map.get(t, {}), "indicators": {}}
+        for t in tickers
+    }
+
+    fmp_calls = 0
+
+    for rule in rules:
+        if not rule.get("enabled", False):
+            continue
+
+        indicator = rule["indicator"]
+        period = rule.get("period", 14)
+        timeframe = rule.get("timeframe", "daily")
+        condition = rule["condition"]
+        static_value = rule.get("value", 0)
+        compare_ind = rule.get("compare_indicator")
+        label = rule.get("label", "")
+
+        surviving = list(candidates.keys())
+        if not surviving:
+            break
+
+        logger.info(f"Scanner rule '{label}': evaluating {len(surviving)} candidates")
+
+        passed_tickers: list[str] = []
+
+        for ticker in surviving:
+            try:
+                # ── Get the primary indicator value ──
+                if indicator in ("macd", "macd_signal"):
+                    macd_data = await compute_macd(ticker, timeframe)
+                    fmp_calls += 2  # ema12 + ema26
+                    current = macd_data.get("macd")
+                    prev = macd_data.get("prev_macd")
+                    three_ago = None
+                    candidates[ticker]["indicators"]["macd"] = macd_data
+
+                    # Compare indicator for MACD is the signal line
+                    if compare_ind and compare_ind.get("indicator") == "macd_signal":
+                        compare_value = macd_data.get("signal")
+                    else:
+                        compare_value = static_value
+
+                elif indicator == "bollinger_lower":
+                    boll = await compute_bollinger(ticker, period, timeframe)
+                    fmp_calls += 3  # sma + stddev + quote
+                    candidates[ticker]["indicators"]["bollinger"] = boll
+                    current = boll.get("price")
+                    prev = None
+                    three_ago = None
+                    compare_value = boll.get("lower")
+
+                elif indicator == "bollinger_upper":
+                    boll = await compute_bollinger(ticker, period, timeframe)
+                    fmp_calls += 3
+                    candidates[ticker]["indicators"]["bollinger"] = boll
+                    current = boll.get("price")
+                    prev = None
+                    three_ago = None
+                    compare_value = boll.get("upper")
+
+                else:
+                    current, prev, three_ago = await _fetch_indicator_for_ticker(
+                        ticker, indicator, period, timeframe
+                    )
+                    fmp_calls += 1
+                    ind_key = f"{indicator}_{period}" if period else indicator
+                    candidates[ticker]["indicators"][ind_key] = current
+
+                    # ── Get the comparison value ──
+                    if compare_ind:
+                        comp_ind = compare_ind["indicator"]
+                        comp_period = compare_ind.get("period", 0)
+
+                        if comp_ind in ("macd", "macd_signal"):
+                            macd_data = await compute_macd(ticker, timeframe)
+                            fmp_calls += 2
+                            candidates[ticker]["indicators"]["macd"] = macd_data
+                            compare_value = macd_data.get("signal") if comp_ind == "macd_signal" else macd_data.get("macd")
+                        else:
+                            comp_current, _, _ = await _fetch_indicator_for_ticker(
+                                ticker, comp_ind, comp_period, timeframe
+                            )
+                            fmp_calls += 1
+                            comp_key = f"{comp_ind}_{comp_period}" if comp_period else comp_ind
+                            candidates[ticker]["indicators"][comp_key] = comp_current
+                            compare_value = comp_current
+                    else:
+                        compare_value = static_value
+
+                # ── Evaluate ──
+                if _evaluate_condition(condition, current, prev, three_ago, compare_value):
+                    passed_tickers.append(ticker)
+                else:
+                    logger.debug(f"Scanner: {ticker} failed rule '{label}' (current={current}, compare={compare_value})")
+
+            except Exception as e:
+                # Gracefully skip this rule for this stock
+                logger.debug(f"Scanner: error evaluating rule '{label}' for {ticker}: {e}")
+                # Keep the ticker if we can't evaluate (don't crash)
+                passed_tickers.append(ticker)
+
+        # Remove tickers that didn't pass
+        removed = set(candidates.keys()) - set(passed_tickers)
+        for t in removed:
+            del candidates[t]
+
+        logger.info(f"Scanner rule '{label}': {len(passed_tickers)} passed, {len(removed)} filtered out")
+
+    logger.info(f"Scanner technical evaluation used ~{fmp_calls} FMP API calls")
+    return list(candidates.values())
+
 
 async def run_scanner() -> list[dict]:
     """
     Full scanner pipeline:
-    1. Get criteria
-    2. Run FMP screener
-    3. Fetch technicals for top 20
-    4. Filter actionable setups
-    5. Check fundamentals
-    6. AI analysis
-    7. Create OPPORTUNITY actions
+    1. Build screener params from criteria and call FMP
+    2. Cascading technical rule evaluation
+    3. Volume surge filter (if enabled)
+    4. Enrich with cached fundamentals
+    5. AI analysis
+    6. Create OPPORTUNITY actions
     """
     from app.services.fmp_service import (
         run_screener, get_technical_snapshot, get_fundamentals,
-        format_fundamentals_for_prompt, get_api_usage,
+        format_fundamentals_for_prompt, get_api_usage, get_volume_surge,
     )
 
     # Check if FMP API is available
@@ -135,21 +550,21 @@ async def run_scanner() -> list[dict]:
 
     # 1. Get criteria
     criteria = await get_scanner_criteria()
-    logger.info(f"Running scanner with criteria: min_price={criteria.get('min_price')}, min_vol={criteria.get('min_volume')}")
+
+    # If a preset is selected, load it
+    active_preset = criteria.get("active_preset")
+    if active_preset:
+        criteria = get_preset_criteria(active_preset)
+
+    screener_cfg = criteria.get("screener", DEFAULT_SCANNER_CRITERIA["screener"])
+    logger.info(
+        f"Running scanner: preset={active_preset}, "
+        f"price>{screener_cfg.get('priceMoreThan')}, vol>{screener_cfg.get('volumeMoreThan')}, "
+        f"cap>{screener_cfg.get('marketCapMoreThan')}"
+    )
 
     # 2. Build screener params and call FMP
-    screener_params: dict = {
-        "priceMoreThan": str(criteria.get("min_price", 5)),
-        "volumeMoreThan": str(criteria.get("min_volume", 500000)),
-        "marketCapMoreThan": str(criteria.get("min_market_cap", 500000000)),
-        "limit": "50",
-        "exchange": "NYSE,NASDAQ",
-    }
-    if criteria.get("max_market_cap"):
-        screener_params["marketCapLowerThan"] = str(criteria["max_market_cap"])
-    if criteria.get("sectors"):
-        screener_params["sector"] = ",".join(criteria["sectors"])
-
+    screener_params = _build_screener_params(screener_cfg)
     screener_results = await run_screener(screener_params)
     if not screener_results or not isinstance(screener_results, list):
         logger.info("Scanner: no screener results")
@@ -157,72 +572,103 @@ async def run_scanner() -> list[dict]:
 
     logger.info(f"Scanner: {len(screener_results)} stocks from screener")
 
-    # 3. Fetch technical snapshots for top 20
-    top_candidates = screener_results[:20]
-    snapshots = []
-    for stock in top_candidates:
-        ticker = stock.get("symbol")
-        if not ticker:
-            continue
-        try:
-            snap = await get_technical_snapshot(ticker)
-            snap["screener_data"] = stock
-            snapshots.append(snap)
-        except Exception as e:
-            logger.debug(f"Scanner: failed to get snapshot for {ticker}: {e}")
+    # Build a map for quick lookup
+    screener_map: dict[str, dict] = {}
+    tickers: list[str] = []
+    for stock in screener_results:
+        sym = stock.get("symbol")
+        if sym:
+            screener_map[sym] = stock
+            tickers.append(sym)
 
-    if not snapshots:
-        logger.info("Scanner: no technical snapshots obtained")
+    # 3. Cascading technical evaluation
+    technical_rules = criteria.get("technical_rules", DEFAULT_SCANNER_CRITERIA["technical_rules"])
+    enabled_rules = [r for r in technical_rules if r.get("enabled")]
+
+    if enabled_rules:
+        survivors = await _evaluate_technical_rules(tickers, technical_rules, screener_map)
+    else:
+        # No technical rules enabled -- pass all through with basic snapshot
+        survivors = [
+            {"ticker": t, "screener_data": screener_map.get(t, {}), "indicators": {}}
+            for t in tickers[:20]
+        ]
+
+    logger.info(f"Scanner: {len(survivors)} stocks survived technical rules")
+
+    if not survivors:
         return []
 
-    # 4. Filter to actionable setups
-    tech_filters = criteria.get("technical_filters", {})
-    oversold_rsi = tech_filters.get("oversold_rsi", 35)
-    trending_rsi_min = tech_filters.get("trending_rsi_min", 50)
-    trending_adx_min = tech_filters.get("trending_adx_min", 20)
+    # 4. Volume surge filter
+    vol_filter = criteria.get("volume_filter", DEFAULT_SCANNER_CRITERIA["volume_filter"])
+    if vol_filter.get("enabled"):
+        surge_mult = vol_filter.get("surge_multiplier", 1.5)
+        avg_period = vol_filter.get("avg_period", 20)
+        vol_survivors = []
+        for cand in survivors:
+            ticker = cand["ticker"]
+            try:
+                vol_data = await get_volume_surge(ticker, avg_period)
+                cand["indicators"]["volume_surge"] = vol_data
+                ratio = vol_data.get("surge_ratio")
+                if ratio is not None and ratio >= surge_mult:
+                    vol_survivors.append(cand)
+                    logger.debug(f"Scanner: {ticker} volume surge {ratio:.2f}x >= {surge_mult}x")
+                else:
+                    logger.debug(f"Scanner: {ticker} volume surge {ratio}x < {surge_mult}x -- filtered")
+            except Exception as e:
+                logger.debug(f"Scanner: volume surge check failed for {ticker}: {e}")
+                vol_survivors.append(cand)  # keep on failure
+        survivors = vol_survivors
+        logger.info(f"Scanner: {len(survivors)} stocks survived volume filter")
 
-    actionable = []
-    for snap in snapshots:
-        rsi = snap.get("rsi")
-        adx = snap.get("adx")
-        if rsi is None:
-            continue
-
-        is_oversold = rsi < oversold_rsi
-        is_trending = rsi > trending_rsi_min and adx is not None and adx > trending_adx_min
-
-        if is_oversold or is_trending:
-            snap["setup_type"] = "oversold" if is_oversold else "trending"
-            actionable.append(snap)
-
-    actionable = actionable[:15]
-    logger.info(f"Scanner: {len(actionable)} actionable setups after technical filter")
-
-    if not actionable:
+    if not survivors:
         return []
 
-    # 5. Enrich with cached fundamentals
-    for snap in actionable:
-        ticker = snap.get("ticker")
-        if ticker:
-            fund = await get_fundamentals(ticker)
-            if fund:
-                snap["fundamentals_summary"] = format_fundamentals_for_prompt(fund)
-            else:
-                snap["fundamentals_summary"] = "No cached fundamentals."
+    # Cap at 15 for AI analysis
+    survivors = survivors[:15]
 
-    # 6. Build prompt and call AI
-    opportunities = await _ai_analyze_candidates(actionable)
+    # 5. Enrich with cached fundamentals and fetch price if missing
+    from app.services.fmp_service import get_quote
+    for cand in survivors:
+        ticker = cand["ticker"]
+        # Get price if not in indicators
+        if "price" not in cand.get("indicators", {}):
+            try:
+                quote = await get_quote(ticker)
+                if quote and isinstance(quote, list) and len(quote) > 0:
+                    cand["price"] = quote[0].get("price")
+                    cand["volume"] = quote[0].get("volume")
+                    cand["change_pct"] = quote[0].get("changesPercentage")
+            except Exception:
+                pass
+        else:
+            cand["price"] = cand["indicators"].get("price")
+
+        fund = await get_fundamentals(ticker)
+        if fund:
+            cand["fundamentals_summary"] = format_fundamentals_for_prompt(fund)
+        else:
+            cand["fundamentals_summary"] = "No cached fundamentals."
+
+    # 6. AI analysis
+    opportunities = await _ai_analyze_candidates(survivors)
 
     # 7. Create PortfolioAction entries
     created_actions = await _create_opportunity_actions(opportunities)
 
-    logger.info(f"Scanner complete: {len(created_actions)} opportunities created")
+    # Log final stats
+    final_usage = get_api_usage()
+    logger.info(
+        f"Scanner complete: {len(created_actions)} opportunities created. "
+        f"FMP calls today: {final_usage['calls_today']}/{final_usage['limit']}"
+    )
     return created_actions
 
 
 async def _ai_analyze_candidates(candidates: list[dict]) -> list[dict]:
-    """Send candidate list to Claude for AI-powered ranking and analysis."""
+    """Send candidate list to Claude for AI-powered ranking and analysis.
+    Enriched with all indicator data collected during cascading evaluation."""
     try:
         from app.services.ai_service import _call_claude_async
     except ImportError:
@@ -232,31 +678,54 @@ async def _ai_analyze_candidates(candidates: list[dict]) -> list[dict]:
                 "ticker": c.get("ticker", ""),
                 "direction": "long",
                 "confidence": 5,
-                "reasoning": f"Technical setup: {c.get('setup_type', 'unknown')}. RSI={c.get('rsi')}, ADX={c.get('adx')}",
+                "reasoning": _build_fallback_reasoning(c),
                 "suggested_price": c.get("price"),
-                "setup_type": c.get("setup_type", "unknown"),
+                "setup_type": "scanner",
             }
             for c in candidates[:5]
         ]
 
-    # Build concise candidate summaries
+    # Build concise candidate summaries with all indicator data
     candidate_text = ""
     for i, c in enumerate(candidates, 1):
         sd = c.get("screener_data", {})
-        rsi_val = c.get("rsi")
-        rsi_str = f"{rsi_val:.1f}" if isinstance(rsi_val, (int, float)) else "N/A"
-        line = f"\n{i}. {c.get('ticker')} - ${c.get('price', 'N/A')} | RSI: {rsi_str}"
-        if c.get("adx") and isinstance(c["adx"], (int, float)):
-            line += f" | ADX: {c['adx']:.1f}"
-        if c.get("sma200") and c.get("price"):
-            try:
-                vs_sma = (c["price"] - c["sma200"]) / c["sma200"] * 100
-                line += f" | vs SMA200: {vs_sma:+.1f}%"
-            except (TypeError, ZeroDivisionError):
-                pass
-        line += f" | Setup: {c.get('setup_type', 'unknown')}"
+        indicators = c.get("indicators", {})
+        price = c.get("price") or sd.get("price", "N/A")
+
+        line = f"\n{i}. {c.get('ticker')} - ${price}"
+
+        # Append all collected indicators
+        for ind_key, ind_val in indicators.items():
+            if ind_key == "volume_surge" and isinstance(ind_val, dict):
+                ratio = ind_val.get("surge_ratio")
+                if ratio is not None:
+                    line += f" | VolSurge: {ratio:.2f}x"
+            elif ind_key == "macd" and isinstance(ind_val, dict):
+                m = ind_val.get("macd")
+                s = ind_val.get("signal")
+                h = ind_val.get("histogram")
+                if m is not None:
+                    line += f" | MACD: {m:.3f}"
+                if s is not None:
+                    line += f" Sig: {s:.3f}"
+                if h is not None:
+                    line += f" Hist: {h:.3f}"
+            elif ind_key == "bollinger" and isinstance(ind_val, dict):
+                pp = ind_val.get("price_position")
+                if pp is not None:
+                    line += f" | Boll%: {pp:.2f}"
+            elif isinstance(ind_val, (int, float)):
+                line += f" | {ind_key}: {ind_val:.2f}"
+
         if sd.get("marketCap"):
-            line += f" | Mkt Cap: ${sd['marketCap'] / 1e9:.1f}B"
+            mcap = sd["marketCap"]
+            if mcap >= 1e12:
+                line += f" | Mkt Cap: ${mcap / 1e12:.1f}T"
+            elif mcap >= 1e9:
+                line += f" | Mkt Cap: ${mcap / 1e9:.1f}B"
+            else:
+                line += f" | Mkt Cap: ${mcap / 1e6:.0f}M"
+
         line += f"\n   {c.get('fundamentals_summary', 'No fundamentals.')}\n"
         candidate_text += line
 
@@ -293,11 +762,25 @@ No markdown, no backticks. Just the JSON array."""
         return result
 
     except json.JSONDecodeError:
-        logger.warning(f"Scanner AI: failed to parse JSON response")
+        logger.warning("Scanner AI: failed to parse JSON response")
         return []
     except Exception as e:
         logger.error(f"Scanner AI analysis failed: {e}")
         return []
+
+
+def _build_fallback_reasoning(candidate: dict) -> str:
+    """Build reasoning string when AI service is unavailable."""
+    parts = [f"Scanner opportunity for {candidate.get('ticker', '?')}"]
+    indicators = candidate.get("indicators", {})
+    for key, val in indicators.items():
+        if isinstance(val, (int, float)):
+            parts.append(f"{key}={val:.2f}")
+        elif isinstance(val, dict):
+            summary = ", ".join(f"{k}={v}" for k, v in val.items() if v is not None and isinstance(v, (int, float)))
+            if summary:
+                parts.append(f"{key}: {summary}")
+    return ". ".join(parts[:5])
 
 
 async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:
