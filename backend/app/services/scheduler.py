@@ -479,10 +479,10 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Daily fundamentals refresh at 5:00 PM ET (after market close)
+    # Weekly fundamentals refresh on Monday at 5:00 PM ET (after market close)
     scheduler.add_job(
         _refresh_fundamentals,
-        CronTrigger(hour=17, minute=0, timezone=ET, day_of_week="mon-fri"),
+        CronTrigger(hour=17, minute=0, timezone=ET, day_of_week="mon"),
         id="fundamentals_refresh",
         replace_existing=True,
     )
@@ -534,7 +534,7 @@ def start_scheduler():
         "screener (every 30m), thresholds (hourly M-F 10AM-3PM), "
         "portfolio review (daily 10:00 AM), "
         "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight), "
-        "fundamentals refresh (daily 5:00 PM), auto-research (daily 9:00 AM), "
+        "fundamentals refresh (Monday 5:00 PM), auto-research (daily 9:00 AM), "
         "FMP scanner (8:30 AM, 12:00 PM, 4:30 PM M-F), "
         "intraday monitor (every 5m 9:30 AM-4:00 PM M-F)"
     )

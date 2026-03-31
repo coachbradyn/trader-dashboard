@@ -631,8 +631,8 @@ async def get_fundamentals(ticker: str) -> TickerFundamentals | None:
         return None
 
 
-async def is_stale(ticker: str, max_hours: int = 48) -> bool:
-    """Check if fundamentals for a ticker are stale (older than max_hours)."""
+async def is_stale(ticker: str, max_hours: int = 168) -> bool:
+    """Check if fundamentals for a ticker are stale (older than max_hours, default 7 days)."""
     fund = await get_fundamentals(ticker)
     if not fund:
         return True
@@ -751,7 +751,7 @@ def format_fundamentals_for_prompt(fund: TickerFundamentals) -> str:
     # Staleness warning
     if fund.updated_at:
         age_hours = (datetime.utcnow() - fund.updated_at).total_seconds() / 3600
-        if age_hours > 48:
+        if age_hours > 168:  # 7 days
             lines.append(f"[Data is {age_hours / 24:.0f} days old -- may be stale]")
 
     return "\n  ".join(lines)

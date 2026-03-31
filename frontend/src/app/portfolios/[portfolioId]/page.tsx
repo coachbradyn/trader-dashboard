@@ -475,40 +475,37 @@ function AllocationChart({ holdings }: { holdings: PortfolioHolding[] }) {
     <Card className="bg-surface-light/20 border-border">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Allocation</h3>
+          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Allocation</h3>
           <span className="text-[10px] text-gray-500 font-mono">{formatCurrency(total)} total</span>
         </div>
 
-        {/* Stacked horizontal bar */}
-        <div className="flex h-6 rounded-lg overflow-hidden mb-4">
+        {/* Full-width stacked horizontal bar */}
+        <div className="flex h-8 rounded-lg overflow-hidden mb-5">
           {rows.map((r) => (
             <div
               key={r.ticker}
               style={{ width: `${Math.max(r.pct, 1.5)}%`, backgroundColor: r.color }}
-              className="relative group"
+              className="relative group transition-opacity hover:opacity-80"
               title={`${r.ticker}: ${r.pct.toFixed(1)}% (${formatCurrency(r.value)})`}
             >
-              {r.pct >= 8 && (
-                <span className="absolute inset-0 flex items-center justify-center text-[8px] font-mono font-bold text-white/90 truncate px-0.5">
-                  {r.ticker}
+              {r.pct >= 6 && (
+                <span className="absolute inset-0 flex items-center justify-center text-[9px] font-mono font-bold text-white/90 truncate px-1">
+                  {r.ticker} {r.pct.toFixed(0)}%
                 </span>
               )}
             </div>
           ))}
         </div>
 
-        {/* Legend table */}
-        <div className="space-y-1 max-h-[200px] overflow-y-auto">
+        {/* Horizontal legend rows */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1.5">
           {rows.map((r) => (
-            <div key={r.ticker} className="flex items-center gap-2 text-[10px] font-mono py-0.5">
+            <div key={r.ticker} className="flex items-center gap-2 text-[11px] font-mono py-0.5">
               <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: r.color }} />
-              <span className="text-white font-semibold w-10">{r.ticker}</span>
-              <div className="flex-1 h-1.5 rounded-full bg-surface-light/30 overflow-hidden">
-                <div className="h-full rounded-full" style={{ width: `${r.pct}%`, backgroundColor: r.color, opacity: 0.7 }} />
-              </div>
-              <span className="text-gray-400 w-10 text-right">{r.pct.toFixed(1)}%</span>
+              <span className="text-white font-semibold w-12">{r.ticker}</span>
+              <span className="text-gray-400 w-12 text-right">{r.pct.toFixed(1)}%</span>
               <span className="text-gray-500 w-16 text-right">{formatCurrency(r.value)}</span>
-              <span className={`w-12 text-right font-semibold ${pnlColor(r.pnlPct)}`}>
+              <span className={`w-14 text-right font-semibold ${pnlColor(r.pnlPct)}`}>
                 {r.pnlPct >= 0 ? "+" : ""}{r.pnlPct.toFixed(1)}%
               </span>
             </div>
@@ -1796,13 +1793,11 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
       {/* Daily P&L */}
       {dailyStats && dailyStats.length > 0 && <DailyPnlChart data={dailyStats} />}
 
-      {/* Allocation + Performance */}
-      {holdings && holdings.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <AllocationChart holdings={holdings} />
-          <HoldingsPerformanceBars holdings={holdings} />
-        </div>
-      )}
+      {/* Allocation (full-width horizontal) */}
+      {holdings && holdings.length > 0 && <AllocationChart holdings={holdings} />}
+
+      {/* Holdings Performance */}
+      {holdings && holdings.length > 0 && <HoldingsPerformanceBars holdings={holdings} />}
 
       {/* Content Tabs */}
       <Tabs defaultValue="positions" className="w-full">

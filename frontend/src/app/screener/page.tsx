@@ -340,8 +340,20 @@ export default function WatchlistPage() {
 
   const fetchWatchlist = useCallback(async () => {
     try {
-      const data = await api.getWatchlist();
-      setWatchlist(data);
+      const [data, fundData] = await Promise.all([
+        api.getWatchlist(),
+        api.getWatchlistFundamentals().catch(() => ({} as Record<string, unknown>)),
+      ]);
+      // Inject fundamentals into each watchlist item for display
+      const enriched = data.map((item) => {
+        const f = fundData[item.ticker];
+        if (f) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (item as any).fundamentals = f;
+        }
+        return item;
+      });
+      setWatchlist(enriched);
     } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

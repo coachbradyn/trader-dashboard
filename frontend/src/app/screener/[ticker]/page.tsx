@@ -49,6 +49,125 @@ function consensusLabel(dir: string) {
 
 const CHART_TOOLTIP = { background: "#1f2937", border: "1px solid #374151", borderRadius: 8 };
 
+// ── Candlestick Chart (SVG) ────────────────────────────────────────
+function CandlestickChart({ data }: { data: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; bullish: boolean }> }) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [dims, setDims] = useState({ w: 600, h: 250 });
+  const containerRef = useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      const ro = new ResizeObserver(([entry]) => {
+        setDims({ w: entry.contentRect.width, h: 250 });
+      });
+      ro.observe(node);
+      setDims({ w: node.offsetWidth, h: 250 });
+    }
+  }, []);
+
+  if (data.length < 2) return null;
+
+  const margin = { top: 10, right: 50, bottom: 22, left: 0 };
+  const innerW = dims.w - margin.left - margin.right;
+  const innerH = dims.h - margin.top - margin.bottom;
+
+  const allLows = data.map((d) => d.low);
+  const allHighs = data.map((d) => d.high);
+  const minPrice = Math.min(...allLows) * 0.998;
+  const maxPrice = Math.max(...allHighs) * 1.002;
+  const priceRange = maxPrice - minPrice || 1;
+
+  const candleW = Math.max(2, Math.min(8, (innerW / data.length) * 0.7));
+  const gap = innerW / data.length;
+
+  const yScale = (v: number) => margin.top + innerH - ((v - minPrice) / priceRange) * innerH;
+
+  // Y-axis ticks
+  const tickCount = 5;
+  const yTicks = Array.from({ length: tickCount }, (_, i) => minPrice + (priceRange * i) / (tickCount - 1));
+
+  // X-axis labels (show every ~15th label)
+  const labelInterval = Math.max(1, Math.floor(data.length / 6));
+
+  const hoveredCandle = hovered != null ? data[hovered] : null;
+
+  return (
+    <div ref={containerRef} className="relative" style={{ height: dims.h }}>
+      <svg width={dims.w} height={dims.h} className="select-none">
+        {/* Grid lines */}
+        {yTicks.map((tick, i) => (
+          <g key={i}>
+            <line x1={margin.left} x2={dims.w - margin.right} y1={yScale(tick)} y2={yScale(tick)} stroke="#1f2937" strokeDasharray="3 3" />
+            <text x={dims.w - margin.right + 4} y={yScale(tick) + 3} fill="#6b7280" fontSize={9} style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+              ${tick.toFixed(tick >= 100 ? 0 : 2)}
+            </text>
+          </g>
+        ))}
+
+        {/* Candles */}
+        {data.map((d, i) => {
+          const x = margin.left + i * gap + gap / 2;
+          const bodyTop = yScale(Math.max(d.open, d.close));
+          const bodyBottom = yScale(Math.min(d.open, d.close));
+          const bodyH = Math.max(1, bodyBottom - bodyTop);
+          const wickTop = yScale(d.high);
+          const wickBottom = yScale(d.low);
+          const color = d.bullish ? "#22c55e" : "#ef4444";
+          const isHovered = hovered === i;
+
+          return (
+            <g key={i}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+              style={{ cursor: "crosshair" }}
+            >
+              {/* Hover highlight */}
+              {isHovered && (
+                <rect x={x - gap / 2} y={margin.top} width={gap} height={innerH} fill="white" fillOpacity={0.03} />
+              )}
+              {/* Wick */}
+              <line x1={x} x2={x} y1={wickTop} y2={wickBottom} stroke={color} strokeWidth={1} />
+              {/* Body */}
+              <rect x={x - candleW / 2} y={bodyTop} width={candleW} height={bodyH}
+                fill={d.bullish ? color : color} stroke={color} strokeWidth={0.5}
+                fillOpacity={d.bullish ? 0.9 : 0.9}
+              />
+            </g>
+          );
+        })}
+
+        {/* X-axis labels */}
+        {data.map((d, i) => (
+          i % labelInterval === 0 ? (
+            <text key={i} x={margin.left + i * gap + gap / 2} y={dims.h - 4} textAnchor="middle"
+              fill="#6b7280" fontSize={9} style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+              {d.date.slice(5)}
+            </text>
+          ) : null
+        ))}
+      </svg>
+
+      {/* Tooltip */}
+      {hoveredCandle && hovered != null && (
+        <div
+          className="absolute pointer-events-none bg-surface-light/95 border border-border rounded-lg px-3 py-2 text-[10px] font-mono shadow-xl z-10"
+          style={{
+            left: Math.min(dims.w - 160, Math.max(8, margin.left + hovered * gap + gap / 2 - 70)),
+            top: 8,
+          }}
+        >
+          <div className="text-gray-400 mb-1">{hoveredCandle.date}</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+            <span className="text-gray-500">O</span><span className="text-white">${hoveredCandle.open.toFixed(2)}</span>
+            <span className="text-gray-500">H</span><span className="text-white">${hoveredCandle.high.toFixed(2)}</span>
+            <span className="text-gray-500">L</span><span className="text-white">${hoveredCandle.low.toFixed(2)}</span>
+            <span className="text-gray-500">C</span><span className={hoveredCandle.bullish ? "text-profit" : "text-loss"}>${hoveredCandle.close.toFixed(2)}</span>
+          </div>
+          <div className="text-gray-500 mt-1">Vol: {(hoveredCandle.volume / 1e6).toFixed(1)}M</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompanyDescription({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const truncLen = 200;
@@ -185,8 +304,19 @@ export default function TickerDetailPage() {
 
   const cons = detail ? consensusLabel(detail.consensus.direction) : null;
 
-  // Chart data for price chart
-  const priceChartData = chartData.map((d) => ({ date: d.date, close: d.close, volume: d.volume }));
+  // Chart data for price chart (candlestick)
+  const priceChartData = chartData.map((d) => ({
+    date: d.date,
+    open: d.open,
+    high: d.high,
+    low: d.low,
+    close: d.close,
+    volume: d.volume,
+    // For the Bar component: bar spans open→close, wick spans low→high
+    barBottom: Math.min(d.open, d.close),
+    barHeight: Math.abs(d.close - d.open) || 0.01,
+    bullish: d.close >= d.open,
+  }));
 
   // MC cone data
   const mcConeData = mcResults
@@ -445,28 +575,12 @@ export default function TickerDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Price Chart */}
+      {/* Price Chart (Candlestick) */}
       {priceChartData.length >= 2 && (
         <Card>
           <CardContent className="pt-5">
             <h2 className="text-sm font-semibold text-white mb-3" style={FONT_OUTFIT}>Price (90d)</h2>
-            <div style={{ height: 250 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={priceChartData}>
-                  <defs>
-                    <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.15} />
-                      <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fill: "#6b7280", fontSize: 9, ...FONT_MONO }} axisLine={{ stroke: "#374151" }} tickLine={false} />
-                  <YAxis tick={{ fill: "#6b7280", fontSize: 10, ...FONT_MONO }} axisLine={{ stroke: "#374151" }} tickLine={false} tickFormatter={(v: number) => `$${v}`} domain={["auto", "auto"]} />
-                  <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af", fontSize: 11 }} itemStyle={{ color: "#e5e7eb", fontSize: 11, ...FONT_MONO }} />
-                  <Area type="monotone" dataKey="close" stroke="#6366f1" strokeWidth={2} fill="url(#priceGrad)" isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <CandlestickChart data={priceChartData} />
           </CardContent>
         </Card>
       )}

@@ -275,6 +275,8 @@ export const api = {
     fetchApi<{ removed: string }>("/watchlist/" + ticker, { method: "DELETE" }),
   getWatchlistDetail: (ticker: string) =>
     fetchApi<import("./types").WatchlistTickerDetail>("/watchlist/" + ticker + "/detail"),
+  getWatchlistFundamentals: () =>
+    fetchApi<Record<string, import("./types").TickerFundamentals>>("/watchlist/fundamentals"),
   refreshWatchlistSummary: (ticker: string) =>
     fetchApi<{ status: string; ticker: string }>("/watchlist/" + ticker + "/refresh-summary", { method: "POST" }),
   getStrategies: () =>
@@ -345,9 +347,7 @@ export const api = {
   getFmpUsage: () =>
     fetchApi<import("./types").FmpUsage>("/scanner/fmp-usage"),
   getTickerFundamentals: (ticker: string) =>
-    fetchApi<import("./types").TickerFundamentals>("/scanner/fundamentals/" + ticker),
-  getWatchlistFundamentals: () =>
-    fetchApi<import("./types").TickerFundamentals[]>("/scanner/fundamentals/watchlist"),
+    fetchApi<import("./types").TickerFundamentals>("/ai/fundamentals/" + ticker),
 
   // News
   getTickerNews: (ticker: string) =>

@@ -506,6 +506,55 @@ async def sync_watchlist(db: AsyncSession = Depends(get_db)):
     return {"synced": added, "total_tickers": len(all_tickers)}
 
 
+# ── GET /watchlist/fundamentals — bulk fundamentals for all watchlist tickers ──
+
+@router.get("/fundamentals")
+async def get_watchlist_fundamentals(db: AsyncSession = Depends(get_db)):
+    """Return cached FMP fundamentals for all active watchlist tickers."""
+    try:
+        from app.models.ticker_fundamentals import TickerFundamentals
+
+        result = await db.execute(
+            select(WatchlistTicker.ticker).where(WatchlistTicker.is_active == True)
+        )
+        tickers = [row[0] for row in result.all()]
+
+        if not tickers:
+            return {}
+
+        result = await db.execute(
+            select(TickerFundamentals).where(TickerFundamentals.ticker.in_(tickers))
+        )
+        fundamentals = result.scalars().all()
+
+        out = {}
+        for f in fundamentals:
+            out[f.ticker] = {
+                "company_name": f.company_name,
+                "sector": f.sector,
+                "industry": f.industry,
+                "market_cap": f.market_cap,
+                "pe_ratio": f.pe_ratio,
+                "forward_pe": getattr(f, "forward_pe", None),
+                "analyst_rating": f.analyst_rating,
+                "analyst_count": f.analyst_count,
+                "analyst_target_consensus": f.analyst_target_consensus,
+                "earnings_date": f.earnings_date.isoformat() if f.earnings_date else None,
+                "earnings_time": f.earnings_time,
+                "eps_surprise_last": f.eps_surprise_last,
+                "dcf_value": getattr(f, "dcf_value", None),
+                "dcf_diff_pct": getattr(f, "dcf_diff_pct", None),
+                "short_interest_pct": f.short_interest_pct,
+                "insider_net_90d": getattr(f, "insider_net_90d", None),
+                "beta": getattr(f, "beta", None),
+                "dividend_yield": getattr(f, "dividend_yield", None),
+                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+            }
+        return out
+    except Exception:
+        return {}
+
+
 # ── GET /watchlist/strategies — list available strategies dynamically ─────
 
 @router.get("/strategies/list")
