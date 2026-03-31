@@ -342,6 +342,17 @@ export const api = {
     fetchApi<Record<string, unknown>>("/scanner/criteria"),
   updateScannerCriteria: (criteria: Record<string, unknown>) =>
     fetchApi<Record<string, unknown>>("/scanner/criteria", { method: "PUT", body: JSON.stringify(criteria) }),
+  getScannerProfiles: () =>
+    fetchApi<{ profiles: import("./types").ScanProfile[] }>("/scanner/profiles"),
+  saveScannerProfile: (profileId: string, data: Record<string, unknown>) =>
+    fetchApi<{ profiles: import("./types").ScanProfile[] }>("/scanner/profiles/" + profileId, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteScannerProfile: (profileId: string) =>
+    fetchApi<{ profiles: import("./types").ScanProfile[] }>("/scanner/profiles/" + profileId, { method: "DELETE" }),
+  runScannerWithProfile: (profileId: string) =>
+    fetchApi<{ status: string }>("/scanner/run/" + profileId, { method: "POST" }),
   getScannerStats: () =>
     fetchApi<import("./types").ScannerStats>("/scanner/stats"),
   getFmpUsage: () =>

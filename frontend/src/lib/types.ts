@@ -821,6 +821,20 @@ export interface ScannerOpportunity {
   position_archetype?: string;
 }
 
+export interface ScanProfile {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  market_conditions: {
+    vix_min?: number;
+    vix_max?: number;
+    trend?: string;  // "bullish" | "bearish" | "any"
+    time_slots?: string[];  // "morning" | "midday" | "afternoon"
+  };
+  criteria: Record<string, unknown>;
+}
+
 export interface ScannerStats {
   total_opportunities: number;
   approved: number;

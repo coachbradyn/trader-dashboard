@@ -770,64 +770,118 @@ const SCAN_PRESETS: Record<string, { label: string; desc: string; color: string 
 };
 
 function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
+  // ── Profiles state ──
+  const [profiles, setProfiles] = useState<import("@/lib/types").ScanProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [runningProfile, setRunningProfile] = useState<string | null>(null);
+
+  // ── Active profile's criteria (loaded when a profile is selected) ──
   const [screener, setScreener] = useState<Record<string, unknown>>({
     priceMoreThan: 5, priceLessThan: null, marketCapMoreThan: 5e8, marketCapLessThan: null,
     volumeMoreThan: 500000, volumeLessThan: null, betaMoreThan: null, betaLessThan: null,
     dividendMoreThan: null, dividendLessThan: null, sector: "", industry: "", country: "US",
     exchange: "NYSE,NASDAQ", isEtf: false, isFund: false, isActivelyTrading: true, limit: 50,
   });
-  const [rules, setRules] = useState<TechRule[]>([
-    { enabled: true, indicator: "rsi", period: 14, timeframe: "daily", condition: "below", value: 35, compare_indicator: null, label: "Oversold RSI" },
-    { enabled: true, indicator: "price", period: 0, timeframe: "daily", condition: "above", value: 0, compare_indicator: { indicator: "sma", period: 200 }, label: "Price above SMA 200" },
-    { enabled: false, indicator: "adx", period: 14, timeframe: "daily", condition: "above", value: 20, compare_indicator: null, label: "ADX trending" },
-    { enabled: false, indicator: "ema", period: 9, timeframe: "daily", condition: "above", value: 0, compare_indicator: { indicator: "ema", period: 21 }, label: "EMA 9 > EMA 21" },
-    { enabled: false, indicator: "macd", period: 0, timeframe: "daily", condition: "crosses_above", value: 0, compare_indicator: { indicator: "macd_signal", period: 0 }, label: "MACD crossover" },
-  ]);
+  const [rules, setRules] = useState<TechRule[]>([]);
   const [volumeFilter, setVolumeFilter] = useState({ enabled: false, surge_multiplier: 1.5, avg_period: 20 });
+  const [marketConditions, setMarketConditions] = useState<Record<string, unknown>>({ trend: "any", time_slots: ["morning", "midday", "afternoon"] });
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [fmpUsage, setFmpUsage] = useState<{ calls_today: number; limit: number; remaining: number; throttled: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const loadProfileCriteria = useCallback((profile: import("@/lib/types").ScanProfile) => {
+    const c = profile.criteria || {};
+    if (c.screener) setScreener(prev => ({ ...prev, ...(c.screener as Record<string, unknown>) }));
+    if (c.technical_rules && Array.isArray(c.technical_rules)) setRules(c.technical_rules as TechRule[]);
+    if (c.volume_filter) setVolumeFilter(prev => ({ ...prev, ...(c.volume_filter as Record<string, unknown>) }));
+    setMarketConditions(profile.market_conditions || { trend: "any", time_slots: ["morning", "midday", "afternoon"] });
+  }, []);
+
   useEffect(() => {
     Promise.all([
+      api.getScannerProfiles().catch(() => ({ profiles: [] })),
       api.getScannerCriteria().catch(() => null),
       api.getFmpUsage().catch(() => null),
-    ]).then(([c, u]) => {
-      if (c && typeof c === "object") {
+    ]).then(([profilesRes, c, u]) => {
+      const profs = profilesRes.profiles || [];
+      setProfiles(profs);
+      // Select first enabled profile
+      const first = profs.find(p => p.enabled) || profs[0];
+      if (first) {
+        setSelectedProfileId(first.id);
+        loadProfileCriteria(first);
+      } else if (c && typeof c === "object") {
         const cr = c as Record<string, unknown>;
         if (cr.screener) setScreener(prev => ({ ...prev, ...(cr.screener as Record<string, unknown>) }));
         if (cr.technical_rules && Array.isArray(cr.technical_rules)) setRules(cr.technical_rules as TechRule[]);
         if (cr.volume_filter) setVolumeFilter(prev => ({ ...prev, ...(cr.volume_filter as Record<string, unknown>) }));
-        if (cr.active_preset) setActivePreset(cr.active_preset as string);
       }
       if (u) setFmpUsage(u as typeof fmpUsage);
     }).finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const selectProfile = (profile: import("@/lib/types").ScanProfile) => {
+    setSelectedProfileId(profile.id);
+    loadProfileCriteria(profile);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateScannerCriteria({ screener, technical_rules: rules, volume_filter: volumeFilter, active_preset: activePreset });
-      flash("Scanner criteria saved");
+      const criteria = { screener, technical_rules: rules, volume_filter: volumeFilter, active_preset: activePreset };
+
+      if (selectedProfileId) {
+        // Save to the selected profile
+        const profile = profiles.find(p => p.id === selectedProfileId);
+        await api.saveScannerProfile(selectedProfileId, {
+          id: selectedProfileId,
+          name: profile?.name || selectedProfileId,
+          description: profile?.description || "",
+          enabled: profile?.enabled ?? true,
+          market_conditions: marketConditions,
+          criteria,
+        });
+        // Refresh profiles
+        const res = await api.getScannerProfiles().catch(() => ({ profiles: [] }));
+        setProfiles(res.profiles || []);
+        flash(`Profile "${profile?.name || selectedProfileId}" saved`);
+      } else {
+        await api.updateScannerCriteria(criteria);
+        flash("Scanner criteria saved");
+      }
     } catch { flash("Save failed", "error"); }
     setSaving(false);
   };
 
+  const handleToggleProfile = async (profileId: string) => {
+    const profile = profiles.find(p => p.id === profileId);
+    if (!profile) return;
+    try {
+      await api.saveScannerProfile(profileId, { ...profile, enabled: !profile.enabled });
+      const res = await api.getScannerProfiles().catch(() => ({ profiles: [] }));
+      setProfiles(res.profiles || []);
+      flash(`${profile.name} ${profile.enabled ? "disabled" : "enabled"}`);
+    } catch { flash("Toggle failed", "error"); }
+  };
+
+  const handleRunProfile = async (profileId: string) => {
+    setRunningProfile(profileId);
+    try {
+      await api.runScannerWithProfile(profileId);
+      flash("Scan started");
+    } catch { flash("Scan failed", "error"); }
+    setTimeout(() => setRunningProfile(null), 5000);
+  };
+
   const applyPreset = async (name: string) => {
     setActivePreset(name);
-    try {
-      // Fetch preset from backend
-      const preset = await api.updateScannerCriteria({ active_preset: name } as Record<string, unknown>);
-      if (preset && typeof preset === "object") {
-        const p = preset as Record<string, unknown>;
-        if (p.screener) setScreener(prev => ({ ...prev, ...(p.screener as Record<string, unknown>) }));
-        if (p.technical_rules && Array.isArray(p.technical_rules)) setRules(p.technical_rules as TechRule[]);
-        if (p.volume_filter) setVolumeFilter(prev => ({ ...prev, ...(p.volume_filter as Record<string, unknown>) }));
-      }
-      flash(`Applied "${SCAN_PRESETS[name]?.label}" preset`);
-    } catch { flash("Failed to apply preset", "error"); }
+    const profile = profiles.find(p => p.id === name);
+    if (profile) {
+      selectProfile(profile);
+      flash(`Loaded "${profile.name}" profile`);
+    }
   };
 
   const updateRule = (idx: number, field: string, val: unknown) => {
@@ -848,17 +902,88 @@ function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "
 
   return (
     <div className="settings-panel p-6 space-y-6">
-      {/* ── Presets ── */}
-      <SectionTitle>Scan Presets</SectionTitle>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {Object.entries(SCAN_PRESETS).map(([key, p]) => (
-          <button key={key} onClick={() => applyPreset(key)}
-            className={`text-left p-3 rounded-lg border transition text-xs ${activePreset === key ? p.color + " bg-surface-light/40" : "border-border/40 text-gray-400 hover:border-border"}`}>
-            <div className="font-semibold mb-0.5" style={FONT_OUTFIT}>{p.label}</div>
-            <div className="text-[10px] opacity-70">{p.desc}</div>
-          </button>
-        ))}
+      {/* ── Scan Profiles ── */}
+      <SectionTitle>Scan Profiles</SectionTitle>
+      <p className="text-[10px] text-gray-500">Henry rotates through enabled profiles based on market conditions. Select a profile to edit its criteria.</p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {profiles.map((p) => {
+          const presetStyle = SCAN_PRESETS[p.id];
+          const isSelected = selectedProfileId === p.id;
+          return (
+            <div key={p.id}
+              className={`relative text-left p-3 rounded-lg border transition text-xs ${
+                isSelected ? (presetStyle?.color || "border-ai-blue/40 text-ai-blue") + " bg-surface-light/40" :
+                p.enabled ? "border-border/50 text-gray-300 hover:border-border" :
+                "border-border/20 text-gray-600 opacity-50"
+              }`}>
+              <button onClick={() => applyPreset(p.id)} className="w-full text-left">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="font-semibold" style={FONT_OUTFIT}>{p.name}</span>
+                  {!p.enabled && <span className="text-[8px] text-gray-600 uppercase">disabled</span>}
+                </div>
+                <div className="text-[10px] opacity-70 mb-2">{p.description}</div>
+              </button>
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => handleToggleProfile(p.id)}
+                  className={`w-6 h-3 rounded-full transition ${p.enabled ? "bg-profit" : "bg-gray-600"}`}
+                  title={p.enabled ? "Disable" : "Enable"}>
+                  <div className={`w-2.5 h-2.5 rounded-full bg-white transition-transform ${p.enabled ? "translate-x-3" : "translate-x-0.5"}`} />
+                </button>
+                <button onClick={() => handleRunProfile(p.id)} disabled={runningProfile === p.id || !p.enabled}
+                  className="text-[9px] text-ai-blue/60 hover:text-ai-blue disabled:opacity-30 ml-auto" title="Run now">
+                  {runningProfile === p.id ? "Running..." : "Run"}
+                </button>
+              </div>
+              {/* Market condition badges */}
+              <div className="flex flex-wrap gap-1 mt-2">
+                {(p.market_conditions?.time_slots || []).map(s => (
+                  <span key={s} className="text-[8px] px-1 py-0.5 rounded bg-surface-light/30 text-gray-500 font-mono">{s}</span>
+                ))}
+                {p.market_conditions?.vix_max && <span className="text-[8px] px-1 py-0.5 rounded bg-surface-light/30 text-gray-500 font-mono">VIX&lt;{p.market_conditions.vix_max}</span>}
+                {p.market_conditions?.vix_min && <span className="text-[8px] px-1 py-0.5 rounded bg-surface-light/30 text-gray-500 font-mono">VIX&gt;{p.market_conditions.vix_min}</span>}
+                {p.market_conditions?.trend && p.market_conditions.trend !== "any" && (
+                  <span className="text-[8px] px-1 py-0.5 rounded bg-surface-light/30 text-gray-500 font-mono">{p.market_conditions.trend}</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      {/* Market conditions for selected profile */}
+      {selectedProfileId && (
+        <div className="flex flex-wrap items-center gap-3 text-[10px] text-gray-400 p-3 rounded-lg bg-surface-light/10 border border-border/20">
+          <span className="font-medium text-white" style={FONT_OUTFIT}>When to use:</span>
+          <div className="flex items-center gap-1">
+            Trend:
+            <select value={String(marketConditions.trend || "any")} onChange={e => setMarketConditions(prev => ({ ...prev, trend: e.target.value }))}
+              className="bg-transparent border border-border/40 rounded px-1 py-0.5 text-white text-[10px]">
+              <option value="any">Any</option><option value="bullish">Bullish</option><option value="bearish">Bearish</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            VIX:
+            <Input type="number" placeholder="Min" value={typeof marketConditions.vix_min === "number" ? marketConditions.vix_min : ""} onChange={e => setMarketConditions(prev => ({ ...prev, vix_min: parseFloat(e.target.value) || undefined }))} className="h-5 w-12 text-[10px]" />
+            -
+            <Input type="number" placeholder="Max" value={typeof marketConditions.vix_max === "number" ? marketConditions.vix_max : ""} onChange={e => setMarketConditions(prev => ({ ...prev, vix_max: parseFloat(e.target.value) || undefined }))} className="h-5 w-12 text-[10px]" />
+          </div>
+          <div className="flex items-center gap-1">
+            Time:
+            {["morning", "midday", "afternoon"].map(slot => {
+              const slots = (marketConditions.time_slots as string[] | undefined) || [];
+              const active = slots.includes(slot);
+              return (
+                <button key={slot} onClick={() => {
+                  const newSlots = active ? slots.filter(s => s !== slot) : [...slots, slot];
+                  setMarketConditions(prev => ({ ...prev, time_slots: newSlots }));
+                }} className={`px-1.5 py-0.5 rounded text-[9px] font-mono border transition ${active ? "bg-ai-blue/20 border-ai-blue/40 text-ai-blue" : "border-border/30 text-gray-500"}`}>
+                  {slot}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <Separator />
 
@@ -1017,9 +1142,9 @@ function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "
       {/* ── Save ── */}
       <div className="flex items-center gap-4">
         <Button onClick={handleSave} disabled={saving} className="min-w-[140px]">
-          {saving ? "Saving..." : "Save All Criteria"}
+          {saving ? "Saving..." : selectedProfileId ? `Save "${profiles.find(p => p.id === selectedProfileId)?.name || selectedProfileId}"` : "Save Criteria"}
         </Button>
-        {activePreset && <span className="text-[10px] text-gray-500">Preset: {SCAN_PRESETS[activePreset]?.label}</span>}
+        {selectedProfileId && <span className="text-[10px] text-gray-500">Editing: {profiles.find(p => p.id === selectedProfileId)?.name}</span>}
       </div>
 
       {/* ── FMP Status ── */}

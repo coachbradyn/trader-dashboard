@@ -125,6 +125,242 @@ DEFAULT_SCANNER_CRITERIA = {
 }
 
 SCANNER_CACHE_KEY = "scanner:criteria"
+PROFILES_CACHE_KEY = "scanner:profiles"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SCAN PROFILES
+# ══════════════════════════════════════════════════════════════════════
+
+# Each profile has: name, criteria (screener + technical_rules + volume_filter),
+# market_conditions (when Henry should use this profile), enabled flag.
+
+DEFAULT_PROFILES = [
+    {
+        "id": "momentum",
+        "name": "Momentum",
+        "description": "Large cap stocks in established uptrends with room to run",
+        "enabled": True,
+        "market_conditions": {
+            "vix_max": 22,       # Only in low-vol environments
+            "trend": "bullish",  # bullish | bearish | any
+            "time_slots": ["morning", "midday"],  # morning | midday | afternoon
+        },
+        "criteria": None,  # Filled from get_preset_criteria("momentum")
+    },
+    {
+        "id": "oversold_bounce",
+        "name": "Oversold Bounce",
+        "description": "Pullback buying opportunities in confirmed uptrends",
+        "enabled": True,
+        "market_conditions": {
+            "vix_min": 18,       # Better in elevated vol (more oversold stocks)
+            "trend": "any",
+            "time_slots": ["midday", "afternoon"],
+        },
+        "criteria": None,  # Filled from get_preset_criteria("oversold_bounce")
+    },
+    {
+        "id": "breakout",
+        "name": "Breakout",
+        "description": "Stocks starting new trends with volume confirmation",
+        "enabled": True,
+        "market_conditions": {
+            "vix_max": 25,
+            "trend": "any",
+            "time_slots": ["morning"],
+        },
+        "criteria": None,  # Filled from get_preset_criteria("breakout")
+    },
+    {
+        "id": "value_catalyst",
+        "name": "Value + Catalyst",
+        "description": "Fundamentally solid stocks approaching catalyst events",
+        "enabled": False,
+        "market_conditions": {
+            "trend": "any",
+            "time_slots": ["afternoon"],
+        },
+        "criteria": None,  # Filled from get_preset_criteria("value_catalyst")
+    },
+]
+
+
+def _time_slot_now() -> str:
+    """Return current market time slot: morning | midday | afternoon."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        hour = now_et.hour
+        if hour < 11:
+            return "morning"
+        elif hour < 14:
+            return "midday"
+        else:
+            return "afternoon"
+    except Exception:
+        return "midday"
+
+
+async def get_scan_profiles() -> list[dict]:
+    """Get all scan profiles. Merges saved profiles with defaults."""
+    try:
+        from app.models.henry_cache import HenryCache
+        async with async_session() as db:
+            result = await db.execute(
+                select(HenryCache).where(HenryCache.cache_key == PROFILES_CACHE_KEY)
+            )
+            entry = result.scalar_one_or_none()
+            if entry and entry.content and isinstance(entry.content, list):
+                profiles = entry.content
+                # Ensure each profile has criteria filled in
+                for p in profiles:
+                    if p.get("criteria") is None:
+                        preset = get_preset_criteria(p["id"])
+                        if preset:
+                            p["criteria"] = preset
+                        else:
+                            p["criteria"] = DEFAULT_SCANNER_CRITERIA.copy()
+                return profiles
+    except Exception as e:
+        logger.debug(f"Error reading scan profiles: {e}")
+
+    # Return defaults with criteria filled in
+    profiles = []
+    for p in DEFAULT_PROFILES:
+        profile = {**p}
+        preset = get_preset_criteria(profile["id"])
+        profile["criteria"] = preset if preset else DEFAULT_SCANNER_CRITERIA.copy()
+        profiles.append(profile)
+    return profiles
+
+
+async def save_scan_profiles(profiles: list[dict]) -> list[dict]:
+    """Save all scan profiles."""
+    from app.models.henry_cache import HenryCache
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(HenryCache).where(HenryCache.cache_key == PROFILES_CACHE_KEY)
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.content = profiles
+                existing.generated_at = datetime.utcnow()
+            else:
+                db.add(HenryCache(
+                    cache_key=PROFILES_CACHE_KEY,
+                    cache_type="scanner_profiles",
+                    content=profiles,
+                ))
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Error saving scan profiles: {e}")
+
+    return profiles
+
+
+async def save_single_profile(profile: dict) -> list[dict]:
+    """Create or update a single profile by ID."""
+    profiles = await get_scan_profiles()
+    profile_id = profile.get("id")
+
+    # Update existing or append new
+    found = False
+    for i, p in enumerate(profiles):
+        if p["id"] == profile_id:
+            profiles[i] = {**p, **profile}
+            found = True
+            break
+    if not found:
+        profiles.append(profile)
+
+    return await save_scan_profiles(profiles)
+
+
+async def delete_profile(profile_id: str) -> list[dict]:
+    """Delete a profile by ID. Built-in profiles can be disabled but not deleted."""
+    profiles = await get_scan_profiles()
+    builtin_ids = {p["id"] for p in DEFAULT_PROFILES}
+
+    if profile_id in builtin_ids:
+        # Disable instead of delete
+        for p in profiles:
+            if p["id"] == profile_id:
+                p["enabled"] = False
+                break
+    else:
+        profiles = [p for p in profiles if p["id"] != profile_id]
+
+    return await save_scan_profiles(profiles)
+
+
+async def select_profiles_for_now() -> list[dict]:
+    """
+    Select which scan profiles Henry should run right now based on:
+    - Profile enabled status
+    - Current time slot (morning/midday/afternoon)
+    - Market conditions (VIX level, market trend)
+    Returns profiles sorted by priority.
+    """
+    profiles = await get_scan_profiles()
+    time_slot = _time_slot_now()
+
+    # Get market conditions
+    vix = None
+    spy_trend = "any"
+    try:
+        from app.services.price_service import price_service
+        vix = price_service.get_price("VIX")
+        spy = price_service.get_price("SPY")
+
+        # Determine trend from recent SPY data
+        if spy:
+            from app.services.fmp_service import get_technical_indicator
+            sma_data = await get_technical_indicator("SPY", "sma", period=50, interval="daily")
+            if sma_data and isinstance(sma_data, list) and len(sma_data) > 0:
+                sma50 = sma_data[0].get("sma") or sma_data[0].get("value")
+                if sma50 and spy > sma50:
+                    spy_trend = "bullish"
+                elif sma50:
+                    spy_trend = "bearish"
+    except Exception:
+        pass
+
+    selected = []
+    for profile in profiles:
+        if not profile.get("enabled", False):
+            continue
+
+        conditions = profile.get("market_conditions", {})
+
+        # Check time slot
+        allowed_slots = conditions.get("time_slots", ["morning", "midday", "afternoon"])
+        if time_slot not in allowed_slots:
+            continue
+
+        # Check VIX
+        if vix is not None:
+            vix_min = conditions.get("vix_min")
+            vix_max = conditions.get("vix_max")
+            if vix_min is not None and vix < vix_min:
+                continue
+            if vix_max is not None and vix > vix_max:
+                continue
+
+        # Check trend
+        required_trend = conditions.get("trend", "any")
+        if required_trend != "any" and spy_trend != "any" and required_trend != spy_trend:
+            continue
+
+        selected.append(profile)
+
+    logger.info(
+        f"Profile selection: time={time_slot}, VIX={vix}, trend={spy_trend} → "
+        f"{len(selected)}/{len(profiles)} profiles selected: {[p['name'] for p in selected]}"
+    )
+    return selected
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -527,9 +763,9 @@ async def _evaluate_technical_rules(
     return list(candidates.values())
 
 
-async def run_scanner() -> list[dict]:
+async def run_scanner(profile_criteria: dict | None = None, profile_name: str | None = None) -> list[dict]:
     """
-    Full scanner pipeline:
+    Full scanner pipeline. Optionally accepts criteria from a specific profile.
     1. Build screener params from criteria and call FMP
     2. Cascading technical rule evaluation
     3. Volume surge filter (if enabled)
@@ -548,17 +784,20 @@ async def run_scanner() -> list[dict]:
         logger.warning("Scanner skipped: FMP API throttled")
         return []
 
-    # 1. Get criteria
-    criteria = await get_scanner_criteria()
-
-    # If a preset is selected, load it
-    active_preset = criteria.get("active_preset")
-    if active_preset:
-        criteria = get_preset_criteria(active_preset)
+    # 1. Get criteria — use profile override if provided, else saved criteria
+    if profile_criteria:
+        criteria = profile_criteria
+        source = f"profile:{profile_name or 'custom'}"
+    else:
+        criteria = await get_scanner_criteria()
+        active_preset = criteria.get("active_preset")
+        if active_preset:
+            criteria = get_preset_criteria(active_preset)
+        source = f"preset:{criteria.get('active_preset', 'default')}"
 
     screener_cfg = criteria.get("screener", DEFAULT_SCANNER_CRITERIA["screener"])
     logger.info(
-        f"Running scanner: preset={active_preset}, "
+        f"Running scanner ({source}): "
         f"price>{screener_cfg.get('priceMoreThan')}, vol>{screener_cfg.get('volumeMoreThan')}, "
         f"cap>{screener_cfg.get('marketCapMoreThan')}"
     )

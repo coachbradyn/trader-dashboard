@@ -108,6 +108,75 @@ async def get_scanner_stats():
     return stats
 
 
+# ── SCAN PROFILES ──────────────────────────────────────────────────
+
+@router.get("/profiles")
+async def get_scan_profiles_route():
+    """Get all scan profiles with their criteria and market conditions."""
+    from app.services.scanner_service import get_scan_profiles
+    profiles = await get_scan_profiles()
+    return {"profiles": profiles}
+
+
+class SaveProfileRequest(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+    market_conditions: dict = {}
+    criteria: dict = {}
+
+
+@router.put("/profiles/{profile_id}")
+async def save_profile_route(profile_id: str, req: SaveProfileRequest):
+    """Create or update a scan profile."""
+    from app.services.scanner_service import save_single_profile
+    profile_data = req.model_dump()
+    profile_data["id"] = profile_id
+    profiles = await save_single_profile(profile_data)
+    return {"profiles": profiles, "message": f"Profile '{req.name}' saved"}
+
+
+@router.delete("/profiles/{profile_id}")
+async def delete_profile_route(profile_id: str):
+    """Delete a scan profile (built-in profiles are disabled instead)."""
+    from app.services.scanner_service import delete_profile
+    profiles = await delete_profile(profile_id)
+    return {"profiles": profiles, "message": f"Profile '{profile_id}' removed"}
+
+
+@router.post("/run/{profile_id}")
+async def run_scanner_with_profile(profile_id: str):
+    """Run scanner with a specific profile. Returns immediately, runs in background."""
+    from app.services.scanner_service import get_scan_profiles, run_scanner
+    from app.services.fmp_service import get_api_usage
+
+    usage = get_api_usage()
+    if usage["throttled"]:
+        raise HTTPException(429, detail="FMP API rate limit reached")
+
+    profiles = await get_scan_profiles()
+    profile = next((p for p in profiles if p["id"] == profile_id), None)
+    if not profile:
+        raise HTTPException(404, detail=f"Profile '{profile_id}' not found")
+
+    async def _run():
+        try:
+            await run_scanner(
+                profile_criteria=profile.get("criteria"),
+                profile_name=profile.get("name", profile_id),
+            )
+        except Exception as e:
+            logger.error(f"Profile scanner run failed: {e}")
+
+    asyncio.create_task(_run())
+    return {
+        "status": "running",
+        "profile": profile_id,
+        "message": f"Running '{profile.get('name', profile_id)}' scan in background",
+    }
+
+
 # ── GET /scanner/fmp-usage ─────────────────────────────────────────
 
 @router.get("/fmp-usage")

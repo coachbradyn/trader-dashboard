@@ -106,9 +106,9 @@ async def run_autonomous_trading() -> dict:
         summary["errors"].append(str(e))
         return summary
 
-    # ── Phase 1: Scanner opportunities ──
+    # ── Phase 1: Run scanner with market-appropriate profiles ──
     try:
-        scanner_trades = await _execute_scanner_opportunities(
+        scanner_trades = await _execute_multi_profile_scan(
             portfolio, equity, cfg, existing_tickers, slots_available
         )
         summary["scanner_trades"] = scanner_trades
@@ -117,7 +117,7 @@ async def run_autonomous_trading() -> dict:
         logger.error(f"Autonomous trading: scanner execution failed: {e}")
         summary["errors"].append(f"scanner: {e}")
 
-    # ── Phase 2: Pattern detection (if scanner found nothing and slots remain) ──
+    # ── Phase 2: Pattern detection (if no profiles produced trades) ──
     if slots_available > 0 and summary["scanner_trades"] == 0:
         try:
             pattern_trades = await _execute_pattern_opportunities(
@@ -134,8 +134,102 @@ async def run_autonomous_trading() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# PHASE 1: EXECUTE SCANNER OPPORTUNITIES
+# PHASE 1: MULTI-PROFILE SCANNING
 # ══════════════════════════════════════════════════════════════════════
+
+async def _execute_multi_profile_scan(
+    portfolio: Portfolio,
+    equity: float,
+    cfg: dict,
+    existing_tickers: set,
+    max_trades: int,
+) -> int:
+    """
+    Run scanner with each market-appropriate profile.
+    Henry selects which profiles to use based on current VIX, trend, and time of day.
+    """
+    from app.services.scanner_service import select_profiles_for_now, run_scanner
+    from app.services.fmp_service import get_api_usage
+
+    # Get profiles appropriate for current market conditions
+    profiles = await select_profiles_for_now()
+    if not profiles:
+        logger.info("Autonomous trading: no scan profiles matched current conditions")
+        # Fall back to running with saved criteria (backward compat)
+        return await _execute_scanner_opportunities(
+            portfolio, equity, cfg, existing_tickers, max_trades
+        )
+
+    trades_made = 0
+    profiles_run = 0
+
+    for profile in profiles:
+        if trades_made >= max_trades:
+            break
+
+        # Check API budget before each profile
+        usage = get_api_usage()
+        if usage.get("remaining", 0) < 20:
+            logger.info(f"Autonomous: stopping profile rotation — FMP budget low ({usage.get('remaining')} remaining)")
+            break
+
+        profile_name = profile.get("name", profile.get("id", "unknown"))
+        criteria = profile.get("criteria")
+        if not criteria:
+            continue
+
+        logger.info(f"Autonomous: running profile '{profile_name}'")
+        profiles_run += 1
+
+        try:
+            opportunities = await run_scanner(
+                profile_criteria=criteria,
+                profile_name=profile_name,
+            )
+        except Exception as e:
+            logger.warning(f"Autonomous: profile '{profile_name}' failed: {e}")
+            continue
+
+        if not opportunities:
+            logger.info(f"Autonomous: profile '{profile_name}' found no opportunities")
+            continue
+
+        # Execute high-confidence picks
+        min_confidence = max(cfg.get("min_confidence", 5), 6)
+        for opp in opportunities:
+            if trades_made >= max_trades:
+                break
+
+            ticker = opp.get("ticker", "")
+            confidence = opp.get("confidence", 0)
+            direction = opp.get("direction", "long")
+
+            if not ticker or ticker in existing_tickers:
+                continue
+            if confidence < min_confidence:
+                continue
+
+            suggested_price = opp.get("suggested_price")
+            if not suggested_price:
+                from app.services.fmp_service import get_quote
+                quote = await get_quote(ticker)
+                if quote and isinstance(quote, list) and len(quote) > 0:
+                    suggested_price = quote[0].get("price")
+                if not suggested_price:
+                    continue
+
+            success = await _execute_autonomous_trade(
+                portfolio, ticker, direction, suggested_price, confidence,
+                f"[{profile_name}] {opp.get('reasoning', 'scanner pick')}",
+                equity, cfg, source=f"profile:{profile_name}",
+            )
+            if success:
+                trades_made += 1
+                existing_tickers.add(ticker)
+
+    logger.info(f"Autonomous: {profiles_run} profiles run, {trades_made} trades from scanning")
+    return trades_made
+
 
 async def _execute_scanner_opportunities(
     portfolio: Portfolio,
@@ -144,34 +238,27 @@ async def _execute_scanner_opportunities(
     existing_tickers: set,
     max_trades: int,
 ) -> int:
-    """Execute high-confidence scanner opportunities in the AI portfolio."""
+    """Fallback: execute using saved criteria (no profiles). Backward compatible."""
     from app.services.scanner_service import run_scanner
 
-    # Run the scanner
     opportunities = await run_scanner()
     if not opportunities:
-        logger.info("Autonomous trading: scanner returned no opportunities")
         return 0
 
     trades_made = 0
-    min_confidence = max(cfg.get("min_confidence", 5), 6)  # Require at least 6 for autonomous
+    min_confidence = max(cfg.get("min_confidence", 5), 6)
 
     for opp in opportunities:
         if trades_made >= max_trades:
             break
-
         ticker = opp.get("ticker", "")
         confidence = opp.get("confidence", 0)
         direction = opp.get("direction", "long")
-
-        if not ticker or ticker in existing_tickers:
-            continue
-        if confidence < min_confidence:
+        if not ticker or ticker in existing_tickers or confidence < min_confidence:
             continue
 
         suggested_price = opp.get("suggested_price")
         if not suggested_price:
-            # Try to get current price
             from app.services.fmp_service import get_quote
             quote = await get_quote(ticker)
             if quote and isinstance(quote, list) and len(quote) > 0:
@@ -179,16 +266,14 @@ async def _execute_scanner_opportunities(
             if not suggested_price:
                 continue
 
-        # Execute the trade
         success = await _execute_autonomous_trade(
             portfolio, ticker, direction, suggested_price, confidence,
-            f"Scanner opportunity: {opp.get('reasoning', 'scanner pick')}",
+            f"Scanner: {opp.get('reasoning', '')}",
             equity, cfg, source="scanner",
         )
         if success:
             trades_made += 1
             existing_tickers.add(ticker)
-            logger.info(f"Autonomous: executed scanner trade {direction.upper()} {ticker} @ ${suggested_price:.2f} (conf {confidence})")
 
     return trades_made
 
