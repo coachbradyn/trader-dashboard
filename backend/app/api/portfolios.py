@@ -63,37 +63,41 @@ async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[flo
 
 async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> PortfolioResponse:
     """Build a PortfolioResponse combining snapshot data + holdings data."""
-    # Snapshot-based data (from webhook trades)
-    snap_result = await db.execute(
-        select(PortfolioSnapshot)
-        .where(PortfolioSnapshot.portfolio_id == p.id)
-        .order_by(PortfolioSnapshot.snapshot_time.desc())
-        .limit(1)
-    )
-    latest = snap_result.scalar_one_or_none()
-
-    snap_equity = latest.equity if latest else 0.0
-    snap_unrealized = latest.unrealized_pnl if latest else 0.0
-    snap_positions = latest.open_positions if latest else 0
-
     # Holdings-based data (from manual entries + portfolio manager)
     holdings_cost_basis, holdings_unrealized, holdings_market_value, holdings_count = await _calc_holdings_value(p.id, db)
 
-    # Equity = cash + holdings market value + any webhook-trade gains
-    # Performance % = only unrealized P&L / total capital deployed (NOT inflated by adding holdings)
-    if not latest and holdings_count == 0:
-        equity = p.initial_capital
-        unrealized = 0.0
-        open_pos = 0
-    else:
-        equity = p.cash + holdings_market_value + (snap_equity - p.initial_capital if latest else 0.0)
-        unrealized = snap_unrealized + holdings_unrealized
-        open_pos = snap_positions + holdings_count
+    # Webhook trades: compute unrealized P&L from open trades linked to this portfolio
+    from app.models import Trade, PortfolioTrade
+    webhook_unrealized = 0.0
+    webhook_open = 0
+    try:
+        trade_result = await db.execute(
+            select(Trade)
+            .join(PortfolioTrade)
+            .where(
+                PortfolioTrade.portfolio_id == p.id,
+                Trade.status == "open",
+                Trade.is_simulated == False,
+            )
+        )
+        open_trades = trade_result.scalars().all()
+        webhook_open = len(open_trades)
+        for t in open_trades:
+            cp = price_service.get_price(t.ticker) or t.entry_price
+            if t.direction == "long":
+                webhook_unrealized += (cp - t.entry_price) * t.qty
+            else:
+                webhook_unrealized += (t.entry_price - cp) * t.qty
+    except Exception:
+        pass
 
-    # Return % based on gains only, not deployed capital
-    # Total capital deployed = initial_capital + holdings cost basis
-    total_capital = p.initial_capital + holdings_cost_basis
-    total_return = (unrealized / total_capital * 100) if total_capital > 0 else 0.0
+    # Equity = cash + holdings market value + webhook trade unrealized P&L
+    equity = p.cash + holdings_market_value + webhook_unrealized
+    unrealized = holdings_unrealized + webhook_unrealized
+    open_pos = holdings_count + webhook_open
+
+    # Return % based on gains relative to capital deployed
+    total_return = ((equity - p.initial_capital) / p.initial_capital * 100) if p.initial_capital > 0 else 0.0
 
     return PortfolioResponse(
         id=p.id,

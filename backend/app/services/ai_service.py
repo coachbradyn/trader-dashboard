@@ -1069,7 +1069,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
     async def _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger, force=False):
         """Generate a fresh briefing with full market intelligence and cache it."""
-        from sqlalchemy import select
+        from sqlalchemy import select, func
         from app.database import async_session
         from app.models.market_summary import MarketSummary
         from app.models.portfolio_holding import PortfolioHolding
@@ -1079,7 +1079,18 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         positions = await get_positions_fn()
         yesterdays_trades = await get_trades_fn(days_back=1)
 
-        if not positions and not yesterdays_trades:
+        # Also check for manual holdings — user may have holdings without webhook trades
+        has_holdings = False
+        try:
+            async with async_session() as _hdb:
+                _h_count = await _hdb.execute(
+                    select(func.count(PortfolioHolding.id)).where(PortfolioHolding.is_active == True)
+                )
+                has_holdings = (_h_count.scalar() or 0) > 0
+        except Exception:
+            pass
+
+        if not positions and not yesterdays_trades and not has_holdings:
             return {
                 "briefing": "No trading activity yet. Connect your TradingView strategies via Settings to start receiving webhooks and generating briefings.",
                 "open_positions": 0,
@@ -1147,9 +1158,14 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             if position_context_lines:
                 holdings_context = (holdings_context or "") + "\n\nPOSITION CONTEXT (non-momentum):\n" + "\n".join(position_context_lines)
 
-        # Gather all market intelligence in parallel
+        # Gather all market intelligence in parallel (with timeout protection)
         logger.info(f"Gathering market intel for {len(held_tickers)} tickers: {held_tickers}")
-        market_intel = await gather_market_intel(held_tickers)
+        try:
+            import asyncio as _aio
+            market_intel = await _aio.wait_for(gather_market_intel(held_tickers), timeout=30.0)
+        except Exception as mi_err:
+            logger.warning(f"Market intel gathering failed (continuing without): {mi_err}")
+            market_intel = None
 
         # Build cumulative stats from 30-day history
         all_trades = await get_trades_fn(days_back=30)
