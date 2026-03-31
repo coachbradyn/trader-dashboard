@@ -551,7 +551,7 @@ async def get_conflicts(days_back: int = 7, limit: int = 50):
             "confidence": c.confidence,
             "reasoning": c.reasoning,
             "signals": c.signals,
-            "created_at": c.created_at.isoformat(),
+            "created_at": (c.created_at.isoformat() + "Z") if c.created_at else None,
         }
         for c in conflicts
     ]
@@ -650,7 +650,7 @@ async def get_summaries(limit: int = 10):
             "scope": s.scope,
             "content": s.content,
             "tickers_analyzed": s.tickers_analyzed,
-            "generated_at": s.generated_at.isoformat(),
+            "generated_at": (s.generated_at.isoformat() + "Z") if s.generated_at else None,
         }
         for s in summaries
     ]

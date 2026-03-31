@@ -101,7 +101,7 @@ async def _get_latest_signals_per_indicator(ticker: str, db: AsyncSession) -> li
             "value": a.value,
             "signal": a.signal,
             "timeframe": a.timeframe,
-            "created_at": a.created_at.isoformat(),
+            "created_at": (a.created_at.isoformat() + "Z") if a.created_at else None,
         }
         for a in alerts
     ]
@@ -217,7 +217,7 @@ async def _get_cached_summary(ticker: str, db: AsyncSession) -> dict | None:
 
     return {
         "summary": summary.summary,
-        "generated_at": summary.generated_at.isoformat(),
+        "generated_at": (summary.generated_at.isoformat() + "Z") if summary.generated_at else None,
         "is_stale": is_stale,
     }
 
@@ -276,12 +276,12 @@ async def get_watchlist(db: AsyncSession = Depends(get_db)):
             "id": wt.id,
             "ticker": wt.ticker,
             "notes": wt.notes,
-            "created_at": wt.created_at.isoformat(),
+            "created_at": (wt.created_at.isoformat() + "Z") if wt.created_at else None,
             "latest_signals": signals,
             "strategy_positions": positions,
             "consensus": consensus,
             "cached_summary": cached_summary,
-            "last_alert_at": last_alert_at.isoformat() if last_alert_at else None,
+            "last_alert_at": (last_alert_at.isoformat() + "Z") if last_alert_at else None,
             "signal_events": signal_events,
             "trade_events": trade_events,
         })
@@ -384,7 +384,7 @@ async def get_ticker_detail(ticker: str, db: AsyncSession = Depends(get_db)):
             "value": a.value,
             "signal": a.signal,
             "timeframe": a.timeframe,
-            "created_at": a.created_at.isoformat(),
+            "created_at": (a.created_at.isoformat() + "Z") if a.created_at else None,
         }
         for a in all_alerts
     ]
@@ -416,8 +416,8 @@ async def get_ticker_detail(ticker: str, db: AsyncSession = Depends(get_db)):
             "exit_price": t.exit_price,
             "pnl_pct": t.pnl_percent or 0,
             "exit_reason": t.exit_reason,
-            "entry_time": t.entry_time.isoformat() if t.entry_time else None,
-            "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+            "entry_time": (t.entry_time.isoformat() + "Z") if t.entry_time else None,
+            "exit_time": (t.exit_time.isoformat() + "Z") if t.exit_time else None,
         }
         for t in history_trades
     ]
@@ -548,7 +548,7 @@ async def get_watchlist_fundamentals(db: AsyncSession = Depends(get_db)):
                 "insider_net_90d": getattr(f, "insider_net_90d", None),
                 "beta": getattr(f, "beta", None),
                 "dividend_yield": getattr(f, "dividend_yield", None),
-                "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+                "updated_at": (f.updated_at.isoformat() + "Z") if f.updated_at else None,
             }
         return out
     except Exception:

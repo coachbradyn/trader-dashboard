@@ -1074,7 +1074,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 return {
                     "briefing": cached.content,
                     "open_positions": len(positions),
-                    "generated_at": cached.generated_at.isoformat(),
+                    "generated_at": cached.generated_at.isoformat() + "Z" if cached.generated_at else None,
                     "cached": True,
                 }
 
@@ -1236,7 +1236,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         return {
             "briefing": result,
             "open_positions": len(positions),
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
             "cached": False,
         }
     
@@ -1375,7 +1375,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                                 "answer": content.get("answer", ""),
                                 "trades_in_context": content.get("trades_in_context", 0),
                                 "cached": True,
-                                "cached_at": hit.generated_at.isoformat(),
+                                "cached_at": hit.generated_at.isoformat() + "Z" if hit.generated_at else None,
                             }
                 except Exception:
                     pass
@@ -1466,8 +1466,8 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     "context_type": c.context_type,
                     "content": c.content,
                     "confidence": c.confidence,
-                    "created_at": c.created_at.isoformat() if c.created_at else None,
-                    "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+                    "created_at": (c.created_at.isoformat() + "Z") if c.created_at else None,
+                    "expires_at": (c.expires_at.isoformat() + "Z") if c.expires_at else None,
                 }
                 for c in contexts
             ]
@@ -1521,7 +1521,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     "strategy": s.strategy,
                     "data": s.data,
                     "period_days": s.period_days,
-                    "computed_at": s.computed_at.isoformat() if s.computed_at else None,
+                    "computed_at": (s.computed_at.isoformat() + "Z") if s.computed_at else None,
                 }
                 for s in stats
             ]
@@ -1569,7 +1569,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 "insider_net_90d": getattr(fund, "insider_net_90d", None),
                 "institutional_ownership_pct": getattr(fund, "institutional_ownership_pct", None),
                 "insider_transactions_90d": fund.insider_transactions_90d,
-                "updated_at": fund.updated_at.isoformat() if fund.updated_at else None,
+                "updated_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
             }
         except HTTPException:
             raise
