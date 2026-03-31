@@ -253,6 +253,9 @@ function TickerCard({
         </div>
       )}
 
+      {/* Fundamentals quick line (if available from cached data) */}
+      <FundamentalsLine item={item} />
+
       {/* Recent indicator signals (up to 3) */}
       {item.latest_signals.length > 0 && (
         <div className="space-y-1">
@@ -282,6 +285,46 @@ function TickerCard({
         </div>
       )}
     </button>
+  );
+}
+
+// ── Fundamentals Line ────────────────────────────────────────────────────
+function FundamentalsLine({ item }: { item: WatchlistTickerData }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const f = (item as any).fundamentals as Record<string, unknown> | undefined;
+  if (!f) return null;
+
+  const parts: string[] = [];
+  if (f.pe_ratio != null) parts.push(`PE ${Number(f.pe_ratio).toFixed(1)}`);
+  if (f.analyst_rating) parts.push(String(f.analyst_rating));
+  if (f.market_cap != null) {
+    const mc = Number(f.market_cap);
+    parts.push(mc >= 1e12 ? `$${(mc/1e12).toFixed(1)}T` : mc >= 1e9 ? `$${(mc/1e9).toFixed(1)}B` : `$${(mc/1e6).toFixed(0)}M`);
+  }
+  const earningsDate = f.earnings_date as string | null;
+  if (earningsDate) {
+    const daysUntil = Math.ceil((new Date(earningsDate).getTime() - Date.now()) / 86400000);
+    if (daysUntil >= 0 && daysUntil <= 30) parts.push(`ER ${daysUntil}d`);
+  }
+  const dcfDiff = f.dcf_diff_pct as number | null;
+  if (dcfDiff != null && Math.abs(dcfDiff) > 10) {
+    parts.push(dcfDiff > 0 ? "UNDERVAL" : "OVERVAL");
+  }
+  if (parts.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2">
+      {parts.map((p, i) => (
+        <span key={i} className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+          p === "UNDERVAL" ? "border-profit/30 text-profit bg-profit/5" :
+          p === "OVERVAL" ? "border-loss/30 text-loss bg-loss/5" :
+          p.startsWith("ER ") ? "border-amber-500/30 text-amber-400 bg-amber-500/5" :
+          "border-gray-600/30 text-gray-400 bg-gray-700/20"
+        }`}>
+          {p}
+        </span>
+      ))}
+    </div>
   );
 }
 

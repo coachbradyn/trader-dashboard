@@ -775,3 +775,96 @@ export interface TickerNewsResponse {
   sentiment: NewsSentiment;
   headlines: NewsArticle[];
 }
+
+// ── Henry Context / Stats Types ─────────────────────────────────
+
+export interface HenryContextEntry {
+  id: string;
+  ticker: string | null;
+  strategy: string | null;
+  context_type: string;
+  content: string;
+  confidence: number | null;
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface HenryStatsEntry {
+  id: string;
+  stat_type: string;
+  ticker: string | null;
+  strategy: string | null;
+  data: Record<string, unknown>;
+  period_days: number;
+  computed_at: string;
+}
+
+// ── Scanner Types ──────────────────────────────────────────────
+
+export interface ScannerOpportunity {
+  id: string;
+  ticker: string;
+  direction: string;
+  action_type: string;
+  confidence: number;
+  reasoning: string;
+  suggested_price: number | null;
+  current_price: number | null;
+  trigger_type: string;
+  status: string;
+  expires_at: string | null;
+  created_at: string;
+  thesis?: string;
+  entry_level?: number;
+  stop_level?: number;
+  target_level?: number;
+  position_archetype?: string;
+}
+
+export interface ScannerStats {
+  total_opportunities: number;
+  approved: number;
+  profitable: number;
+  hit_rate: number;
+  avg_confidence: number;
+}
+
+export interface FmpUsage {
+  calls_today: number;
+  limit: number;
+  remaining: number;
+  throttled: boolean;
+}
+
+export interface TickerFundamentals {
+  ticker: string;
+  company_name: string | null;
+  sector: string | null;
+  industry: string | null;
+  market_cap: number | null;
+  description: string | null;
+  company_description: string | null;
+  earnings_date: string | null;
+  earnings_time: string | null;
+  analyst_target_low: number | null;
+  analyst_target_high: number | null;
+  analyst_target_consensus: number | null;
+  analyst_rating: string | null;
+  analyst_count: number | null;
+  eps_estimate_current: number | null;
+  eps_actual_last: number | null;
+  eps_surprise_last: number | null;
+  pe_ratio: number | null;
+  forward_pe: number | null;
+  beta: number | null;
+  profit_margin: number | null;
+  roe: number | null;
+  debt_to_equity: number | null;
+  dcf_value: number | null;
+  dcf_diff_pct: number | null;
+  dividend_yield: number | null;
+  short_interest_pct: number | null;
+  insider_net_90d: number | null;
+  institutional_ownership_pct: number | null;
+  updated_at: string;
+}

@@ -345,6 +345,29 @@ async def _run_auto_research():
         logger.error(f"Auto-research failed: {e}")
 
 
+async def _run_scanner():
+    """Run the FMP-powered stock scanner."""
+    logger.info("Running FMP scanner...")
+    try:
+        from app.services.scanner_service import run_scanner
+        opportunities = await run_scanner()
+        logger.info(f"Scanner complete: {len(opportunities)} opportunities found")
+    except Exception as e:
+        logger.error(f"Scanner run failed: {e}")
+
+
+async def _run_intraday_monitor():
+    """Run intraday entry-level and position monitoring."""
+    try:
+        from app.services.intraday_monitor import monitor_entry_levels, monitor_positions
+        entry_alerts = await monitor_entry_levels()
+        position_alerts = await monitor_positions()
+        if entry_alerts or position_alerts:
+            logger.info(f"Intraday monitor: {entry_alerts} entry alerts, {position_alerts} position alerts")
+    except Exception as e:
+        logger.error(f"Intraday monitor failed: {e}")
+
+
 async def _cleanup_expired_context():
     """Delete expired HenryContext rows and old non-outcome rows."""
     logger.info("Cleaning up expired Henry context...")
@@ -472,13 +495,48 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # FMP Scanner: pre-market (8:30 AM), midday (12:00 PM), after close (4:30 PM) M-F
+    scheduler.add_job(
+        _run_scanner,
+        CronTrigger(hour=8, minute=30, timezone=ET, day_of_week="mon-fri"),
+        id="scanner_premarket",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_scanner,
+        CronTrigger(hour=12, minute=0, timezone=ET, day_of_week="mon-fri"),
+        id="scanner_midday",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_scanner,
+        CronTrigger(hour=16, minute=30, timezone=ET, day_of_week="mon-fri"),
+        id="scanner_afterclose",
+        replace_existing=True,
+    )
+
+    # Intraday monitor: every 5 minutes during market hours (9:30 AM - 4:00 PM ET, M-F)
+    scheduler.add_job(
+        _run_intraday_monitor,
+        CronTrigger(
+            hour="9-15",
+            minute="*/5",
+            timezone=ET,
+            day_of_week="mon-fri",
+        ),
+        id="intraday_monitor",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "
         "screener (every 30m), thresholds (hourly M-F 10AM-3PM), "
         "portfolio review (daily 10:00 AM), "
         "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight), "
-        "fundamentals refresh (daily 5:00 PM), auto-research (daily 9:00 AM)"
+        "fundamentals refresh (daily 5:00 PM), auto-research (daily 9:00 AM), "
+        "FMP scanner (8:30 AM, 12:00 PM, 4:30 PM M-F), "
+        "intraday monitor (every 5m 9:30 AM-4:00 PM M-F)"
     )
 
 

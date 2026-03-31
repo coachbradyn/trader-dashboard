@@ -1370,3 +1370,148 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    # ─── HENRY CONTEXT & STATS ENDPOINTS ──────────────────────────────────
+
+    @app.get("/api/ai/context")
+    async def get_henry_context(ticker: str = None, context_type: str = None, limit: int = 50):
+        """Return Henry's context entries, optionally filtered by ticker or type."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                query = (
+                    select(HenryContext)
+                    .where(
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow())
+                    )
+                    .order_by(HenryContext.created_at.desc())
+                    .limit(limit)
+                )
+                if ticker:
+                    query = query.where(HenryContext.ticker == ticker.upper())
+                if context_type:
+                    query = query.where(HenryContext.context_type == context_type)
+
+                result = await db.execute(query)
+                contexts = result.scalars().all()
+
+            return [
+                {
+                    "id": c.id,
+                    "ticker": c.ticker,
+                    "strategy": c.strategy,
+                    "context_type": c.context_type,
+                    "content": c.content,
+                    "confidence": c.confidence,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                    "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+                }
+                for c in contexts
+            ]
+        except Exception as e:
+            return []
+
+    @app.delete("/api/ai/context/{context_id}")
+    async def delete_henry_context(context_id: str):
+        """Delete a specific henry_context entry."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(HenryContext).where(HenryContext.id == context_id)
+                )
+                ctx = result.scalar_one_or_none()
+                if not ctx:
+                    raise HTTPException(404, "Context entry not found")
+                await db.delete(ctx)
+                await db.commit()
+            return {"deleted": context_id}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    @app.get("/api/ai/stats")
+    async def get_henry_stats():
+        """Return Henry's computed stats."""
+        try:
+            from app.database import async_session
+            from app.models import HenryStats
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(HenryStats)
+                    .order_by(HenryStats.computed_at.desc())
+                    .limit(50)
+                )
+                stats = result.scalars().all()
+
+            return [
+                {
+                    "id": s.id,
+                    "stat_type": s.stat_type,
+                    "ticker": s.ticker,
+                    "strategy": s.strategy,
+                    "data": s.data,
+                    "period_days": s.period_days,
+                    "computed_at": s.computed_at.isoformat() if s.computed_at else None,
+                }
+                for s in stats
+            ]
+        except Exception:
+            return []
+
+    @app.get("/api/ai/fundamentals/{ticker}")
+    async def get_ticker_fundamentals(ticker: str):
+        """Return cached fundamentals for a ticker."""
+        try:
+            from app.services.fmp_service import get_fundamentals
+            fund = await get_fundamentals(ticker.upper())
+            if not fund:
+                raise HTTPException(404, f"No fundamentals for {ticker}")
+            return {
+                "ticker": fund.ticker,
+                "company_name": fund.company_name,
+                "sector": fund.sector,
+                "industry": fund.industry,
+                "market_cap": fund.market_cap,
+                "description": fund.description,
+                "company_description": getattr(fund, "company_description", None),
+                "earnings_date": fund.earnings_date.isoformat() if fund.earnings_date else None,
+                "earnings_time": fund.earnings_time,
+                "analyst_target_low": fund.analyst_target_low,
+                "analyst_target_high": fund.analyst_target_high,
+                "analyst_target_consensus": fund.analyst_target_consensus,
+                "analyst_rating": fund.analyst_rating,
+                "analyst_count": fund.analyst_count,
+                "eps_estimate_current": fund.eps_estimate_current,
+                "eps_actual_last": fund.eps_actual_last,
+                "eps_surprise_last": fund.eps_surprise_last,
+                "revenue_estimate_current": fund.revenue_estimate_current,
+                "revenue_actual_last": fund.revenue_actual_last,
+                "pe_ratio": fund.pe_ratio,
+                "forward_pe": getattr(fund, "forward_pe", None),
+                "beta": getattr(fund, "beta", None),
+                "profit_margin": getattr(fund, "profit_margin", None),
+                "roe": getattr(fund, "roe", None),
+                "debt_to_equity": getattr(fund, "debt_to_equity", None),
+                "dcf_value": getattr(fund, "dcf_value", None),
+                "dcf_diff_pct": getattr(fund, "dcf_diff_pct", None),
+                "dividend_yield": getattr(fund, "dividend_yield", None),
+                "short_interest_pct": fund.short_interest_pct,
+                "insider_net_90d": getattr(fund, "insider_net_90d", None),
+                "institutional_ownership_pct": getattr(fund, "institutional_ownership_pct", None),
+                "insider_transactions_90d": fund.insider_transactions_90d,
+                "updated_at": fund.updated_at.isoformat() if fund.updated_at else None,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, str(e))

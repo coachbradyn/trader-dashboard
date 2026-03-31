@@ -323,6 +323,32 @@ export const api = {
       body: JSON.stringify(params),
     }),
 
+  // Henry Context / Memory
+  getHenryContext: (ticker?: string) =>
+    fetchApi<import("./types").HenryContextEntry[]>("/ai/context" + (ticker ? "?ticker=" + ticker : "")),
+  getHenryStats: () =>
+    fetchApi<import("./types").HenryStatsEntry[]>("/ai/stats"),
+
+  // Scanner
+  getScannerResults: () =>
+    fetchApi<import("./types").ScannerOpportunity[]>("/scanner/results"),
+  getScannerHistory: () =>
+    fetchApi<import("./types").ScannerOpportunity[]>("/scanner/history"),
+  runScanner: () =>
+    fetchApi<{ status: string }>("/scanner/run", { method: "POST" }),
+  getScannerCriteria: () =>
+    fetchApi<Record<string, unknown>>("/scanner/criteria"),
+  updateScannerCriteria: (criteria: Record<string, unknown>) =>
+    fetchApi<Record<string, unknown>>("/scanner/criteria", { method: "PUT", body: JSON.stringify(criteria) }),
+  getScannerStats: () =>
+    fetchApi<import("./types").ScannerStats>("/scanner/stats"),
+  getFmpUsage: () =>
+    fetchApi<import("./types").FmpUsage>("/scanner/fmp-usage"),
+  getTickerFundamentals: (ticker: string) =>
+    fetchApi<import("./types").TickerFundamentals>("/scanner/fundamentals/" + ticker),
+  getWatchlistFundamentals: () =>
+    fetchApi<import("./types").TickerFundamentals[]>("/scanner/fundamentals/watchlist"),
+
   // News
   getTickerNews: (ticker: string) =>
     fetchApi<import("./types").TickerNewsResponse>("/news/ticker/" + ticker),

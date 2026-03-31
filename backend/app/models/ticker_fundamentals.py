@@ -53,6 +53,20 @@ class TickerFundamentals(Base):
     # Insider activity
     insider_transactions_90d: Mapped[str | None] = mapped_column(Text)
 
+    # Extended fundamentals (added in expansion)
+    beta: Mapped[float | None] = mapped_column(Float)
+    forward_pe: Mapped[float | None] = mapped_column(Float)
+    profit_margin: Mapped[float | None] = mapped_column(Float)
+    roe: Mapped[float | None] = mapped_column(Float)
+    debt_to_equity: Mapped[float | None] = mapped_column(Float)
+    revenue_growth_yoy: Mapped[float | None] = mapped_column(Float)
+    dcf_value: Mapped[float | None] = mapped_column(Float)
+    dcf_diff_pct: Mapped[float | None] = mapped_column(Float)
+    dividend_yield: Mapped[float | None] = mapped_column(Float)
+    insider_net_90d: Mapped[float | None] = mapped_column(Float)
+    institutional_ownership_pct: Mapped[float | None] = mapped_column(Float)
+    company_description: Mapped[str | None] = mapped_column(Text)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     __table_args__ = (
