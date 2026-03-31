@@ -65,14 +65,14 @@ function ScannerControls({
       {/* Criteria summary */}
       {criteria && (
         <div className="flex items-center gap-3 text-[10px] text-gray-500 font-mono">
-          {criteria.min_market_cap != null && (
-            <span>Cap: ${((criteria.min_market_cap as number) / 1e9).toFixed(0)}B+</span>
+          {criteria.min_market_cap != null && Number(criteria.min_market_cap) > 0 && (
+            <span>Cap: ${(Number(criteria.min_market_cap) / 1e9).toFixed(0)}B+</span>
           )}
-          {criteria.min_volume != null && (
-            <span>Vol: {((criteria.min_volume as number) / 1e6).toFixed(0)}M+</span>
+          {criteria.min_volume != null && Number(criteria.min_volume) > 0 && (
+            <span>Vol: {(Number(criteria.min_volume) / 1000).toFixed(0)}K+</span>
           )}
-          {criteria.price_min != null && criteria.price_max != null && (
-            <span>${criteria.price_min as number}-${criteria.price_max as number}</span>
+          {criteria.min_price != null && Number(criteria.min_price) > 0 && (
+            <span>Price: ${Number(criteria.min_price)}+</span>
           )}
         </div>
       )}
@@ -82,9 +82,9 @@ function ScannerControls({
       {/* Stats */}
       {stats && (
         <div className="flex items-center gap-3 text-[10px] text-gray-500 font-mono">
-          <span>Total: {stats.total_opportunities}</span>
-          <span>Hit rate: <span className={stats.hit_rate >= 50 ? "text-profit" : "text-loss"}>{stats.hit_rate.toFixed(0)}%</span></span>
-          <span>Avg conf: {stats.avg_confidence.toFixed(1)}/10</span>
+          <span>Total: {stats.total_opportunities ?? 0}</span>
+          <span>Hit rate: <span className={(stats.hit_rate ?? 0) >= 50 ? "text-profit" : "text-loss"}>{(stats.hit_rate ?? 0).toFixed(0)}%</span></span>
+          <span>Avg conf: {(stats.avg_confidence ?? 0).toFixed(1)}/10</span>
         </div>
       )}
 
@@ -113,11 +113,12 @@ function ScannerControls({
 function OpportunityCard({
   opp,
   onAddWatchlist,
+  onViewDetail,
 }: {
   opp: ScannerOpportunity;
   onAddWatchlist: (ticker: string) => void;
+  onViewDetail: (ticker: string) => void;
 }) {
-  const router = useRouter();
   const badge = archetypeBadge(opp.position_archetype);
   const [expanded, setExpanded] = useState(false);
 
@@ -211,7 +212,7 @@ function OpportunityCard({
           </Button>
           <Button
             size="sm"
-            onClick={() => router.push(`/screener/${opp.ticker}`)}
+            onClick={() => onViewDetail(opp.ticker)}
             className="text-[10px] h-7 bg-ai-blue/15 text-ai-blue border border-ai-blue/30 hover:bg-ai-blue/25"
           >
             View Detail
@@ -268,6 +269,7 @@ function ScannerHistory({ history }: { history: ScannerOpportunity[] }) {
 // ── Main Page ──────────────────────────────────────────────────────
 
 export default function ScannerPage() {
+  const router = useRouter();
   const [results, setResults] = useState<ScannerOpportunity[]>([]);
   const [history, setHistory] = useState<ScannerOpportunity[]>([]);
   const [criteria, setCriteria] = useState<Record<string, unknown> | null>(null);
@@ -376,6 +378,7 @@ export default function ScannerPage() {
               key={opp.id}
               opp={opp}
               onAddWatchlist={handleAddWatchlist}
+              onViewDetail={(ticker) => router.push(`/screener/${ticker}`)}
             />
           ))}
         </div>
