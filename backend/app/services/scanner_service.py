@@ -54,7 +54,7 @@ DEFAULT_SCANNER_CRITERIA = {
     # ── Technical filter rules (evaluated in sequence, all must pass) ──
     "technical_rules": [
         {
-            "enabled": True,
+            "enabled": False,
             "indicator": "rsi",
             "period": 14,
             "timeframe": "daily",
@@ -64,7 +64,7 @@ DEFAULT_SCANNER_CRITERIA = {
             "label": "Oversold RSI"
         },
         {
-            "enabled": True,
+            "enabled": False,
             "indicator": "price",
             "period": 0,
             "timeframe": "daily",
@@ -565,9 +565,13 @@ async def run_scanner() -> list[dict]:
 
     # 2. Build screener params and call FMP
     screener_params = _build_screener_params(screener_cfg)
+    logger.info(f"Scanner: calling FMP screener with params: {screener_params}")
     screener_results = await run_screener(screener_params)
-    if not screener_results or not isinstance(screener_results, list):
-        logger.info("Scanner: no screener results")
+    if not screener_results:
+        logger.warning("Scanner: FMP screener returned None/empty — check FMP_API_KEY and API status")
+        return []
+    if not isinstance(screener_results, list):
+        logger.warning(f"Scanner: FMP screener returned unexpected type: {type(screener_results)}")
         return []
 
     logger.info(f"Scanner: {len(screener_results)} stocks from screener")

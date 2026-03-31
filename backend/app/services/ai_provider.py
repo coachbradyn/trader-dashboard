@@ -169,7 +169,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                     if block.type == "text":
                         text_parts.append(block.text)
 
-                result_text = "\n".join(text_parts) if text_parts else None
+                result_text = "\n".join(text_parts) if text_parts else ""
 
                 usage = response.usage
                 return (

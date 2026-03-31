@@ -761,15 +761,30 @@ Keep it under 600 words."""
 
     # Use async call that includes strategy descriptions + memory
     from app.services.ai_provider import call_ai
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     system = await _build_system_prompt(scope="briefing")
-    result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2500)
+    try:
+        result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2500)
+    except Exception as e:
+        _logger.error(f"Briefing AI call failed: {e}", exc_info=True)
+        result = None
+
+    if not result or result == "AI analysis temporarily unavailable.":
+        # Retry once with Claude directly (skip Gemini routing)
+        _logger.info("Briefing: retrying with Claude directly")
+        try:
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2500)
+        except Exception as e:
+            _logger.error(f"Briefing retry failed: {e}")
+            result = "Briefing generation failed. Please try refreshing."
 
     # Extract and save key observations from the briefing (non-blocking, cheap)
     import asyncio
-    asyncio.create_task(extract_and_save_memories(result, source="briefing"))
-
-    # Extract and save context notes from the briefing (non-blocking)
-    asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
+    if result and not result.startswith("Briefing generation failed"):
+        asyncio.create_task(extract_and_save_memories(result, source="briefing"))
+        asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
 
     return result
 

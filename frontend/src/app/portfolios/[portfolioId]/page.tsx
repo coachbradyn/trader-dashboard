@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
 import { formatCurrency, formatPercent, formatDate, formatTimeAgo, formatSource, formatExitReason, pnlColor } from "@/lib/formatters";
+import { renderMarkdown } from "@/lib/markdown";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -386,7 +387,27 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
   const [insight, setInsight] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [asked, setAsked] = useState(false);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
   const { data: stats } = usePolling(() => api.getActionStats(), 60000);
+
+  // Load cached health check on mount
+  useEffect(() => {
+    try {
+      const cached = sessionStorage.getItem(`henry-health-${portfolioId}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.answer && parsed.at) {
+          // Only use if less than 4 hours old
+          const age = Date.now() - new Date(parsed.at).getTime();
+          if (age < 4 * 3600 * 1000) {
+            setInsight(parsed.answer);
+            setCachedAt(parsed.at);
+            setAsked(true);
+          }
+        }
+      }
+    } catch {}
+  }, [portfolioId]);
 
   const askHenry = async () => {
     setLoading(true);
@@ -397,6 +418,10 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
         portfolioId
       );
       setInsight(result.answer);
+      const now = new Date().toISOString();
+      setCachedAt(now);
+      // Cache in sessionStorage
+      try { sessionStorage.setItem(`henry-health-${portfolioId}`, JSON.stringify({ answer: result.answer, at: now })); } catch {}
     } catch {
       setInsight("Henry is unavailable right now. Check back later.");
     } finally {
@@ -412,11 +437,14 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
             <span className="w-2 h-2 rounded-full bg-ai-blue animate-pulse" />
             Henry&apos;s Insights
           </h3>
-          {stats && stats.pending_count > 0 && (
-            <Badge className="text-[9px] bg-ai-blue/15 text-ai-blue">
-              {stats.pending_count} pending action{stats.pending_count > 1 ? "s" : ""}
-            </Badge>
-          )}
+          <div className="flex items-center gap-2">
+            {cachedAt && <span className="text-[9px] text-gray-600 font-mono">{formatTimeAgo(cachedAt)}</span>}
+            {stats && stats.pending_count > 0 && (
+              <Badge className="text-[9px] bg-ai-blue/15 text-ai-blue">
+                {stats.pending_count} pending action{stats.pending_count > 1 ? "s" : ""}
+              </Badge>
+            )}
+          </div>
         </div>
 
         {stats && (
@@ -440,9 +468,19 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
             <div className="h-3 w-2/3 rounded bg-ai-blue/10 animate-pulse" />
           </div>
         ) : insight ? (
-          <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap" style={FONT_OUTFIT}>
-            {insight}
-          </div>
+          <>
+            <div
+              className="ai-prose text-sm text-gray-300 leading-relaxed"
+              style={FONT_OUTFIT}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(insight) }}
+            />
+            {cachedAt && (
+              <button onClick={askHenry} disabled={loading}
+                className="mt-3 text-[10px] text-ai-blue/60 hover:text-ai-blue transition disabled:opacity-50">
+                Refresh analysis
+              </button>
+            )}
+          </>
         ) : null}
       </CardContent>
     </Card>
