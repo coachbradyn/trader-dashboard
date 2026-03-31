@@ -356,6 +356,29 @@ async def _run_scanner():
         logger.error(f"Scanner run failed: {e}")
 
 
+async def _run_autonomous_trading():
+    """Henry's autonomous trading loop — scans for and executes trades in the AI portfolio."""
+    logger.info("Running autonomous trading...")
+    try:
+        from app.services.autonomous_trading import run_autonomous_trading
+        result = await run_autonomous_trading()
+        total = result.get("scanner_trades", 0) + result.get("pattern_trades", 0)
+        logger.info(f"Autonomous trading complete: {total} trades ({result})")
+    except Exception as e:
+        logger.error(f"Autonomous trading failed: {e}")
+
+
+async def _check_autonomous_exits():
+    """Check AI portfolio positions for autonomous exit signals."""
+    try:
+        from app.services.autonomous_trading import check_autonomous_exits
+        closed = await check_autonomous_exits()
+        if closed:
+            logger.info(f"Autonomous exits: {closed} positions closed")
+    except Exception as e:
+        logger.error(f"Autonomous exit check failed: {e}")
+
+
 async def _run_intraday_monitor():
     """Run intraday entry-level and position monitoring."""
     try:
@@ -528,6 +551,22 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Henry autonomous trading: scan + pattern detect + execute at 10:15 AM and 1:15 PM ET
+    scheduler.add_job(
+        _run_autonomous_trading,
+        CronTrigger(hour="10,13", minute=15, timezone=ET, day_of_week="mon-fri"),
+        id="autonomous_trading",
+        replace_existing=True,
+    )
+
+    # Autonomous exit monitoring: every 30 minutes during market hours
+    scheduler.add_job(
+        _check_autonomous_exits,
+        CronTrigger(hour="10-15", minute="0,30", timezone=ET, day_of_week="mon-fri"),
+        id="autonomous_exits",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "
@@ -536,7 +575,8 @@ def start_scheduler():
         "henry stats (every 2h M-F 10AM-4PM), context cleanup (daily midnight), "
         "fundamentals refresh (Monday 5:00 PM), auto-research (daily 9:00 AM), "
         "FMP scanner (8:30 AM, 12:00 PM, 4:30 PM M-F), "
-        "intraday monitor (every 5m 9:30 AM-4:00 PM M-F)"
+        "intraday monitor (every 5m 9:30 AM-4:00 PM M-F), "
+        "autonomous trading (10:15 AM, 1:15 PM M-F), autonomous exits (every 30m M-F)"
     )
 
 
