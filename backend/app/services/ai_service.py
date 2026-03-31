@@ -762,26 +762,55 @@ Keep it under 600 words."""
     # Use async call that includes strategy descriptions + memory
     from app.services.ai_provider import call_ai
     import logging as _log
+    import asyncio
     _logger = _log.getLogger(__name__)
 
     system = await _build_system_prompt(scope="briefing")
-    try:
-        result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2500)
-    except Exception as e:
-        _logger.error(f"Briefing AI call failed: {e}", exc_info=True)
-        result = None
 
-    if not result or result == "AI analysis temporarily unavailable.":
-        # Retry once with Claude directly (skip Gemini routing)
-        _logger.info("Briefing: retrying with Claude directly")
+    # Attempt 1: Full briefing via primary provider (Gemini for speed, 4000 tokens)
+    result = None
+    try:
+        _logger.info("Briefing: attempt 1 (primary provider, 4000 tokens)")
+        result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=4000)
+    except Exception as e:
+        _logger.error(f"Briefing attempt 1 failed: {e}", exc_info=True)
+
+    # Attempt 2: Full briefing via Claude directly (if primary failed)
+    if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2500)
+            _logger.info("Briefing: attempt 2 (Claude direct, 4000 tokens)")
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=4000)
         except Exception as e:
-            _logger.error(f"Briefing retry failed: {e}")
-            result = "Briefing generation failed. Please try refreshing."
+            _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
+
+    # Attempt 3: Simplified briefing with shorter prompt (if full briefing keeps failing)
+    if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
+        try:
+            _logger.info("Briefing: attempt 3 (simplified prompt)")
+            simple_prompt = f"""Generate a brief morning trading update.
+
+OPEN POSITIONS:
+{positions_text}
+
+MANUAL HOLDINGS:
+{holdings_text}
+
+YESTERDAY:
+{yesterday_text}
+
+Give a 3-section briefing:
+1. **Portfolio Status** — current P&L on each holding, key levels
+2. **Yesterday's Takeaway** — what happened, one lesson
+3. **Today's Plan** — what to watch, any actions to consider
+
+Keep it under 300 words. Be specific with numbers."""
+            simple_system = BASE_SYSTEM_PROMPT
+            result = await call_ai(simple_system, simple_prompt, function_name="signal_evaluation", max_tokens=2000)
+        except Exception as e:
+            _logger.error(f"Briefing attempt 3 failed: {e}")
+            result = "Briefing generation failed after 3 attempts. Check that your AI API keys (ANTHROPIC_API_KEY or GEMINI_API_KEY) are configured and working."
 
     # Extract and save key observations from the briefing (non-blocking, cheap)
-    import asyncio
     if result and not result.startswith("Briefing generation failed"):
         asyncio.create_task(extract_and_save_memories(result, source="briefing"))
         asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))

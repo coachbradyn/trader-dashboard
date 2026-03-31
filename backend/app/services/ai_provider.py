@@ -131,7 +131,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                     max_tokens=max_tokens,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
-                    timeout=60.0 if web_search else 45.0,
+                    timeout=90.0 if web_search else 60.0,
                 )
                 if tools:
                     kwargs["tools"] = tools
@@ -203,7 +203,7 @@ async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
     model_name = "gemini-2.0-flash"
 
     try:
-        # Run in thread pool since genai may be sync
+        # Run in thread pool since genai may be sync, with timeout protection
         def _sync_call():
             client = genai.Client(api_key=settings.gemini_api_key)
             response = client.models.generate_content(
@@ -224,9 +224,14 @@ async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
                 out_tok = getattr(response.usage_metadata, 'candidates_token_count', None)
             return text, in_tok, out_tok
 
-        text, in_tok, out_tok = await asyncio.to_thread(_sync_call)
+        text, in_tok, out_tok = await asyncio.wait_for(
+            asyncio.to_thread(_sync_call), timeout=90.0
+        )
         return (text, model_name, in_tok, out_tok)
 
+    except asyncio.TimeoutError:
+        logger.error("Gemini call timed out (90s)")
+        return (None, "gemini-timeout", None, None)
     except Exception as e:
         logger.error(f"Gemini call failed: {e}")
         return (None, "gemini-error", None, None)
