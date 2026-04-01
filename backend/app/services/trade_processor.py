@@ -155,6 +155,11 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         if link.direction_filter and link.direction_filter != payload.dir:
             continue
 
+        # Skip the AI-managed portfolio — Henry evaluates signals independently
+        # and creates his own simulated trades via evaluate_signal_for_ai_portfolio
+        if link.portfolio.is_ai_managed:
+            continue
+
         # Create portfolio_trade entry
         pt = PortfolioTrade(portfolio_id=link.portfolio_id, trade_id=trade.id)
         db.add(pt)

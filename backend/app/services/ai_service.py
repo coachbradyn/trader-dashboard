@@ -1618,12 +1618,14 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
         enhanced_question = f"""The user is asking about your trading decisions and activity.
 
+IMPORTANT: You are an AUTONOMOUS trader. You make your own buy/sell decisions for the AI portfolio without needing user approval. When you evaluate a signal and decide BUY, the trade executes immediately. You also run scanner profiles to find your own opportunities. You are NOT a recommendation engine that waits for approval — you are an independent trader.
+
 YOUR RECENT ACTIVITY LOG:
 {activity_text}
 
 USER QUESTION: {req.question}
 
-Answer based on your actual activity and decisions. Be specific about which trades you made, why, and what you're monitoring. If you haven't taken action, explain what you're watching for."""
+Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring or scanning for."""
 
         all_trades = await get_trades_fn(days_back=7)
         positions = await get_positions_fn()

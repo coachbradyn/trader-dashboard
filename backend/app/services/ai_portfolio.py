@@ -352,7 +352,9 @@ async def evaluate_signal_for_ai_portfolio(
             peak = snap_result.scalar() or portfolio.initial_capital
             current_dd = ((peak - equity) / peak * 100) if peak > 0 else 0
 
-            prompt = f"""You are Henry, managing an AI paper portfolio. Your goal is to MAXIMIZE RISK-ADJUSTED RETURNS — grow equity while protecting against drawdowns.
+            prompt = f"""You are Henry, managing an AI paper portfolio AUTONOMOUSLY. You make your own trading decisions — you do NOT need user approval. Your goal is to MAXIMIZE RISK-ADJUSTED RETURNS — grow equity while protecting against drawdowns.
+
+When you decide BUY, the trade executes immediately. When you decide SKIP, the signal is rejected. You are fully autonomous.
 
 DECISION FRAMEWORK:
 1. ONLY take trades where the expected reward clearly exceeds the risk (aim for {rr_ratio}:1+ reward/risk)
@@ -651,7 +653,7 @@ async def scheduled_ai_portfolio_review() -> None:
 
             max_dd = portfolio.max_drawdown_pct or 20.0
 
-            prompt = f"""You are Henry, reviewing your AI paper portfolio. Your objective: MAXIMIZE RISK-ADJUSTED RETURNS.
+            prompt = f"""You are Henry, reviewing your AI paper portfolio. You trade AUTONOMOUSLY — you do not need user approval. Your CLOSE and TRIM decisions execute immediately. Your objective: MAXIMIZE RISK-ADJUSTED RETURNS.
 
 REVIEW RULES:
 1. CLOSE any position that has lost more than the original stop distance (risk exceeded)
