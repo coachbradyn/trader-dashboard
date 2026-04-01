@@ -264,10 +264,16 @@ class NewsService:
 
                 if ticker:
                     # Filter by ticker in the JSON tickers array
-                    # Use a text-based contains check for JSON compatibility
-                    from sqlalchemy import cast, String as SAString
+                    # Use delimited contains to avoid substring matches
+                    # e.g. searching "A" shouldn't match articles tagged "AAPL"
+                    from sqlalchemy import cast, String as SAString, or_
+                    ticker_upper = ticker.upper()
                     query = query.where(
-                        cast(NewsCache.tickers, SAString).contains(ticker)
+                        or_(
+                            # Exact match patterns in JSON array string representation
+                            cast(NewsCache.tickers, SAString).contains(f'"{ticker_upper}"'),
+                            cast(NewsCache.tickers, SAString).contains(f"'{ticker_upper}'"),
+                        )
                     )
 
                 result = await db.execute(query)
