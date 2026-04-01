@@ -313,6 +313,15 @@ export default function WatchlistPage() {
 
   const sortedWatchlist = useMemo(() => sortWatchlist(watchlist, sortMode), [watchlist, sortMode]);
 
+  // Pagination
+  const PAGE_SIZE = 10;
+  const [page, setPage] = useState(0);
+  const totalPages = Math.ceil(sortedWatchlist.length / PAGE_SIZE);
+  const pagedWatchlist = useMemo(() => sortedWatchlist.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [sortedWatchlist, page]);
+
+  // Reset page when sort changes or watchlist changes
+  useEffect(() => { setPage(0); }, [sortMode, watchlist.length]);
+
   const handleAdd = async () => {
     if (!addInput.trim() || adding) return;
     setAdding(true);
@@ -454,13 +463,49 @@ export default function WatchlistPage() {
             <span className="w-4" />
           </div>
 
-          {sortedWatchlist.map((item) => (
+          {pagedWatchlist.map((item) => (
             <TickerRow
               key={item.id}
               item={item}
               onClick={() => router.push(`/screener/${item.ticker}`)}
             />
           ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading && totalPages > 1 && (
+        <div className="flex items-center justify-between mt-4">
+          <span className="text-[10px] text-gray-500 font-mono">
+            {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, sortedWatchlist.length)} of {sortedWatchlist.length}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="px-3 py-1 rounded text-[10px] font-mono border border-border/40 text-gray-400 hover:text-white hover:border-border disabled:opacity-30 disabled:hover:text-gray-400 transition"
+            >
+              Prev
+            </button>
+            {Array.from({ length: totalPages }, (_, i) => (
+              <button
+                key={i}
+                onClick={() => setPage(i)}
+                className={`w-7 h-7 rounded text-[10px] font-mono transition ${
+                  page === i ? "bg-ai-blue/20 text-ai-blue border border-ai-blue/30" : "text-gray-500 hover:text-white"
+                }`}
+              >
+                {i + 1}
+              </button>
+            ))}
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              className="px-3 py-1 rounded text-[10px] font-mono border border-border/40 text-gray-400 hover:text-white hover:border-border disabled:opacity-30 disabled:hover:text-gray-400 transition"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
     </div>
