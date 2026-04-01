@@ -1596,3 +1596,36 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             raise
         except Exception as e:
             raise HTTPException(500, str(e))
+
+    # ─── HENRY ACTIVITY LOG ──────────────────────────────────────────
+
+    @app.get("/api/ai/activity")
+    async def get_henry_activity(limit: int = 50, ticker: str = None):
+        """Get Henry's activity log — what he's been doing."""
+        from app.services.henry_activity import get_activity_log
+        return await get_activity_log(limit=limit, ticker=ticker)
+
+    @app.post("/api/ai/chat")
+    async def chat_with_henry(req: QueryRequest):
+        """Chat with Henry about his decisions and activity."""
+        from app.services.henry_activity import get_activity_log
+
+        recent_activity = await get_activity_log(limit=20)
+        activity_text = "\n".join(
+            f"  [{a['activity_label']}] {a['message']} ({a.get('created_at', '')})"
+            for a in recent_activity
+        ) if recent_activity else "No recent activity."
+
+        enhanced_question = f"""The user is asking about your trading decisions and activity.
+
+YOUR RECENT ACTIVITY LOG:
+{activity_text}
+
+USER QUESTION: {req.question}
+
+Answer based on your actual activity and decisions. Be specific about which trades you made, why, and what you're monitoring. If you haven't taken action, explain what you're watching for."""
+
+        all_trades = await get_trades_fn(days_back=7)
+        positions = await get_positions_fn()
+        result = await query_trades(enhanced_question, all_trades, positions)
+        return {"answer": result, "trades_in_context": len(all_trades)}

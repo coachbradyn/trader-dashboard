@@ -326,6 +326,18 @@ export const api = {
     }),
 
   // Henry Context / Memory
+  getHenryActivity: (limit?: number, ticker?: string) => {
+    const sp = new URLSearchParams();
+    if (limit) sp.set("limit", String(limit));
+    if (ticker) sp.set("ticker", ticker);
+    const qs = sp.toString();
+    return fetchApi<Array<{ id: string; message: string; activity_type: string; activity_label: string; ticker: string | null; created_at: string }>>("/ai/activity" + (qs ? "?" + qs : ""));
+  },
+  chatWithHenry: (question: string) =>
+    fetchApi<{ answer: string; trades_in_context: number }>("/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
   getHenryContext: (ticker?: string) =>
     fetchApi<import("./types").HenryContextEntry[]>("/ai/context" + (ticker ? "?ticker=" + ticker : "")),
   getHenryStats: () =>

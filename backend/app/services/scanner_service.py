@@ -763,15 +763,17 @@ async def _evaluate_technical_rules(
     return list(candidates.values())
 
 
-async def run_scanner(profile_criteria: dict | None = None, profile_name: str | None = None) -> list[dict]:
+async def run_scanner(profile_criteria: dict | None = None, profile_name: str | None = None, skip_actions: bool = False) -> list[dict]:
     """
     Full scanner pipeline. Optionally accepts criteria from a specific profile.
+    When skip_actions=True, returns opportunities without creating PortfolioAction records
+    (used by autonomous trading which handles execution itself).
     1. Build screener params from criteria and call FMP
     2. Cascading technical rule evaluation
     3. Volume surge filter (if enabled)
     4. Enrich with cached fundamentals
     5. AI analysis
-    6. Create OPPORTUNITY actions
+    6. Create OPPORTUNITY actions (unless skip_actions)
     """
     from app.services.fmp_service import (
         run_screener, get_technical_snapshot, get_fundamentals,
@@ -903,7 +905,11 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
         logger.info("Scanner: no opportunities after AI analysis")
         return []
 
-    # 7. Create PortfolioAction entries
+    # 7. Create PortfolioAction entries (unless called from autonomous trading)
+    if skip_actions:
+        logger.info(f"Scanner: skip_actions=True, returning {len(opportunities)} opportunities for autonomous execution")
+        return opportunities
+
     created_actions = await _create_opportunity_actions(opportunities)
 
     # Log final stats

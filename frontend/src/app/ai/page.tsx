@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
 import { formatCurrency, formatPercent, formatTimeAgo, formatDate, pnlColor } from "@/lib/formatters";
+import { renderMarkdown } from "@/lib/markdown";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -436,6 +437,141 @@ function MemoryTab() {
 
 // ── Tab definitions ────────────────────────────────────────────────
 
+// ── Henry Activity Log ──────────────────────────────────────────────
+
+function HenryActivityLog() {
+  const [activity, setActivity] = useState<Array<{ id: string; message: string; activity_type: string; activity_label: string; ticker: string | null; created_at: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<Array<{ role: "user" | "henry"; text: string; at: string }>>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const fetchActivity = useCallback(async () => {
+    try {
+      const data = await api.getHenryActivity(50);
+      setActivity(data);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchActivity().finally(() => setLoading(false));
+    const interval = setInterval(fetchActivity, 15000); // Poll every 15s
+    return () => clearInterval(interval);
+  }, [fetchActivity]);
+
+  const handleChat = async () => {
+    const q = chatInput.trim();
+    if (!q || chatLoading) return;
+    setChatInput("");
+    setChatMessages(prev => [...prev, { role: "user", text: q, at: new Date().toISOString() }]);
+    setChatLoading(true);
+    try {
+      const res = await api.chatWithHenry(q);
+      setChatMessages(prev => [...prev, { role: "henry", text: res.answer, at: new Date().toISOString() }]);
+    } catch {
+      setChatMessages(prev => [...prev, { role: "henry", text: "Sorry, I couldn't process that right now.", at: new Date().toISOString() }]);
+    }
+    setChatLoading(false);
+  };
+
+  const activityColor: Record<string, string> = {
+    trade_execute: "border-l-profit",
+    trade_exit: "border-l-loss",
+    scan_start: "border-l-ai-blue",
+    scan_result: "border-l-amber-400",
+    scan_profile: "border-l-ai-purple",
+    pattern_detect: "border-l-cyan-400",
+    error: "border-l-loss",
+    trade_skip: "border-l-gray-500",
+    status: "border-l-gray-600",
+    analysis: "border-l-ai-blue",
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Chat Input */}
+      <div className="flex gap-2">
+        <input
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleChat()}
+          placeholder="Ask Henry about his decisions..."
+          className="flex-1 h-9 rounded-lg border border-border bg-surface-light/30 px-3 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-ai-blue/50"
+        />
+        <button onClick={handleChat} disabled={chatLoading || !chatInput.trim()}
+          className="px-4 h-9 rounded-lg bg-ai-blue/20 text-ai-blue border border-ai-blue/30 text-sm font-medium hover:bg-ai-blue/30 transition disabled:opacity-50">
+          {chatLoading ? "..." : "Ask"}
+        </button>
+      </div>
+
+      {/* Chat Messages */}
+      {chatMessages.length > 0 && (
+        <div className="space-y-3 max-h-60 overflow-y-auto">
+          {chatMessages.map((msg, i) => (
+            <div key={i} className={`p-3 rounded-lg text-sm ${
+              msg.role === "user"
+                ? "bg-surface-light/30 border border-border/40 text-gray-300 ml-8"
+                : "bg-ai-blue/5 border border-ai-blue/20 text-gray-300 mr-8"
+            }`}>
+              <div className="text-[9px] text-gray-500 mb-1 font-mono">
+                {msg.role === "user" ? "You" : "Henry"} · {formatTimeAgo(msg.at)}
+              </div>
+              {msg.role === "henry" ? (
+                <div className="ai-prose" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }} />
+              ) : (
+                <span>{msg.text}</span>
+              )}
+            </div>
+          ))}
+          {chatLoading && (
+            <div className="bg-ai-blue/5 border border-ai-blue/20 p-3 rounded-lg mr-8">
+              <div className="flex items-center gap-2 text-xs text-ai-blue/60">
+                <span className="w-2 h-2 rounded-full bg-ai-blue animate-pulse" />
+                Henry is thinking...
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Activity Feed */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-white">Activity Log</h3>
+        <span className="text-[9px] text-gray-500 font-mono">{activity.length} entries · auto-refreshing</span>
+      </div>
+
+      {loading ? (
+        <div className="space-y-2">
+          {[1,2,3,4,5].map(i => <div key={i} className="h-10 rounded-lg bg-surface-light/20 animate-pulse" />)}
+        </div>
+      ) : activity.length === 0 ? (
+        <div className="text-center py-12 text-gray-500 text-sm">
+          No activity yet. Henry logs entries when he scans, analyzes, and trades.
+        </div>
+      ) : (
+        <div className="space-y-1 max-h-[500px] overflow-y-auto">
+          {activity.map((a) => (
+            <div key={a.id}
+              className={`flex items-start gap-3 px-3 py-2 rounded-lg border-l-2 bg-surface-light/10 hover:bg-surface-light/20 transition ${
+                activityColor[a.activity_type] || "border-l-gray-600"
+              }`}>
+              <span className="text-[10px] shrink-0 mt-0.5">{a.activity_label}</span>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs text-gray-300">{a.message}</span>
+                {a.ticker && (
+                  <span className="ml-2 text-[9px] font-mono text-white bg-surface-light/40 px-1.5 py-0.5 rounded">{a.ticker}</span>
+                )}
+              </div>
+              <span className="text-[9px] text-gray-600 font-mono shrink-0">{formatTimeAgo(a.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 const TABS = [
   {
     id: "briefing",
@@ -443,6 +579,15 @@ const TABS = [
     icon: (
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+      </svg>
+    ),
+  },
+  {
+    id: "activity",
+    label: "Activity",
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
       </svg>
     ),
   },
@@ -610,6 +755,7 @@ export default function HomePage() {
 
         {/* Tab content */}
         {activeTab === "briefing" && <MorningBriefing />}
+        {activeTab === "activity" && <HenryActivityLog />}
         {activeTab === "ask" && <AskHenry />}
         {activeTab === "actions" && <ActionQueueTab />}
         {activeTab === "memory" && <MemoryTab />}

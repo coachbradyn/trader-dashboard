@@ -44,8 +44,10 @@ async def run_autonomous_trading() -> dict:
     6. Return summary of actions taken
     """
     from app.services.ai_portfolio import get_ai_portfolio, get_ai_config, _get_ai_portfolio_equity
+    from app.services.henry_activity import log_activity
 
     summary = {"scanner_trades": 0, "pattern_trades": 0, "skipped": 0, "errors": []}
+    await log_activity("Autonomous trading loop started", "scan_start")
 
     try:
         async with async_session() as db:
@@ -130,6 +132,14 @@ async def run_autonomous_trading() -> dict:
 
     total = summary["scanner_trades"] + summary["pattern_trades"]
     logger.info(f"Autonomous trading complete: {total} trades executed ({summary})")
+    msg = f"Trading loop complete: {total} trades executed"
+    if summary["scanner_trades"]:
+        msg += f" ({summary['scanner_trades']} from scanner)"
+    if summary["pattern_trades"]:
+        msg += f" ({summary['pattern_trades']} from patterns)"
+    if total == 0:
+        msg += " — no actionable opportunities found"
+    await log_activity(msg, "status")
     return summary
 
 
@@ -179,12 +189,14 @@ async def _execute_multi_profile_scan(
             continue
 
         logger.info(f"Autonomous: running profile '{profile_name}'")
+        await log_activity(f"Running scan profile: {profile_name}", "scan_profile")
         profiles_run += 1
 
         try:
             opportunities = await run_scanner(
                 profile_criteria=criteria,
                 profile_name=profile_name,
+                skip_actions=True,  # Don't create pending OPPORTUNITY actions — we execute directly
             )
         except Exception as e:
             logger.warning(f"Autonomous: profile '{profile_name}' failed: {e}")
@@ -241,7 +253,7 @@ async def _execute_scanner_opportunities(
     """Fallback: execute using saved criteria (no profiles). Backward compatible."""
     from app.services.scanner_service import run_scanner
 
-    opportunities = await run_scanner()
+    opportunities = await run_scanner(skip_actions=True)
     if not opportunities:
         return 0
 
@@ -639,6 +651,12 @@ async def _execute_autonomous_trade(
 
             await db.commit()
             logger.info(f"Autonomous: executed {direction.upper()} {ticker} x{qty:.2f} @ ${price:.2f} (conf {confidence}, source={source})")
+            from app.services.henry_activity import log_activity as _log
+            await _log(
+                f"BOUGHT {ticker} {direction.upper()} x{qty:.2f} @ ${price:.2f} (confidence {confidence}/10)",
+                "trade_execute", ticker=ticker,
+                details=f"Source: {source} | Allocation: ${alloc_amount:.2f} ({alloc_pct*100:.1f}%)",
+            )
             return True
 
     except Exception as e:
@@ -774,6 +792,11 @@ async def check_autonomous_exits() -> int:
 
                     closed += 1
                     logger.info(f"Autonomous exit: {pos.ticker} | {exit_reason} | PnL: {pos.pnl_percent:+.2f}%")
+                    from app.services.henry_activity import log_activity as _log_exit
+                    await _log_exit(
+                        f"CLOSED {pos.ticker} | PnL: {pos.pnl_percent:+.2f}% (${pos.pnl_dollars:+.2f}) | Reason: {exit_reason}",
+                        "trade_exit", ticker=pos.ticker,
+                    )
 
             if closed > 0:
                 await _take_ai_snapshot(portfolio, db)
