@@ -51,31 +51,51 @@ async def get_scanner_history(limit: int = 50):
 
 # ── POST /scanner/run ───────────────────────────────────────────────
 
+_scanner_status: dict = {"running": False, "last_result": None}
+
 @router.post("/run")
 async def run_scanner_manual():
-    """Trigger a scanner run. Runs synchronously and returns results."""
+    """Trigger a scanner run in the background. Poll /scanner/run-status for progress."""
     from app.services.scanner_service import run_scanner
     from app.services.fmp_service import get_api_usage
 
     usage = get_api_usage()
     if usage["throttled"]:
-        raise HTTPException(429, detail="FMP API rate limit reached. Scanner cannot run.")
+        raise HTTPException(429, detail="FMP API rate limit reached.")
 
-    try:
-        results = await run_scanner()
-        return {
-            "status": "complete",
-            "message": f"Scanner found {len(results)} opportunities.",
-            "count": len(results),
-            "fmp_usage": get_api_usage(),
-        }
-    except Exception as e:
-        logger.error(f"Manual scanner run failed: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "message": f"Scanner failed: {type(e).__name__}: {str(e)[:200]}",
-            "fmp_usage": get_api_usage(),
-        }
+    if _scanner_status["running"]:
+        return {"status": "already_running", "message": "Scanner is already running."}
+
+    async def _run():
+        _scanner_status["running"] = True
+        _scanner_status["last_result"] = None
+        try:
+            results = await run_scanner()
+            _scanner_status["last_result"] = {
+                "status": "complete",
+                "message": f"Scanner found {len(results)} opportunities.",
+                "count": len(results),
+            }
+        except Exception as e:
+            logger.error(f"Manual scanner run failed: {e}", exc_info=True)
+            _scanner_status["last_result"] = {
+                "status": "error",
+                "message": f"Scanner failed: {type(e).__name__}: {str(e)[:200]}",
+            }
+        finally:
+            _scanner_status["running"] = False
+
+    asyncio.create_task(_run())
+    return {"status": "started", "message": "Scanner running in background..."}
+
+
+@router.get("/run-status")
+async def get_scanner_run_status():
+    """Check if a scanner run is in progress and get last result."""
+    return {
+        "running": _scanner_status["running"],
+        "last_result": _scanner_status["last_result"],
+    }
 
 
 # ── GET /scanner/criteria ──────────────────────────────────────────

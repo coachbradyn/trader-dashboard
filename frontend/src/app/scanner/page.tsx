@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { formatCurrency, formatTimeAgo, formatDate, pnlColor } from "@/lib/formatters";
@@ -305,21 +305,51 @@ export default function ScannerPage() {
   }, [fetchAll]);
 
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const handleRunScan = async () => {
     setRunning(true);
-    setScanMessage(null);
+    setScanMessage("Scanner running...");
     try {
-      const res = await api.runScanner() as Record<string, unknown>;
-      const msg = (res.message as string) || `Scan ${res.status}`;
-      setScanMessage(msg);
-      // Refresh results
-      await fetchAll();
+      await api.runScanner();
+
+      // Poll for completion every 5 seconds
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await api.getScannerRunStatus();
+          if (!status.running) {
+            // Done — show result and refresh
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            const result = status.last_result;
+            setScanMessage(result?.message || "Scan complete.");
+            setRunning(false);
+            await fetchAll();
+          }
+        } catch {
+          // Keep polling
+        }
+      }, 5000);
+
+      // Safety timeout — stop polling after 3 minutes
+      setTimeout(() => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setRunning(false);
+          setScanMessage("Scanner timed out — check results.");
+          fetchAll();
+        }
+      }, 180000);
     } catch (e) {
       setScanMessage(`Scan failed: ${e instanceof Error ? e.message : "unknown error"}`);
+      setRunning(false);
     }
-    setRunning(false);
   };
+
+  // Cleanup poll on unmount
+  useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
 
   const handleAddWatchlist = async (ticker: string) => {
     try {

@@ -332,32 +332,26 @@ export const api = {
     fetchApi<import("./types").HenryStatsEntry[]>("/ai/stats"),
 
   // Scanner
-  getScannerResults: () =>
-    fetchApi<import("./types").ScannerOpportunity[]>("/scanner/results"),
-  getScannerHistory: () =>
-    fetchApi<import("./types").ScannerOpportunity[]>("/scanner/history"),
-  runScanner: async () => {
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
-    try {
-      const res = await fetch(`${API_URL}/scanner/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-      return res.json() as Promise<{ status: string; message?: string; count?: number }>;
-    } finally {
-      clearTimeout(timeout);
-    }
+  getScannerResults: async () => {
+    const data = await fetchApi<{ results: import("./types").ScannerOpportunity[] }>("/scanner/results");
+    return data.results || [];
   },
+  getScannerHistory: async () => {
+    const data = await fetchApi<{ history: import("./types").ScannerOpportunity[] }>("/scanner/history");
+    return data.history || [];
+  },
+  runScanner: () =>
+    fetchApi<{ status: string; message?: string }>("/scanner/run", { method: "POST" }),
+  getScannerRunStatus: () =>
+    fetchApi<{ running: boolean; last_result: { status: string; message: string; count?: number } | null }>("/scanner/run-status"),
   flushFmpCache: () =>
     fetchApi<{ status: string; entries_deleted?: number }>("/scanner/flush-cache", { method: "POST" }),
   testFmpConnection: () =>
     fetchApi<Record<string, unknown>>("/scanner/test-fmp"),
-  getScannerCriteria: () =>
-    fetchApi<Record<string, unknown>>("/scanner/criteria"),
+  getScannerCriteria: async () => {
+    const data = await fetchApi<{ criteria: Record<string, unknown> } | Record<string, unknown>>("/scanner/criteria");
+    return (data as { criteria: Record<string, unknown> }).criteria || data;
+  },
   updateScannerCriteria: (criteria: Record<string, unknown>) =>
     fetchApi<Record<string, unknown>>("/scanner/criteria", { method: "PUT", body: JSON.stringify(criteria) }),
   getScannerProfiles: () =>
