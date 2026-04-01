@@ -1,4 +1,5 @@
 "use client";
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePortfolios } from "@/hooks/usePortfolio";
 import { formatCurrency, formatPercent, pnlColor } from "@/lib/formatters";
@@ -6,22 +7,37 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
+const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
+
+function useFonts() {
+  useEffect(() => {
+    if (document.getElementById("__portfolios-fonts")) return;
+    const link = document.createElement("link");
+    link.id = "__portfolios-fonts";
+    link.rel = "stylesheet";
+    link.href = "https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap";
+    document.head.appendChild(link);
+  }, []);
+}
+
 function ExecutionBadge({ mode }: { mode?: string }) {
   if (!mode || mode === "local")
-    return <span className="text-[10px] uppercase tracking-wider text-gray-500 font-mono">Manual</span>;
+    return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-gray-500 bg-gray-800 font-mono">Manual</span>;
   if (mode === "paper")
-    return <span className="text-[10px] uppercase tracking-wider text-amber-400 font-mono">Paper</span>;
-  return <span className="text-[10px] uppercase tracking-wider text-profit font-mono">Live</span>;
+    return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-amber-400 bg-amber-400/10 font-mono">Paper</span>;
+  return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-profit bg-profit/10 font-mono">Live</span>;
 }
 
 export default function PortfoliosPage() {
+  useFonts();
   const { data: portfolios, loading } = usePortfolios();
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Portfolios</h1>
-        <p className="text-gray-400 mt-1 text-sm">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>Portfolios</h1>
+        <p className="text-gray-500 mt-1 text-sm" style={FONT_OUTFIT}>
           Themed strategy groupings — each with their own capital and performance tracking
         </p>
       </div>
@@ -29,49 +45,49 @@ export default function PortfoliosPage() {
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-48 rounded-xl" />
+            <Skeleton key={i} className="h-52 rounded-xl" />
           ))}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {portfolios?.map((p) => {
             const isAI = p.name?.toLowerCase().includes("ai") || !!(p as unknown as Record<string, unknown>).is_ai_managed;
+            const returnPct = p.total_return_pct ?? 0;
             return (
               <Link key={p.id} href={`/portfolios/${p.id}`}>
-                <Card className={`hover:border-primary/50 transition cursor-pointer h-full ${isAI ? "border-ai-blue/40" : ""}`}>
-                  <CardContent>
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-bold text-white truncate">{p.name}</h3>
-                          {isAI && (
-                            <Badge variant="ai" className="text-[10px] shrink-0">AI</Badge>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <p className="text-xs text-gray-500 line-clamp-1 flex-1">{p.description}</p>
-                          <ExecutionBadge mode={p.execution_mode} />
-                        </div>
-                      </div>
-                      <span className={`stat-value text-lg ml-2 shrink-0 ${pnlColor(p.total_return_pct)}`}>
-                        {formatPercent(p.total_return_pct)}
+                <Card className={`group hover:border-gray-500 transition-all duration-200 cursor-pointer h-full bg-[#1f2937]/60 border-[#374151] ${isAI ? "border-[#6366f1]/40 hover:border-[#6366f1]/70" : ""}`}>
+                  <CardContent className="p-5">
+                    {/* Name + badges */}
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="font-bold text-white text-lg truncate" style={FONT_OUTFIT}>{p.name}</h3>
+                      {isAI && <Badge variant="ai" className="text-[9px] shrink-0">AI</Badge>}
+                      <div className="ml-auto shrink-0"><ExecutionBadge mode={p.execution_mode} /></div>
+                    </div>
+                    {p.description && (
+                      <p className="text-xs text-gray-500 line-clamp-1 mb-4" style={FONT_OUTFIT}>{p.description}</p>
+                    )}
+
+                    {/* Hero number: equity */}
+                    <div className="mb-4">
+                      <div className="text-2xl font-bold text-white" style={FONT_MONO}>{formatCurrency(p.equity)}</div>
+                      <span className={`text-sm font-semibold ${pnlColor(returnPct)}`} style={FONT_MONO}>
+                        {formatPercent(returnPct)}
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-3 mt-4">
-                      <div>
-                        <div className="stat-label">Equity</div>
-                        <div className="text-sm font-mono text-white">{formatCurrency(p.equity)}</div>
+                    {/* Stat row */}
+                    <div className="flex items-center gap-4 pt-3 border-t border-[#374151]">
+                      <div className="flex-1">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Cash</div>
+                        <div className="text-xs font-mono text-gray-300">{formatCurrency(p.cash)}</div>
                       </div>
-                      <div>
-                        <div className="stat-label">Unrealized</div>
-                        <div className={`text-sm font-mono ${pnlColor(p.unrealized_pnl)}`}>
-                          {formatCurrency(p.unrealized_pnl)}
-                        </div>
+                      <div className="flex-1">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Unrealized</div>
+                        <div className={`text-xs font-mono ${pnlColor(p.unrealized_pnl)}`}>{formatCurrency(p.unrealized_pnl)}</div>
                       </div>
-                      <div>
-                        <div className="stat-label">Positions</div>
-                        <div className="text-sm font-mono text-white">{p.open_positions}</div>
+                      <div className="flex-1">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Positions</div>
+                        <div className="text-xs font-mono text-gray-300">{p.open_positions}</div>
                       </div>
                     </div>
                   </CardContent>

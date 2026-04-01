@@ -1715,37 +1715,63 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
 
   return (
     <div className="space-y-4 pb-12">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>{portfolio.name}</h1>
-          {portfolio.description && (
-            <p className="text-sm text-gray-500 mt-1" style={FONT_OUTFIT}>{portfolio.description}</p>
-          )}
+      {/* ═══ HERO ═══ */}
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <a href="/portfolios" className="text-gray-500 hover:text-white transition">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+            </svg>
+          </a>
+          <span className="text-xs text-gray-500" style={FONT_OUTFIT}>Portfolios</span>
         </div>
-        <div className="flex items-center gap-3 sm:gap-4 text-right">
+        <div className="flex items-start justify-between">
           <div>
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Cash</div>
-            <div className="text-lg sm:text-xl font-mono font-bold text-white">{formatCurrency(portfolio.cash)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Equity</div>
-            <div className="text-lg sm:text-xl font-mono font-bold text-white">{formatCurrency(portfolio.equity)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>Return</div>
-            <div className={`text-lg sm:text-xl font-mono font-bold ${pnlColor(portfolio.total_return_pct)}`}>
-              {formatPercent(portfolio.total_return_pct)}
+            <h1 className="text-3xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>{portfolio.name}</h1>
+            {portfolio.description && (
+              <p className="text-xs text-gray-500 mt-1 max-w-2xl" style={FONT_OUTFIT}>{portfolio.description}</p>
+            )}
+            <div className="flex items-baseline gap-3 mt-2">
+              <span className="text-4xl font-bold text-white" style={FONT_MONO}>{formatCurrency(portfolio.equity)}</span>
+              <span className={`text-lg font-semibold ${pnlColor(portfolio.total_return_pct)}`} style={FONT_MONO}>
+                {formatPercent(portfolio.total_return_pct)}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 mt-3">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
+                <span className="text-gray-500">Initial</span>
+                <span className="font-mono text-white">{formatCurrency(portfolio.initial_capital)}</span>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
+                <span className="text-gray-500">Cash</span>
+                <span className="font-mono text-white">{formatCurrency(portfolio.cash)}</span>
+              </span>
+              {performance && (
+                <>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
+                    <span className="text-gray-500">Drawdown</span>
+                    <span className="font-mono text-loss">{formatPercent(-Math.abs(performance.max_drawdown_pct))}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
+                    <span className="text-gray-500">Win Rate</span>
+                    <span className={`font-mono ${performance.win_rate >= 50 ? "text-profit" : "text-loss"}`}>{performance.win_rate.toFixed(1)}%</span>
+                  </span>
+                </>
+              )}
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
+                <span className="text-gray-500">Positions</span>
+                <span className="font-mono text-white">{portfolio.open_positions}</span>
+              </span>
             </div>
           </div>
-          <div className="flex flex-col gap-1 ml-2">
+          <div className="flex flex-col gap-1 shrink-0">
             <button onClick={() => { setCashMode(cashMode === "deposit" ? null : "deposit"); setCashAmount(""); }}
-              className={`text-[9px] px-2 py-0.5 rounded border transition ${cashMode === "deposit" ? "bg-profit/20 border-profit text-profit" : "bg-surface-light/30 border-border text-gray-400 hover:text-profit"}`}
+              className={`text-[9px] px-2.5 py-1 rounded border transition ${cashMode === "deposit" ? "bg-profit/20 border-profit text-profit" : "bg-[#1f2937] border-[#374151] text-gray-400 hover:text-profit"}`}
               style={FONT_OUTFIT}>
               Deposit
             </button>
             <button onClick={() => { setCashMode(cashMode === "withdraw" ? null : "withdraw"); setCashAmount(""); }}
-              className={`text-[9px] px-2 py-0.5 rounded border transition ${cashMode === "withdraw" ? "bg-loss/20 border-loss text-loss" : "bg-surface-light/30 border-border text-gray-400 hover:text-loss"}`}
+              className={`text-[9px] px-2.5 py-1 rounded border transition ${cashMode === "withdraw" ? "bg-loss/20 border-loss text-loss" : "bg-[#1f2937] border-[#374151] text-gray-400 hover:text-loss"}`}
               style={FONT_OUTFIT}>
               Withdraw
             </button>
