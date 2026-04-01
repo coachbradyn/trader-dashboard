@@ -352,6 +352,10 @@ export const api = {
       clearTimeout(timeout);
     }
   },
+  flushFmpCache: () =>
+    fetchApi<{ status: string; entries_deleted?: number }>("/scanner/flush-cache", { method: "POST" }),
+  testFmpConnection: () =>
+    fetchApi<Record<string, unknown>>("/scanner/test-fmp"),
   getScannerCriteria: () =>
     fetchApi<Record<string, unknown>>("/scanner/criteria"),
   updateScannerCriteria: (criteria: Record<string, unknown>) =>

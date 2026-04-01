@@ -111,6 +111,56 @@ async def get_scanner_stats():
     return stats
 
 
+# ── POST /scanner/flush-cache ──────────────────────────────────────
+
+@router.post("/flush-cache")
+async def flush_fmp_cache():
+    """Flush all FMP cached data to force fresh API calls."""
+    try:
+        from app.database import async_session as _as
+        from app.models.fmp_cache import FmpCache
+        from sqlalchemy import delete
+
+        async with _as() as db:
+            result = await db.execute(delete(FmpCache))
+            count = result.rowcount
+            await db.commit()
+        return {"status": "flushed", "entries_deleted": count}
+    except Exception as e:
+        logger.error(f"Cache flush failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ── GET /scanner/test-fmp ─────────────────────────────────────────
+
+@router.get("/test-fmp")
+async def test_fmp_connection():
+    """Test FMP API connectivity by making a simple quote request."""
+    from app.config import get_settings
+    import httpx
+
+    settings = get_settings()
+    if not settings.fmp_api_key:
+        return {"status": "error", "message": "FMP_API_KEY not set"}
+
+    key_preview = f"{settings.fmp_api_key[:8]}...{settings.fmp_api_key[-4:]}" if len(settings.fmp_api_key) > 12 else "SET"
+
+    # Test with a simple quote call — bypass cache
+    url = "https://financialmodelingprep.com/stable/quote"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params={"symbol": "AAPL", "apikey": settings.fmp_api_key})
+            return {
+                "status": "ok" if resp.status_code == 200 else "error",
+                "http_status": resp.status_code,
+                "key_preview": key_preview,
+                "response_preview": resp.text[:500],
+                "url_called": str(resp.url).replace(settings.fmp_api_key, "***"),
+            }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "key_preview": key_preview}
+
+
 # ── SCAN PROFILES ──────────────────────────────────────────────────
 
 @router.get("/profiles")

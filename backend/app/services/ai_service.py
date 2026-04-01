@@ -1071,6 +1071,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
             if cached:
                 positions = await get_positions_fn()
+                logger.info(f"Briefing: returning cached briefing from {cached.generated_at} (today_start_utc={today_start_utc})")
                 return {
                     "briefing": cached.content,
                     "open_positions": len(positions),

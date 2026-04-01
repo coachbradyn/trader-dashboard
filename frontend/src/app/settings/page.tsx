@@ -747,6 +747,68 @@ function BacktestsTab({ flash }: { flash: (msg: string, type?: "success" | "erro
   );
 }
 
+/* ── FMP Status Panel ─────────────────────────────────────────── */
+function FmpStatusPanel({ fmpUsage, flash }: { fmpUsage: { calls_today: number; limit: number; remaining: number; throttled: boolean } | null; flash: (msg: string, type?: "success" | "error") => void }) {
+  const [testResult, setTestResult] = useState<Record<string, unknown> | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [flushing, setFlushing] = useState(false);
+
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await api.testFmpConnection();
+      setTestResult(result);
+      flash(result.status === "ok" ? "FMP connection OK" : `FMP error: ${result.message || result.http_status}`, result.status === "ok" ? "success" : "error");
+    } catch (e) { flash("Test failed", "error"); }
+    setTesting(false);
+  };
+
+  const flushCache = async () => {
+    setFlushing(true);
+    try {
+      const result = await api.flushFmpCache();
+      flash(`Cache flushed: ${result.entries_deleted || 0} entries deleted`);
+    } catch { flash("Flush failed", "error"); }
+    setFlushing(false);
+  };
+
+  return (
+    <Card><CardContent className="pt-4">
+      {fmpUsage && (
+        <>
+          <div className="grid grid-cols-3 gap-4 mb-3">
+            <div><div className="stat-label">Calls Today</div><div className="text-sm font-mono text-white">{fmpUsage.calls_today}</div></div>
+            <div><div className="stat-label">Limit</div><div className="text-sm font-mono text-white">{fmpUsage.limit}</div></div>
+            <div><div className="stat-label">Status</div><div className={`text-sm font-mono ${fmpUsage.throttled ? "text-loss" : "text-profit"}`}>{fmpUsage.throttled ? "Throttled" : "Active"}</div></div>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2 mb-4">
+            <div className={`h-2 rounded-full transition-all ${fmpUsage.calls_today / fmpUsage.limit > 0.8 ? "bg-loss" : fmpUsage.calls_today / fmpUsage.limit > 0.5 ? "bg-amber-400" : "bg-profit"}`}
+              style={{ width: `${Math.min(100, (fmpUsage.calls_today / fmpUsage.limit) * 100)}%` }} />
+          </div>
+        </>
+      )}
+      <div className="flex items-center gap-3">
+        <Button variant="outline" size="sm" onClick={testConnection} disabled={testing} className="text-[10px]">
+          {testing ? "Testing..." : "Test FMP Connection"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={flushCache} disabled={flushing} className="text-[10px] text-amber-400 border-amber-500/30">
+          {flushing ? "Flushing..." : "Flush Cache"}
+        </Button>
+      </div>
+      {testResult && (
+        <div className={`mt-3 p-3 rounded-lg text-[10px] font-mono ${testResult.status === "ok" ? "bg-profit/10 border border-profit/20" : "bg-loss/10 border border-loss/20"}`}>
+          <div className="text-white mb-1">Status: {String(testResult.status)} | HTTP: {String(testResult.http_status || "N/A")}</div>
+          <div className="text-gray-400">Key: {String(testResult.key_preview || "N/A")}</div>
+          {testResult.response_preview != null && (
+            <div className="text-gray-500 mt-1 break-all max-h-20 overflow-y-auto">{String(testResult.response_preview).slice(0, 300)}</div>
+          )}
+        </div>
+      )}
+    </CardContent></Card>
+  );
+}
+
 /* ── Scanner Config Tab (Full FMP) ─────────────────────────────── */
 
 interface TechRule {
@@ -1148,23 +1210,9 @@ function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "
       </div>
 
       {/* ── FMP Status ── */}
-      {fmpUsage && (
-        <>
-          <Separator />
-          <SectionTitle>FMP API Status</SectionTitle>
-          <Card><CardContent className="pt-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div><div className="stat-label">Calls Today</div><div className="text-sm font-mono text-white">{fmpUsage.calls_today}</div></div>
-              <div><div className="stat-label">Limit</div><div className="text-sm font-mono text-white">{fmpUsage.limit}</div></div>
-              <div><div className="stat-label">Status</div><div className={`text-sm font-mono ${fmpUsage.throttled ? "text-loss" : "text-profit"}`}>{fmpUsage.throttled ? "Throttled" : "Active"}</div></div>
-            </div>
-            <div className="mt-3 w-full bg-gray-700 rounded-full h-2">
-              <div className={`h-2 rounded-full transition-all ${fmpUsage.calls_today / fmpUsage.limit > 0.8 ? "bg-loss" : fmpUsage.calls_today / fmpUsage.limit > 0.5 ? "bg-amber-400" : "bg-profit"}`}
-                style={{ width: `${Math.min(100, (fmpUsage.calls_today / fmpUsage.limit) * 100)}%` }} />
-            </div>
-          </CardContent></Card>
-        </>
-      )}
+      <Separator />
+      <SectionTitle>FMP API Status</SectionTitle>
+      <FmpStatusPanel fmpUsage={fmpUsage} flash={flash} />
     </div>
   );
 }

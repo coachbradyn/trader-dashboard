@@ -165,6 +165,7 @@ async def _fmp_get(
     """
     settings = get_settings()
     if not settings.fmp_api_key:
+        logger.debug("FMP: no API key set, skipping request")
         return None
 
     # Check cache first
@@ -183,17 +184,21 @@ async def _fmp_get(
         query.update(params)
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(url, params=query)
             _increment_rate_counter()
             if resp.status_code == 200:
                 data = resp.json()
+                # Don't cache error responses that FMP returns as 200
+                if isinstance(data, dict) and ("Error" in data or "error" in data):
+                    logger.warning(f"FMP API returned error in 200: {str(data)[:200]}")
+                    return None
                 await _set_cache(endpoint, params, cache_tier, data)
                 return data
-            logger.warning(f"FMP API {resp.status_code} for {endpoint}: {resp.text[:200]}")
+            logger.warning(f"FMP API {resp.status_code} for {url}: {resp.text[:300]}")
             return None
     except Exception as e:
-        logger.warning(f"FMP API error for {endpoint}: {e}")
+        logger.warning(f"FMP API error for {url}: {e}")
         return None
 
 
