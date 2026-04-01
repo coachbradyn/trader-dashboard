@@ -27,10 +27,12 @@ async def get_news(
 
 @router.get("/news/ticker/{ticker}")
 async def get_ticker_news(ticker: str):
-    """Get news, sentiment, and company info for a specific ticker."""
+    """Get news, sentiment, and company info for a specific ticker.
+    Falls back to FMP news when Alpaca has nothing, and generates
+    synthetic sector context as a last resort."""
     ticker = ticker.upper().strip()
 
-    # Fetch all three in parallel
+    # Fetch all sources in parallel
     import asyncio
 
     headlines_task = news_service.get_ticker_headlines(ticker, limit=10)
@@ -58,12 +60,159 @@ async def get_ticker_news(ticker: str):
             "low_52w": None,
         }
 
+    # ── Fallback 1: FMP news if Alpaca returned nothing ──
+    if not headlines:
+        try:
+            from app.services.fmp_service import get_stock_news, get_press_releases
+            fmp_news = await get_stock_news(ticker, limit=10)
+            if fmp_news and isinstance(fmp_news, list) and len(fmp_news) > 0:
+                for article in fmp_news[:10]:
+                    headlines.append({
+                        "id": article.get("url", ""),
+                        "headline": article.get("title", ""),
+                        "summary": article.get("text", "")[:200] if article.get("text") else None,
+                        "source": article.get("site", "FMP"),
+                        "tickers": [ticker],
+                        "published_at": article.get("publishedDate", ""),
+                        "url": article.get("url"),
+                        "sentiment_score": None,
+                    })
+                logger.info(f"News: used FMP fallback for {ticker}, got {len(headlines)} articles")
+        except Exception as e:
+            logger.debug(f"FMP news fallback failed for {ticker}: {e}")
+
+    # ── Fallback 2: FMP press releases if still nothing ──
+    if not headlines:
+        try:
+            from app.services.fmp_service import get_press_releases
+            releases = await get_press_releases(ticker, limit=5)
+            if releases and isinstance(releases, list):
+                for pr in releases[:5]:
+                    headlines.append({
+                        "id": pr.get("url", ""),
+                        "headline": pr.get("title", f"{ticker} Press Release"),
+                        "summary": pr.get("text", "")[:200] if pr.get("text") else None,
+                        "source": "Press Release",
+                        "tickers": [ticker],
+                        "published_at": pr.get("date", ""),
+                        "url": pr.get("url"),
+                        "sentiment_score": None,
+                    })
+        except Exception:
+            pass
+
+    # ── Fallback 3: Generate synthetic context from fundamentals ──
+    if not headlines:
+        try:
+            from app.services.fmp_service import get_fundamentals
+            fund = await get_fundamentals(ticker)
+            synthetic_notes = []
+
+            if fund:
+                # Sector context
+                if fund.sector and fund.industry:
+                    synthetic_notes.append({
+                        "id": f"synthetic-sector-{ticker}",
+                        "headline": f"{fund.company_name or ticker} operates in {fund.sector} ({fund.industry})",
+                        "summary": fund.description or f"{fund.company_name or ticker} is a {fund.industry} company in the {fund.sector} sector.",
+                        "source": "Market Data",
+                        "tickers": [ticker],
+                        "published_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
+                        "url": None,
+                        "sentiment_score": None,
+                    })
+
+                # Earnings context
+                if fund.earnings_date:
+                    from datetime import date as date_type
+                    days_until = (fund.earnings_date - date_type.today()).days
+                    if days_until >= 0:
+                        synthetic_notes.append({
+                            "id": f"synthetic-earnings-{ticker}",
+                            "headline": f"{ticker} reports earnings in {days_until} days ({fund.earnings_date})",
+                            "summary": f"EPS estimate: ${fund.eps_estimate_current:.2f}" if fund.eps_estimate_current else None,
+                            "source": "Earnings Calendar",
+                            "tickers": [ticker],
+                            "published_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
+                            "url": None,
+                            "sentiment_score": None,
+                        })
+
+                # Analyst context
+                if fund.analyst_rating and fund.analyst_target_consensus:
+                    synthetic_notes.append({
+                        "id": f"synthetic-analyst-{ticker}",
+                        "headline": f"Analyst consensus: {fund.analyst_rating} — target ${fund.analyst_target_consensus:.2f}",
+                        "summary": f"{fund.analyst_count or '?'} analysts covering. Target range ${fund.analyst_target_low:.2f}-${fund.analyst_target_high:.2f}" if fund.analyst_target_low and fund.analyst_target_high else None,
+                        "source": "Analyst Data",
+                        "tickers": [ticker],
+                        "published_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
+                        "url": None,
+                        "sentiment_score": None,
+                    })
+
+                # DCF context
+                if getattr(fund, "dcf_value", None) and getattr(fund, "dcf_diff_pct", None):
+                    status = "undervalued" if fund.dcf_diff_pct > 0 else "overvalued"
+                    synthetic_notes.append({
+                        "id": f"synthetic-dcf-{ticker}",
+                        "headline": f"DCF model suggests {ticker} is {abs(fund.dcf_diff_pct):.0f}% {status} (fair value ${fund.dcf_value:.2f})",
+                        "summary": None,
+                        "source": "Valuation Model",
+                        "tickers": [ticker],
+                        "published_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
+                        "url": None,
+                        "sentiment_score": 0.1 if fund.dcf_diff_pct > 0 else -0.1,
+                    })
+
+                # Insider context
+                if getattr(fund, "insider_net_90d", None) and fund.insider_net_90d != 0:
+                    action = "buying" if fund.insider_net_90d > 0 else "selling"
+                    synthetic_notes.append({
+                        "id": f"synthetic-insider-{ticker}",
+                        "headline": f"Insider net {action}: ${abs(fund.insider_net_90d / 1e6):.1f}M in last 90 days",
+                        "summary": None,
+                        "source": "Insider Activity",
+                        "tickers": [ticker],
+                        "published_at": (fund.updated_at.isoformat() + "Z") if fund.updated_at else None,
+                        "url": None,
+                        "sentiment_score": 0.15 if fund.insider_net_90d > 0 else -0.15,
+                    })
+
+                headlines = synthetic_notes
+                if synthetic_notes:
+                    # Update sentiment from synthetic data
+                    scores = [n["sentiment_score"] for n in synthetic_notes if n.get("sentiment_score")]
+                    if scores:
+                        avg = sum(scores) / len(scores)
+                        sentiment = {"score": round(avg, 3), "label": _synthetic_sentiment_label(avg), "article_count": len(synthetic_notes)}
+            else:
+                # No fundamentals either — create a minimal note
+                headlines = [{
+                    "id": f"synthetic-minimal-{ticker}",
+                    "headline": f"No recent news available for {ticker}",
+                    "summary": f"Market data for {ticker} will populate as fundamentals are loaded.",
+                    "source": "System",
+                    "tickers": [ticker],
+                    "published_at": None,
+                    "url": None,
+                    "sentiment_score": None,
+                }]
+        except Exception as e:
+            logger.debug(f"Synthetic context generation failed for {ticker}: {e}")
+
     return {
         "ticker": ticker,
         "company": company,
         "sentiment": sentiment,
         "headlines": headlines,
     }
+
+
+def _synthetic_sentiment_label(score: float) -> str:
+    if score >= 0.1: return "Slightly Bullish"
+    if score <= -0.1: return "Slightly Bearish"
+    return "Neutral"
 
 
 @router.get("/news/ticker/{ticker}/thesis")

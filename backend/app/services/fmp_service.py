@@ -330,6 +330,24 @@ async def get_institutional_holders(ticker: str) -> dict | list | None:
     return await _fmp_get("/stable/institutional-holder", params={"symbol": ticker}, cache_tier="daily")
 
 
+async def get_stock_news(ticker: str, limit: int = 10) -> dict | list | None:
+    """Get stock news for a ticker from FMP."""
+    return await _fmp_get(
+        "/stable/news/stock",
+        params={"symbol": ticker, "limit": str(limit)},
+        cache_tier="intraday",
+    )
+
+
+async def get_press_releases(ticker: str, limit: int = 5) -> dict | list | None:
+    """Get press releases for a ticker from FMP."""
+    return await _fmp_get(
+        "/stable/news/press-releases",
+        params={"symbol": ticker, "limit": str(limit)},
+        cache_tier="daily",
+    )
+
+
 async def get_earnings_calendar(from_date: str, to_date: str) -> dict | list | None:
     """Earnings calendar for a date range."""
     return await _fmp_get(
