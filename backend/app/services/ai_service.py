@@ -68,6 +68,14 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
 
     sections = [BASE_SYSTEM_PROMPT]
 
+    # Always inject current date so Henry knows what day it is
+    try:
+        from zoneinfo import ZoneInfo
+        _now_et = datetime.now(ZoneInfo("America/New_York"))
+        sections.append(f"CURRENT DATE/TIME: {_now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}")
+    except Exception:
+        sections.append(f"CURRENT DATE/TIME: {datetime.utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}")
+
     # Pull strategy descriptions dynamically — separate session to isolate errors
     try:
         async with async_session() as db:
@@ -720,7 +728,18 @@ async def morning_briefing(
 
     holdings_text = holdings_context or "No manual holdings."
 
+    # Get current date in ET for the prompt
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        date_str = now_et.strftime("%A, %B %d, %Y")
+        time_str = now_et.strftime("%I:%M %p ET")
+    except Exception:
+        date_str = datetime.utcnow().strftime("%A, %B %d, %Y")
+        time_str = datetime.utcnow().strftime("%I:%M %p UTC")
+
     prompt = f"""Generate a comprehensive morning briefing for today's trading session.
+TODAY IS: {date_str} ({time_str})
 You have access to real-time market data, news, sector rotation, and portfolio context.
 Reference your memory log where relevant — if you've seen patterns before on these tickers or strategies, call them out.
 
@@ -788,6 +807,7 @@ Keep it under 600 words."""
         try:
             _logger.info("Briefing: attempt 3 (simplified prompt)")
             simple_prompt = f"""Generate a brief morning trading update.
+TODAY IS: {date_str} ({time_str})
 
 OPEN POSITIONS:
 {positions_text}
