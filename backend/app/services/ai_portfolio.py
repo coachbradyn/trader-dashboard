@@ -747,28 +747,27 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 async def _get_ai_portfolio_equity(portfolio: Portfolio, db: AsyncSession) -> float:
-    """Calculate current AI portfolio equity."""
+    """Calculate current AI portfolio equity = cash + market value of open positions."""
+    # Get open simulated trades
     result = await db.execute(
         select(Trade)
         .join(PortfolioTrade)
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "open",
             Trade.is_simulated == True,
         )
     )
-    all_trades = result.scalars().all()
+    open_trades = result.scalars().all()
 
-    closed_pnl = sum(t.pnl_dollars or 0.0 for t in all_trades if t.status == "closed")
-    unrealized_pnl = 0.0
-    for t in all_trades:
-        if t.status == "open":
-            cp = price_service.get_price(t.ticker) or t.entry_price
-            if t.direction == "long":
-                unrealized_pnl += (cp - t.entry_price) * t.qty
-            else:
-                unrealized_pnl += (t.entry_price - cp) * t.qty
+    # Market value of open positions
+    open_market_value = 0.0
+    for t in open_trades:
+        cp = price_service.get_price(t.ticker) or t.entry_price
+        open_market_value += cp * t.qty
 
-    return portfolio.initial_capital + closed_pnl + unrealized_pnl
+    # Equity = cash (includes realized P&L from closed trades) + open position market value
+    return portfolio.cash + open_market_value
 
 
 async def _take_ai_snapshot(portfolio: Portfolio, db: AsyncSession):

@@ -91,13 +91,21 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
     except Exception:
         pass
 
-    # Equity = cash + holdings market value + webhook trade unrealized P&L
+    # Equity = cash + holdings market value + open trade unrealized P&L
+    # This is the true portfolio value — what you'd have if you liquidated everything
     equity = p.cash + holdings_market_value + webhook_unrealized
     unrealized = holdings_unrealized + webhook_unrealized
     open_pos = holdings_count + webhook_open
 
-    # Return % based on gains relative to capital deployed
-    total_return = ((equity - p.initial_capital) / p.initial_capital * 100) if p.initial_capital > 0 else 0.0
+    # Return % — only calculate if capital has been deployed
+    # initial_capital tracks total deposits minus withdrawals
+    if p.initial_capital > 0:
+        total_return = ((equity - p.initial_capital) / p.initial_capital * 100)
+    elif equity > 0:
+        # No initial capital set but has equity (legacy data) — show absolute return
+        total_return = 0.0
+    else:
+        total_return = 0.0
 
     return PortfolioResponse(
         id=p.id,
