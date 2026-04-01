@@ -523,3 +523,121 @@ async def update_config(cfg: AITradingConfig):
     config = cfg.model_dump()
     await save_ai_config(config)
     return config
+
+
+@router.post("/fix-trade/{trade_id}")
+async def fix_trade_sizing(trade_id: str, db: AsyncSession = Depends(get_db)):
+    """Fix a trade's qty to respect cash available at time of trade.
+    Recalculates qty based on portfolio cash and adjusts cash accordingly."""
+    from app.services.ai_portfolio import get_ai_portfolio
+
+    portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        raise HTTPException(404, "No AI portfolio exists")
+
+    # Find the trade
+    result = await db.execute(
+        select(Trade).where(Trade.id == trade_id)
+    )
+    trade = result.scalar_one_or_none()
+    if not trade:
+        raise HTTPException(404, f"Trade {trade_id} not found")
+
+    # Verify it's linked to AI portfolio
+    pt_result = await db.execute(
+        select(PortfolioTrade).where(
+            PortfolioTrade.trade_id == trade_id,
+            PortfolioTrade.portfolio_id == portfolio.id,
+        )
+    )
+    if not pt_result.scalar_one_or_none():
+        raise HTTPException(400, "Trade not linked to AI portfolio")
+
+    old_qty = trade.qty
+    old_cost = old_qty * trade.entry_price
+
+    # Calculate proper sizing: use current cash + what this trade cost
+    # (add back the old cost since it was already deducted)
+    available_cash = portfolio.cash + old_cost
+    max_alloc = available_cash * 0.10  # 10% max per trade
+    proper_alloc = min(max_alloc, available_cash)
+    new_qty = round(proper_alloc / trade.entry_price, 4) if trade.entry_price > 0 else 0
+
+    if new_qty <= 0:
+        raise HTTPException(400, f"Cannot resize — cash too low (${available_cash:.2f})")
+
+    new_cost = new_qty * trade.entry_price
+
+    # Update trade qty
+    trade.qty = new_qty
+
+    # Adjust portfolio cash: give back old cost, deduct new cost
+    portfolio.cash = available_cash - new_cost
+
+    await db.commit()
+
+    return {
+        "trade_id": trade_id,
+        "ticker": trade.ticker,
+        "old_qty": old_qty,
+        "new_qty": new_qty,
+        "old_cost": round(old_cost, 2),
+        "new_cost": round(new_cost, 2),
+        "portfolio_cash": round(portfolio.cash, 2),
+        "message": f"Resized {trade.ticker} from {old_qty} to {new_qty} shares",
+    }
+
+
+@router.get("/debug")
+async def debug_ai_portfolio(db: AsyncSession = Depends(get_db)):
+    """Debug view of AI portfolio state — cash, equity, all open trades."""
+    from app.services.ai_portfolio import get_ai_portfolio, _get_ai_portfolio_equity
+
+    portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        return {"error": "No AI portfolio exists"}
+
+    equity = await _get_ai_portfolio_equity(portfolio, db)
+
+    result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.is_simulated == True,
+        )
+        .options(selectinload(Trade.trader))
+        .order_by(desc(Trade.entry_time))
+    )
+    all_trades = result.scalars().all()
+
+    trades = []
+    for t in all_trades:
+        cp = price_service.get_price(t.ticker) or t.entry_price
+        cost = t.entry_price * t.qty
+        market_val = cp * t.qty if t.status == "open" else 0
+        trades.append({
+            "id": t.id,
+            "ticker": t.ticker,
+            "direction": t.direction,
+            "qty": t.qty,
+            "entry_price": t.entry_price,
+            "current_price": round(cp, 2),
+            "cost": round(cost, 2),
+            "market_value": round(market_val, 2),
+            "status": t.status,
+            "pnl_dollars": round(t.pnl_dollars, 2) if t.pnl_dollars else None,
+            "entry_time": (t.entry_time.isoformat() + "Z") if t.entry_time else None,
+            "strategy": t.trader.trader_id if t.trader else None,
+        })
+
+    return {
+        "portfolio_id": portfolio.id,
+        "name": portfolio.name,
+        "initial_capital": portfolio.initial_capital,
+        "cash": round(portfolio.cash, 2),
+        "equity": round(equity, 2),
+        "open_trades": [t for t in trades if t["status"] == "open"],
+        "closed_trades": [t for t in trades if t["status"] == "closed"],
+        "total_trades": len(trades),
+    }
