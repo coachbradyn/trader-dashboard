@@ -1629,3 +1629,109 @@ Answer based on your actual activity and decisions. Be specific about which trad
         positions = await get_positions_fn()
         result = await query_trades(enhanced_question, all_trades, positions)
         return {"answer": result, "trades_in_context": len(all_trades)}
+
+    # ─── HENRY'S PRICE TARGETS ──────────────────────────────────────
+
+    @app.get("/api/ai/price-targets/{ticker}")
+    async def get_henry_price_targets(ticker: str):
+        """Generate Henry's price targets (short/medium/long term) for a ticker."""
+        ticker = ticker.upper().strip()
+
+        # Check cache first (valid for 12h)
+        try:
+            from app.models.henry_cache import HenryCache
+            async with async_session() as db:
+                cached = await db.execute(
+                    select(HenryCache).where(
+                        HenryCache.cache_key == f"price_targets:{ticker}",
+                        HenryCache.generated_at >= datetime.utcnow() - timedelta(hours=12),
+                    )
+                )
+                hit = cached.scalar_one_or_none()
+                if hit and hit.content:
+                    return hit.content
+        except Exception:
+            pass
+
+        # Gather context for Henry
+        fund_context = ""
+        try:
+            from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt, get_quote
+            fund = await get_fundamentals(ticker)
+            if fund:
+                fund_context = format_fundamentals_for_prompt(fund)
+            quote = await get_quote(ticker)
+            current_price = None
+            if quote and isinstance(quote, list) and len(quote) > 0:
+                current_price = quote[0].get("price")
+        except Exception:
+            current_price = None
+
+        # Get Henry's context notes for this ticker
+        research_context = ""
+        try:
+            async with async_session() as db:
+                from app.models import HenryContext
+                ctx_result = await db.execute(
+                    select(HenryContext).where(
+                        HenryContext.ticker == ticker,
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                    ).order_by(HenryContext.created_at.desc()).limit(5)
+                )
+                for c in ctx_result.scalars().all():
+                    research_context += f"  [{c.context_type}] {c.content}\n"
+        except Exception:
+            pass
+
+        from app.services.ai_provider import call_ai
+        system = await _build_system_prompt(ticker=ticker, enable_web_search=True)
+        prompt = f"""Generate price targets for {ticker}.
+
+CURRENT PRICE: ${current_price:.2f if current_price else 'Unknown'}
+
+FUNDAMENTALS:
+  {fund_context or 'Not available'}
+
+YOUR RESEARCH NOTES:
+{research_context or '  None'}
+
+Provide three price targets based on technical levels, fundamentals, analyst consensus, and your own analysis:
+
+1. SHORT TERM (1 week): Where could this stock be in 7 days? Consider current momentum, support/resistance, and upcoming catalysts.
+2. MEDIUM TERM (1 month): Where could it be in 30 days? Factor in earnings, sector trends, and technical patterns.
+3. LONG TERM (6 months): Where could it be in 6 months? Consider the fundamental story, growth trajectory, and macro environment.
+
+For each target, provide: the target price, a brief reason (1 sentence), and your confidence level (low/medium/high).
+
+Respond in EXACTLY this JSON format (no markdown, no backticks):
+{{"current_price": {current_price or 0}, "short_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "1 week"}}, "medium_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "1 month"}}, "long_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "6 months"}}}}"""
+
+        try:
+            raw = await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, enable_web_search=True)
+            clean = raw.strip().replace("```json", "").replace("```", "").strip()
+            import json
+            targets = json.loads(clean)
+
+            # Cache the result
+            try:
+                from app.models.henry_cache import HenryCache
+                async with async_session() as db:
+                    old = await db.execute(select(HenryCache).where(HenryCache.cache_key == f"price_targets:{ticker}"))
+                    old_entry = old.scalar_one_or_none()
+                    if old_entry:
+                        old_entry.content = targets
+                        old_entry.generated_at = datetime.utcnow()
+                    else:
+                        db.add(HenryCache(
+                            cache_key=f"price_targets:{ticker}",
+                            cache_type="price_targets",
+                            content=targets,
+                            ticker=ticker,
+                        ))
+                    await db.commit()
+            except Exception:
+                pass
+
+            return targets
+        except Exception as e:
+            return {"error": str(e), "current_price": current_price}

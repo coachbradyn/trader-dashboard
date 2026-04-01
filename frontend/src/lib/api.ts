@@ -326,6 +326,8 @@ export const api = {
     }),
 
   // Henry Context / Memory
+  getHenryPriceTargets: (ticker: string) =>
+    fetchApi<Record<string, unknown>>("/ai/price-targets/" + ticker),
   getHenryActivity: (limit?: number, ticker?: string) => {
     const sp = new URLSearchParams();
     if (limit) sp.set("limit", String(limit));

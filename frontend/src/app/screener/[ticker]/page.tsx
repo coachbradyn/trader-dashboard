@@ -224,23 +224,30 @@ export default function TickerDetailPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [fundamentals, setFundamentals] = useState<Record<string, any> | null>(null);
 
+  // Price targets state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [priceTargets, setPriceTargets] = useState<Record<string, any> | null>(null);
+  const [ptLoading, setPtLoading] = useState(false);
+
   // Chart range state
   const [chartDays, setChartDays] = useState(90);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [d, c, allBt, news, thesis, fund] = await Promise.all([
+      const [d, c, allBt, news, thesis, fund, pt] = await Promise.all([
         api.getWatchlistDetail(ticker).catch(() => null),
         api.getScreenerChart(ticker, chartDays).catch(() => []),
         api.getBacktestImports().catch(() => []),
         api.getTickerNews(ticker).catch(() => null),
         api.getTickerThesis(ticker).catch(() => null),
         api.getTickerFundamentals(ticker).catch(() => null),
+        api.getHenryPriceTargets(ticker).catch(() => null),
       ]);
       setDetail(d);
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
       if (fund) setFundamentals(fund);
+      if (pt && !pt.error) setPriceTargets(pt);
       setNewsData(news);
       if (thesis?.thesis) {
         setThesisData(thesis.thesis);
@@ -536,6 +543,87 @@ export default function TickerDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ═══ PRICE TARGETS ═══ */}
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>Price Targets</h2>
+            {!priceTargets && !ptLoading && (
+              <Button variant="outline" size="sm" onClick={async () => {
+                setPtLoading(true);
+                try {
+                  const pt = await api.getHenryPriceTargets(ticker);
+                  if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
+                } catch {}
+                setPtLoading(false);
+              }} className="text-[10px] h-7 text-ai-blue border-ai-blue/30">
+                Generate Targets
+              </Button>
+            )}
+            {ptLoading && <span className="text-[10px] text-ai-blue/60 font-mono animate-pulse">Analyzing...</span>}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Analyst targets (from FMP) */}
+            {fundamentals?.analyst_target_consensus != null && (
+              <div className="p-4 rounded-lg bg-surface-light/10 border border-border/20">
+                <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Analyst Consensus</div>
+                <div className="text-2xl font-bold font-mono text-white">${fundamentals.analyst_target_consensus.toFixed(2)}</div>
+                {fundamentals.analyst_target_low != null && fundamentals.analyst_target_high != null && (
+                  <div className="text-[10px] font-mono text-gray-500 mt-1">
+                    Range: ${fundamentals.analyst_target_low.toFixed(2)} — ${fundamentals.analyst_target_high.toFixed(2)}
+                  </div>
+                )}
+                {fundamentals.analyst_count && <div className="text-[9px] text-gray-600 mt-1">{fundamentals.analyst_count} analysts</div>}
+                {lastPrice != null && fundamentals.analyst_target_consensus != null && (
+                  <div className={`text-xs font-mono mt-2 ${fundamentals.analyst_target_consensus > lastPrice ? "text-profit" : "text-loss"}`}>
+                    {fundamentals.analyst_target_consensus > lastPrice ? "▲" : "▼"} {Math.abs(((fundamentals.analyst_target_consensus - lastPrice) / lastPrice) * 100).toFixed(1)}% {fundamentals.analyst_target_consensus > lastPrice ? "upside" : "downside"}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Henry's targets */}
+            {priceTargets ? (
+              <>
+                {[
+                  { key: "short_term", label: "1 Week", color: "text-amber-400", border: "border-amber-500/20" },
+                  { key: "medium_term", label: "1 Month", color: "text-ai-blue", border: "border-ai-blue/20" },
+                  { key: "long_term", label: "6 Months", color: "text-ai-purple", border: "border-ai-purple/20" },
+                ].map(({ key, label, color, border }) => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const target = (priceTargets as Record<string, any>)[key];
+                  if (!target?.target) return null;
+                  const changePct = lastPrice ? ((target.target - lastPrice) / lastPrice) * 100 : null;
+                  return (
+                    <div key={key} className={`p-4 rounded-lg bg-surface-light/10 border ${border}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>{label}</span>
+                        <span className="w-2 h-2 rounded-full bg-ai-blue animate-pulse" title="Henry's estimate" />
+                      </div>
+                      <div className={`text-2xl font-bold font-mono ${color}`}>${target.target.toFixed(2)}</div>
+                      {changePct != null && (
+                        <div className={`text-xs font-mono mt-1 ${changePct >= 0 ? "text-profit" : "text-loss"}`}>
+                          {changePct >= 0 ? "▲" : "▼"} {Math.abs(changePct).toFixed(1)}%
+                        </div>
+                      )}
+                      <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">{target.reason}</p>
+                      <Badge className={`text-[8px] mt-1 ${
+                        target.confidence === "high" ? "bg-profit/10 text-profit" :
+                        target.confidence === "low" ? "bg-loss/10 text-loss" :
+                        "bg-amber-500/10 text-amber-400"
+                      }`}>{target.confidence} confidence</Badge>
+                    </div>
+                  );
+                })}
+              </>
+            ) : !ptLoading && !fundamentals?.analyst_target_consensus ? (
+              <div className="col-span-3 text-center py-6 text-gray-500 text-xs">
+                Click &quot;Generate Targets&quot; for Henry&apos;s 1-week, 1-month, and 6-month price predictions
+              </div>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* ═══ TWO COLUMN LAYOUT ═══ */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
