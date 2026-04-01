@@ -10,160 +10,310 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import MorningBriefing from "@/components/ai/MorningBriefing";
 import AskHenry from "@/components/ai/AskHenry";
-import ConflictLog from "@/components/ai/ConflictLog";
-import LiveTradeFeed from "@/components/dashboard/LiveTradeFeed";
 import type {
   Portfolio, PortfolioAction, ActionStats,
-  HenryContextEntry, HenryStatsEntry, ScannerOpportunity,
+  BriefingResponse, HenryContextEntry, HenryStatsEntry,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
 const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
 
-// ── System Status Bar ──────────────────────────────────────────────
+function useFonts() {
+  useEffect(() => {
+    if (document.getElementById("__home-fonts")) return;
+    const link = document.createElement("link");
+    link.id = "__home-fonts";
+    link.rel = "stylesheet";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap";
+    document.head.appendChild(link);
+  }, []);
+}
 
-function SystemStatusBar({
+// ── Greeting helper ──────────────────────────────────────────────
+function getGreeting(): string {
+  const now = new Date();
+  const etHour = parseInt(
+    now.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: "America/New_York" })
+  );
+  if (etHour < 12) return "Good morning";
+  if (etHour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function getMarketStatus() {
+  const now = new Date();
+  const etStr = now.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  });
+  const [h, m] = etStr.split(":").map(Number);
+  const mins = h * 60 + m;
+  const day = parseInt(
+    now.toLocaleString("en-US", { weekday: "short", timeZone: "America/New_York" }).slice(0, 1)
+  );
+  const dayOfWeek = now.toLocaleString("en-US", { weekday: "short", timeZone: "America/New_York" });
+  const isWeekend = dayOfWeek === "Sat" || dayOfWeek === "Sun";
+
+  if (isWeekend) return { label: "CLOSED", color: "text-gray-400", dotColor: "bg-gray-500" };
+  if (mins >= 570 && mins < 960) return { label: "MARKET OPEN", color: "text-profit", dotColor: "bg-profit" };
+  if (mins >= 240 && mins < 570) return { label: "PRE-MARKET", color: "text-amber-400", dotColor: "bg-amber-500" };
+  if (mins >= 960 && mins < 1200) return { label: "AFTER-HOURS", color: "text-amber-400", dotColor: "bg-amber-500" };
+  return { label: "CLOSED", color: "text-gray-400", dotColor: "bg-gray-500" };
+}
+
+// ── Hero Section ──────────────────────────────────────────────────
+
+function HeroSection({
   portfolios,
   pendingActions,
-  actionStats,
+  activityCount,
 }: {
   portfolios: Portfolio[];
   pendingActions: PortfolioAction[];
-  actionStats: ActionStats | null;
+  activityCount: number;
 }) {
   const now = new Date();
-  const hour = now.getUTCHours() - 5; // EST approximation
-  const day = now.getDay();
-  const isWeekend = day === 0 || day === 6;
-  const isPreMarket = !isWeekend && hour >= 4 && hour < 9.5;
-  const isOpen = !isWeekend && hour >= 9.5 && hour < 16;
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/New_York",
+  });
+  const market = getMarketStatus();
 
-  const marketStatus = isOpen
-    ? { label: "OPEN", color: "bg-profit text-profit" }
-    : isPreMarket
-    ? { label: "PRE-MARKET", color: "bg-amber-500 text-amber-400" }
-    : { label: "CLOSED", color: "bg-gray-500 text-gray-400" };
-
-  const hasAutoTrading = portfolios.some(
-    (p) => p.execution_mode && p.execution_mode !== "local" && p.is_active
-  );
-
-  const lastAction = pendingActions.length > 0 ? pendingActions[0] : null;
-
-  return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-surface-light/30 border border-border/50 mb-4">
-      {/* Market status */}
-      <div className="flex items-center gap-1.5">
-        <span className={`w-2 h-2 rounded-full ${marketStatus.color.split(" ")[0]} ${isOpen ? "animate-pulse" : ""}`} />
-        <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${marketStatus.color.split(" ")[1]}`}>
-          {marketStatus.label}
-        </span>
-      </div>
-
-      <div className="w-px h-4 bg-border" />
-
-      {/* Auto-trading */}
-      <div className="flex items-center gap-1.5">
-        <span className={`w-1.5 h-1.5 rounded-full ${hasAutoTrading ? "bg-profit animate-pulse" : "bg-gray-600"}`} />
-        <span className="text-[10px] text-gray-500 font-mono">
-          {hasAutoTrading ? "Auto-trading" : "Manual only"}
-        </span>
-      </div>
-
-      {/* Henry's last action */}
-      {lastAction && (
-        <>
-          <div className="w-px h-4 bg-border" />
-          <span className="text-[10px] text-gray-500 font-mono">
-            Last: <span className="text-white">{lastAction.action_type} {lastAction.ticker}</span>
-            {" "}<span className="text-gray-600">{formatTimeAgo(lastAction.created_at)}</span>
-          </span>
-        </>
-      )}
-
-      {/* Hit rate */}
-      {actionStats?.hit_rate != null && (
-        <>
-          <div className="w-px h-4 bg-border hidden sm:block" />
-          <span className="text-[10px] text-gray-500 font-mono hidden sm:inline">
-            Hit rate: <span className="text-profit">{actionStats.hit_rate}%</span>
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ── Metrics Cards ──────────────────────────────────────────────────
-
-function MetricCard({ label, value, color = "text-white", sub }: {
-  label: string; value: string; color?: string; sub?: string;
-}) {
-  return (
-    <div className="bg-surface-light/30 rounded-xl p-4 border border-border">
-      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>{label}</div>
-      <div className={`text-lg font-mono font-semibold ${color}`} style={FONT_MONO}>{value}</div>
-      {sub && <div className="text-[10px] text-gray-600 font-mono mt-0.5">{sub}</div>}
-    </div>
-  );
-}
-
-function MetricsRow({
-  portfolios,
-  pendingCount,
-  actionStats,
-  signalCount,
-  scannerCount,
-}: {
-  portfolios: Portfolio[];
-  pendingCount: number;
-  actionStats: ActionStats | null;
-  signalCount: number;
-  scannerCount: number;
-}) {
   const totalEquity = portfolios.reduce((s, p) => s + p.equity, 0);
   const totalUnrealized = portfolios.reduce((s, p) => s + p.unrealized_pnl, 0);
   const openPositions = portfolios.reduce((s, p) => s + p.open_positions, 0);
-  const dailyChangePct = totalEquity > 0 ? (totalUnrealized / totalEquity) * 100 : 0;
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-      <MetricCard
-        label="Total Equity"
-        value={formatCurrency(totalEquity)}
-        color="text-white"
-        sub={`${formatPercent(dailyChangePct)} unrealized`}
-      />
-      <MetricCard
-        label="Open Positions"
-        value={String(openPositions)}
-        color="text-white"
-        sub={`${portfolios.length} portfolio${portfolios.length !== 1 ? "s" : ""}`}
-      />
-      <MetricCard
-        label="Pending Actions"
-        value={String(pendingCount)}
-        color={pendingCount > 0 ? "text-ai-blue" : "text-gray-400"}
-        sub={actionStats ? `${actionStats.approved_today} approved today` : undefined}
-      />
-      <MetricCard
-        label="Hit Rate"
-        value={actionStats?.hit_rate != null ? `${actionStats.hit_rate}%` : "N/A"}
-        color={actionStats?.hit_rate != null && actionStats.hit_rate >= 50 ? "text-profit" : "text-gray-400"}
-        sub={actionStats?.hit_rate_high_confidence != null ? `High conf: ${actionStats.hit_rate_high_confidence}%` : undefined}
-      />
-      <MetricCard
-        label="Today's Signals"
-        value={String(signalCount)}
-        color={signalCount > 0 ? "text-amber-400" : "text-gray-400"}
-      />
-      <MetricCard
-        label="Scanner Opps"
-        value={String(scannerCount)}
-        color={scannerCount > 0 ? "text-ai-blue" : "text-gray-400"}
-      />
+    <div className="mb-8">
+      {/* Greeting row */}
+      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2 mb-6">
+        <div>
+          <h1
+            className="text-3xl sm:text-4xl font-bold text-white tracking-tight"
+            style={FONT_OUTFIT}
+          >
+            {getGreeting()}
+          </h1>
+          <p className="text-sm text-gray-500 mt-1" style={FONT_OUTFIT}>
+            {dateStr}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`relative flex h-2 w-2`}>
+            <span
+              className={`absolute inline-flex h-full w-full rounded-full ${market.dotColor} ${
+                market.label === "MARKET OPEN" ? "animate-ping opacity-75" : "opacity-50"
+              }`}
+            />
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${market.dotColor}`} />
+          </span>
+          <span
+            className={`text-xs font-semibold tracking-wider uppercase ${market.color}`}
+            style={FONT_MONO}
+          >
+            {market.label}
+          </span>
+        </div>
+      </div>
+
+      {/* Metric bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Total Equity */}
+        <div className="rounded-xl border border-border/50 bg-[#1f2937]/40 p-5">
+          <div
+            className="text-2xl sm:text-3xl font-bold text-white tracking-tight"
+            style={FONT_MONO}
+          >
+            {formatCurrency(totalEquity)}
+          </div>
+          <div
+            className="text-xs text-gray-500 mt-1 uppercase tracking-wider"
+            style={FONT_OUTFIT}
+          >
+            Total Equity
+          </div>
+        </div>
+
+        {/* Today's P&L */}
+        <div className="rounded-xl border border-border/50 bg-[#1f2937]/40 p-5">
+          <div
+            className={`text-2xl sm:text-3xl font-bold tracking-tight ${pnlColor(totalUnrealized)}`}
+            style={FONT_MONO}
+          >
+            {totalUnrealized >= 0 ? "+" : ""}
+            {formatCurrency(totalUnrealized)}
+          </div>
+          <div
+            className="text-xs text-gray-500 mt-1 uppercase tracking-wider"
+            style={FONT_OUTFIT}
+          >
+            Unrealized P&L
+          </div>
+        </div>
+
+        {/* Open Positions */}
+        <div className="rounded-xl border border-border/50 bg-[#1f2937]/40 p-5">
+          <div
+            className="text-2xl sm:text-3xl font-bold text-white tracking-tight"
+            style={FONT_MONO}
+          >
+            {openPositions}
+          </div>
+          <div
+            className="text-xs text-gray-500 mt-1 uppercase tracking-wider"
+            style={FONT_OUTFIT}
+          >
+            Open Positions
+          </div>
+        </div>
+
+        {/* Henry's Activity */}
+        <div className="rounded-xl border border-border/50 bg-[#1f2937]/40 p-5">
+          <div
+            className="text-2xl sm:text-3xl font-bold text-ai-blue tracking-tight"
+            style={FONT_MONO}
+          >
+            {activityCount}
+          </div>
+          <div
+            className="text-xs text-gray-500 mt-1 uppercase tracking-wider"
+            style={FONT_OUTFIT}
+          >
+            Henry&apos;s Activity
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Briefing Tab ──────────────────────────────────────────────────
+
+function BriefingTab() {
+  const [data, setData] = useState<BriefingResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchBriefing = useCallback(async (isRefresh = false) => {
+    try {
+      if (isRefresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
+      const result = isRefresh ? await api.refreshBriefing() : await api.getBriefing();
+      setData(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load briefing");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchBriefing();
+  }, [fetchBriefing]);
+
+  return (
+    <div>
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-bold text-white" style={FONT_OUTFIT}>
+            Today&apos;s Briefing
+          </h2>
+          {data && (
+            <Badge className="text-[10px] bg-ai-blue/15 text-ai-blue border-ai-blue/20">
+              {data.open_positions} position{data.open_positions !== 1 ? "s" : ""}
+            </Badge>
+          )}
+          {data?.cached && (
+            <Badge className="text-[10px] bg-gray-700/30 text-gray-500 border-gray-600/30">
+              cached
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {data?.generated_at && (
+            <span className="text-[10px] text-gray-600 font-mono hidden sm:inline">
+              {formatTimeAgo(data.generated_at)}
+            </span>
+          )}
+          <Button
+            size="sm"
+            onClick={() => fetchBriefing(true)}
+            disabled={refreshing}
+            className="text-xs h-8 bg-ai-blue/10 text-ai-blue border border-ai-blue/20 hover:bg-ai-blue/20"
+          >
+            <svg
+              className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Content Card */}
+      <Card className="border-border/50 bg-[#1f2937]/40">
+        <CardContent className="p-6">
+          {loading && (
+            <div className="space-y-3">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <Skeleton key={i} className="h-4 rounded" style={{ width: `${60 + Math.random() * 35}%` }} />
+              ))}
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-center gap-2 py-4 px-4 rounded-lg border border-loss/30 bg-loss/5">
+              <svg
+                className="w-4 h-4 text-loss flex-shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
+                />
+              </svg>
+              <span className="text-sm text-loss">{error}</span>
+              <button
+                onClick={() => fetchBriefing()}
+                className="text-sm text-loss underline hover:text-loss/80 ml-1"
+              >
+                retry
+              </button>
+            </div>
+          )}
+
+          {data && !loading && (
+            <div
+              className="ai-prose"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(data.briefing) }}
+            />
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -203,11 +353,11 @@ function ActionQueueTab() {
           <h2 className="text-lg font-bold text-white" style={FONT_OUTFIT}>Action Queue</h2>
           <p className="text-xs text-gray-500 mt-1">Henry&apos;s pending recommendations - approve or reject</p>
         </div>
-        <div className="flex rounded-md overflow-hidden border border-border">
+        <div className="flex rounded-lg overflow-hidden border border-border/50">
           {["pending", "approved", "rejected", "all"].map((f) => (
             <button key={f} onClick={() => { setFilter(f); setLoading(true); }}
-              className={`px-3 py-1.5 text-[10px] font-medium capitalize transition ${
-                filter === f ? "bg-ai-blue/20 text-ai-blue" : "bg-surface-light/30 text-gray-500 hover:text-gray-300"
+              className={`px-3 py-1.5 text-xs font-medium capitalize transition ${
+                filter === f ? "bg-ai-blue/20 text-ai-blue" : "bg-[#1f2937]/40 text-gray-500 hover:text-gray-300"
               }`}>{f}</button>
           ))}
         </div>
@@ -218,9 +368,9 @@ function ActionQueueTab() {
           {[1, 2, 3].map((i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
       ) : actions.length === 0 ? (
-        <div className="text-center py-12">
-          <div className="w-12 h-12 rounded-full bg-ai-blue/10 flex items-center justify-center mx-auto mb-3">
-            <svg className="w-6 h-6 text-ai-blue/40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <div className="text-center py-16">
+          <div className="w-14 h-14 rounded-full bg-ai-blue/10 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-7 h-7 text-ai-blue/40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
@@ -231,10 +381,10 @@ function ActionQueueTab() {
           {actions.map((a) => (
             <div
               key={a.id}
-              className={`rounded-xl border p-4 transition ${
+              className={`rounded-xl border p-5 transition ${
                 isOpportunity(a)
                   ? "border-l-4 border-l-ai-blue border-t-border/40 border-r-border/40 border-b-border/40 bg-ai-blue/5"
-                  : "border-border/40 bg-surface-light/20"
+                  : "border-border/40 bg-[#1f2937]/30"
               }`}
             >
               <div className="flex items-start gap-3">
@@ -259,7 +409,7 @@ function ActionQueueTab() {
                   {/* Confidence bar */}
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-[10px] text-gray-500 font-mono w-16">Conf {a.confidence}/10</span>
-                    <div className="flex-1 h-1.5 rounded-full bg-surface-light/40 overflow-hidden">
+                    <div className="flex-1 h-1.5 rounded-full bg-[#111827]/60 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
                           a.confidence >= 8 ? "bg-profit" : a.confidence >= 5 ? "bg-amber-400" : "bg-loss"
@@ -357,7 +507,7 @@ function MemoryTab() {
           value={tickerFilter}
           onChange={(e) => { setTickerFilter(e.target.value.toUpperCase()); setLoading(true); }}
           placeholder="Filter by ticker..."
-          className="w-40 h-8 text-xs font-mono bg-surface-light/30 border-border/50"
+          className="w-40 h-8 text-xs font-mono bg-[#1f2937]/40 border-border/50"
         />
       </div>
 
@@ -373,10 +523,10 @@ function MemoryTab() {
               <h3 className="text-sm font-semibold text-white mb-3" style={FONT_OUTFIT}>Performance Stats</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {stats.map((s) => (
-                  <Card key={s.id}>
+                  <Card key={s.id} className="border-border/50 bg-[#1f2937]/40">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-2 mb-2">
-                        <Badge className="text-[9px] bg-ai-blue/15 text-ai-blue">{s.stat_type}</Badge>
+                        <Badge className={`text-[9px] ${contextTypeBadge(s.stat_type)}`}>{s.stat_type}</Badge>
                         {s.ticker && <span className="text-xs font-mono text-white font-bold">{s.ticker}</span>}
                         {s.strategy && <span className="text-[10px] text-gray-500">{s.strategy}</span>}
                       </div>
@@ -408,7 +558,7 @@ function MemoryTab() {
             ) : (
               <div className="space-y-2 max-h-[600px] overflow-y-auto">
                 {context.map((c) => (
-                  <div key={c.id} className="rounded-lg border border-border/40 bg-surface-light/20 p-3">
+                  <div key={c.id} className="rounded-xl border border-border/40 bg-[#1f2937]/30 p-4">
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <Badge className={`text-[9px] ${contextTypeBadge(c.context_type)}`}>{c.context_type}</Badge>
                       {c.ticker && <span className="text-xs font-mono text-white font-bold">{c.ticker}</span>}
@@ -435,8 +585,6 @@ function MemoryTab() {
   );
 }
 
-// ── Tab definitions ────────────────────────────────────────────────
-
 // ── Henry Activity Log ──────────────────────────────────────────────
 
 function HenryActivityLog() {
@@ -455,7 +603,7 @@ function HenryActivityLog() {
 
   useEffect(() => {
     fetchActivity().finally(() => setLoading(false));
-    const interval = setInterval(fetchActivity, 15000); // Poll every 15s
+    const interval = setInterval(fetchActivity, 15000);
     return () => clearInterval(interval);
   }, [fetchActivity]);
 
@@ -489,28 +637,30 @@ function HenryActivityLog() {
 
   return (
     <div className="space-y-4">
-      {/* Chat Input */}
-      <div className="flex gap-2">
-        <input
-          value={chatInput}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleChat()}
-          placeholder="Ask Henry about his decisions..."
-          className="flex-1 h-9 rounded-lg border border-border bg-surface-light/30 px-3 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-ai-blue/50"
-        />
-        <button onClick={handleChat} disabled={chatLoading || !chatInput.trim()}
-          className="px-4 h-9 rounded-lg bg-ai-blue/20 text-ai-blue border border-ai-blue/30 text-sm font-medium hover:bg-ai-blue/30 transition disabled:opacity-50">
-          {chatLoading ? "..." : "Ask"}
-        </button>
+      {/* Chat Input - prominent */}
+      <div className="rounded-xl border border-ai-blue/20 bg-ai-blue/5 p-4">
+        <div className="flex gap-2">
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleChat()}
+            placeholder="Ask Henry about his decisions..."
+            className="flex-1 h-10 rounded-lg border border-border/50 bg-[#111827]/60 px-4 text-sm text-white placeholder:text-gray-500 focus:outline-none focus:ring-1 focus:ring-ai-blue/50"
+          />
+          <button onClick={handleChat} disabled={chatLoading || !chatInput.trim()}
+            className="px-5 h-10 rounded-lg bg-ai-blue/20 text-ai-blue border border-ai-blue/30 text-sm font-semibold hover:bg-ai-blue/30 transition disabled:opacity-50">
+            {chatLoading ? "..." : "Ask"}
+          </button>
+        </div>
       </div>
 
       {/* Chat Messages */}
       {chatMessages.length > 0 && (
         <div className="space-y-3 max-h-60 overflow-y-auto">
           {chatMessages.map((msg, i) => (
-            <div key={i} className={`p-3 rounded-lg text-sm ${
+            <div key={i} className={`p-3 rounded-xl text-sm ${
               msg.role === "user"
-                ? "bg-surface-light/30 border border-border/40 text-gray-300 ml-8"
+                ? "bg-[#1f2937]/40 border border-border/40 text-gray-300 ml-8"
                 : "bg-ai-blue/5 border border-ai-blue/20 text-gray-300 mr-8"
             }`}>
               <div className="text-[9px] text-gray-500 mb-1 font-mono">
@@ -524,7 +674,7 @@ function HenryActivityLog() {
             </div>
           ))}
           {chatLoading && (
-            <div className="bg-ai-blue/5 border border-ai-blue/20 p-3 rounded-lg mr-8">
+            <div className="bg-ai-blue/5 border border-ai-blue/20 p-3 rounded-xl mr-8">
               <div className="flex items-center gap-2 text-xs text-ai-blue/60">
                 <span className="w-2 h-2 rounded-full bg-ai-blue animate-pulse" />
                 Henry is thinking...
@@ -536,13 +686,13 @@ function HenryActivityLog() {
 
       {/* Activity Feed */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">Activity Log</h3>
+        <h3 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>Activity Log</h3>
         <span className="text-[9px] text-gray-500 font-mono">{activity.length} entries · auto-refreshing</span>
       </div>
 
       {loading ? (
         <div className="space-y-2">
-          {[1,2,3,4,5].map(i => <div key={i} className="h-10 rounded-lg bg-surface-light/20 animate-pulse" />)}
+          {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-10 rounded-lg" />)}
         </div>
       ) : activity.length === 0 ? (
         <div className="text-center py-12 text-gray-500 text-sm">
@@ -552,14 +702,14 @@ function HenryActivityLog() {
         <div className="space-y-1 max-h-[500px] overflow-y-auto">
           {activity.map((a) => (
             <div key={a.id}
-              className={`flex items-start gap-3 px-3 py-2 rounded-lg border-l-2 bg-surface-light/10 hover:bg-surface-light/20 transition ${
+              className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border-l-2 bg-[#1f2937]/20 hover:bg-[#1f2937]/40 transition ${
                 activityColor[a.activity_type] || "border-l-gray-600"
               }`}>
               <span className="text-[10px] shrink-0 mt-0.5">{a.activity_label}</span>
               <div className="flex-1 min-w-0">
                 <span className="text-xs text-gray-300">{a.message}</span>
                 {a.ticker && (
-                  <span className="ml-2 text-[9px] font-mono text-white bg-surface-light/40 px-1.5 py-0.5 rounded">{a.ticker}</span>
+                  <span className="ml-2 text-[9px] font-mono text-white bg-[#1f2937]/60 px-1.5 py-0.5 rounded">{a.ticker}</span>
                 )}
               </div>
               <span className="text-[9px] text-gray-600 font-mono shrink-0">{formatTimeAgo(a.created_at)}</span>
@@ -571,78 +721,20 @@ function HenryActivityLog() {
   );
 }
 
+// ── Tab definitions ────────────────────────────────────────────────
 
 const TABS = [
-  {
-    id: "briefing",
-    label: "Briefing",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
-      </svg>
-    ),
-  },
-  {
-    id: "activity",
-    label: "Activity",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
-      </svg>
-    ),
-  },
-  {
-    id: "ask",
-    label: "Ask Henry",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
-      </svg>
-    ),
-  },
-  {
-    id: "actions",
-    label: "Action Queue",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
-      </svg>
-    ),
-    dot: "bg-ai-blue",
-  },
-  {
-    id: "memory",
-    label: "Memory",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
-      </svg>
-    ),
-  },
-  {
-    id: "conflicts",
-    label: "Conflicts",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-      </svg>
-    ),
-  },
-  {
-    id: "feed",
-    label: "Live Feed",
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
-      </svg>
-    ),
-    dot: "bg-profit",
-  },
+  { id: "briefing", label: "Briefing" },
+  { id: "activity", label: "Activity" },
+  { id: "ask", label: "Ask Henry" },
+  { id: "actions", label: "Actions" },
+  { id: "memory", label: "Memory" },
 ];
 
 // ── Main Page ──────────────────────────────────────────────────────
 
 export default function HomePage() {
+  useFonts();
   const [activeTab, setActiveTab] = useState("briefing");
 
   // Fetch dashboard data
@@ -651,126 +743,57 @@ export default function HomePage() {
   const { data: pendingActions } = usePolling(() => api.getActions("pending"), 15000);
   const [signalCount, setSignalCount] = useState(0);
   const [scannerCount, setScannerCount] = useState(0);
+  const [activityCount, setActivityCount] = useState(0);
 
   useEffect(() => {
     api.getScreenerAlerts({ hours: 24 }).then((a) => setSignalCount(a.length)).catch(() => {});
     api.getScannerResults().then((r) => setScannerCount(r.length)).catch(() => {});
+    api.getHenryActivity(50).then((a) => setActivityCount(a.length)).catch(() => {});
   }, []);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-0 lg:gap-6 -mx-3 sm:-mx-4 lg:mx-0">
-      {/* ── Mobile: Horizontal scrollable tab bar ── */}
-      <div className="lg:hidden overflow-x-auto border-b border-border bg-surface/60 backdrop-blur sticky top-14 z-40">
-        <div className="flex min-w-max px-3 sm:px-4">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition ${
+    <div className="max-w-5xl mx-auto">
+      {/* Hero */}
+      <HeroSection
+        portfolios={portfolios || []}
+        pendingActions={pendingActions || []}
+        activityCount={activityCount}
+      />
+
+      {/* Tab bar - horizontal pills */}
+      <div className="flex items-center gap-1 mb-6 overflow-x-auto pb-1">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
+              activeTab === tab.id
+                ? "bg-ai-blue text-white shadow-lg shadow-ai-blue/20"
+                : "bg-[#1f2937]/40 text-gray-400 hover:text-white hover:bg-[#1f2937]/70"
+            }`}
+            style={FONT_OUTFIT}
+          >
+            {tab.label}
+            {tab.id === "actions" && pendingActions && pendingActions.length > 0 && (
+              <span className={`ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
                 activeTab === tab.id
-                  ? "text-white border-ai-blue"
-                  : "text-gray-500 border-transparent hover:text-gray-300"
-              }`}
-            >
-              {tab.dot && (
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${tab.dot} opacity-75`} />
-                  <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${tab.dot}`} />
-                </span>
-              )}
-              <span className={activeTab === tab.id ? "text-ai-blue" : "text-gray-600"}>{tab.icon}</span>
-              {tab.label}
-              {tab.id === "actions" && pendingActions && pendingActions.length > 0 && (
-                <span className="ml-1 text-[9px] font-mono bg-ai-blue/20 text-ai-blue px-1.5 py-0.5 rounded-full">
-                  {pendingActions.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+                  ? "bg-white/20 text-white"
+                  : "bg-ai-blue/20 text-ai-blue"
+              }`}>
+                {pendingActions.length}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
 
-      {/* ── Desktop: Left sidebar ── */}
-      <aside className="hidden lg:flex flex-col w-52 shrink-0 sticky top-20 self-start">
-        <div className="mb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-ai-blue/10 flex items-center justify-center">
-              <svg className="w-4 h-4 text-ai-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-sm font-bold text-white leading-tight">Command Center</h1>
-              <p className="text-[10px] text-gray-500">Henry AI Co-Pilot</p>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex flex-col gap-0.5">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left transition ${
-                activeTab === tab.id
-                  ? "text-white bg-surface-light/50 border border-border"
-                  : "text-gray-500 hover:text-gray-300 hover:bg-surface-light/20"
-              }`}
-            >
-              <span className={activeTab === tab.id ? "text-ai-blue" : "text-gray-600"}>
-                {tab.icon}
-              </span>
-              {tab.label}
-              {tab.id === "actions" && pendingActions && pendingActions.length > 0 && (
-                <span className="text-[9px] font-mono bg-ai-blue/20 text-ai-blue px-1.5 py-0.5 rounded-full ml-auto">
-                  {pendingActions.length}
-                </span>
-              )}
-              {tab.dot && tab.id !== "actions" && (
-                <span className="relative flex h-1.5 w-1.5 ml-auto">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${tab.dot} opacity-75`} />
-                  <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${tab.dot}`} />
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
-      </aside>
-
-      {/* ── Content area ── */}
-      <div className="flex-1 min-w-0 px-3 sm:px-4 lg:px-0 pt-4 lg:pt-0">
-        {/* System Status + Metrics (always visible) */}
-        <SystemStatusBar
-          portfolios={portfolios || []}
-          pendingActions={pendingActions || []}
-          actionStats={actionStats}
-        />
-        <MetricsRow
-          portfolios={portfolios || []}
-          pendingCount={pendingActions?.length || 0}
-          actionStats={actionStats}
-          signalCount={signalCount}
-          scannerCount={scannerCount}
-        />
-
-        {/* Tab content */}
-        {activeTab === "briefing" && <MorningBriefing />}
+      {/* Tab content */}
+      <div>
+        {activeTab === "briefing" && <BriefingTab />}
         {activeTab === "activity" && <HenryActivityLog />}
         {activeTab === "ask" && <AskHenry />}
         {activeTab === "actions" && <ActionQueueTab />}
         {activeTab === "memory" && <MemoryTab />}
-        {activeTab === "conflicts" && <ConflictLog />}
-        {activeTab === "feed" && (
-          <div>
-            <div className="mb-4">
-              <h2 className="text-lg font-bold text-white">Live Trade Feed</h2>
-              <p className="text-xs text-gray-500 mt-1">
-                Real-time entries and exits — updates every 5 seconds
-              </p>
-            </div>
-            <LiveTradeFeed limit={100} />
-          </div>
-        )}
       </div>
     </div>
   );
