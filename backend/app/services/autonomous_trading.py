@@ -571,15 +571,22 @@ async def _execute_autonomous_trade(
             if not port_obj:
                 return False
 
-            # Position sizing
+            # Position sizing — cap at available cash
             high_alloc = cfg.get("high_alloc_pct", 5.0) / 100.0
             mid_alloc = cfg.get("mid_alloc_pct", 3.0) / 100.0
             alloc_pct = high_alloc if confidence >= 8 else mid_alloc
-            alloc_amount = equity * alloc_pct
-            qty = alloc_amount / price if price > 0 else 0
 
-            if qty <= 0 or port_obj.cash < alloc_amount:
-                logger.info(f"Autonomous: skipped {ticker} — insufficient cash (need ${alloc_amount:.2f}, have ${port_obj.cash:.2f})")
+            target_amount = equity * alloc_pct
+            max_per_trade_pct = 10.0  # Max 10% of equity per trade
+            max_amount = equity * (max_per_trade_pct / 100.0)
+            alloc_amount = min(target_amount, max_amount, port_obj.cash)
+
+            # Need at least enough for 1 share or $10 minimum
+            min_trade = min(10.0, price) if price > 0 else 10.0
+            qty = alloc_amount / price if price > 0 and alloc_amount >= min_trade else 0
+
+            if qty <= 0:
+                logger.info(f"Autonomous: skipped {ticker} — insufficient cash (have ${port_obj.cash:.2f}, need ${min_trade:.2f} min, target was ${target_amount:.2f})")
                 return False
 
             # Get or create a pseudo-trader for autonomous trades

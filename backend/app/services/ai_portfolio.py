@@ -453,10 +453,18 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 high_alloc = cfg.get("high_alloc_pct", 5.0) / 100.0
                 mid_alloc = cfg.get("mid_alloc_pct", 3.0) / 100.0
                 alloc_pct = high_alloc if confidence >= 8 else mid_alloc
-                alloc_amount = equity * alloc_pct
-                qty = alloc_amount / trade.entry_price if trade.entry_price > 0 else 0
 
-                if qty > 0 and portfolio.cash >= alloc_amount:
+                # Size based on equity target but CAP at available cash
+                target_amount = equity * alloc_pct
+                max_per_trade_pct = portfolio.max_pct_per_trade or 10.0
+                max_amount = equity * (max_per_trade_pct / 100.0)
+                alloc_amount = min(target_amount, max_amount, portfolio.cash)
+
+                # Need at least enough for 1 share or $10 minimum
+                min_trade = min(10.0, trade.entry_price) if trade.entry_price > 0 else 10.0
+                qty = alloc_amount / trade.entry_price if trade.entry_price > 0 and alloc_amount >= min_trade else 0
+
+                if qty > 0:
                     # Create simulated trade
                     sim_trade = Trade(
                         trader_id=trade.trader_id,
