@@ -65,13 +65,13 @@ function RangeField({ label, value, onChange, min, max, step, suffix }: {
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h3 className="text-sm font-semibold text-white tracking-wide uppercase" style={FONT_OUTFIT}>{children}</h3>;
+  return <h3 className="text-sm font-semibold text-white mb-2" style={FONT_OUTFIT}>{children}</h3>;
 }
 
 function EmptyPanel({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
-    <div className="settings-panel p-12 flex flex-col items-center justify-center text-center min-h-[400px]">
-      <div className="w-16 h-16 rounded-2xl bg-surface-light/50 flex items-center justify-center mb-4">{icon}</div>
+    <div className="rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-12 flex flex-col items-center justify-center text-center min-h-[400px]">
+      <div className="w-16 h-16 rounded-2xl bg-[#1f2937]/50 flex items-center justify-center mb-4">{icon}</div>
       <p className="text-gray-500 text-sm">{text}</p>
     </div>
   );
@@ -294,31 +294,38 @@ export default function SettingsPage() {
   return (
     <>
       <FontLoader />
-      <div style={FONT_OUTFIT}>
+      <div className="max-w-5xl mx-auto" style={FONT_OUTFIT}>
         {/* Page header */}
-        <div className="mb-6 sm:mb-8 opacity-0 animate-fade-in">
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-              <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white">Settings</h1>
-              <p className="text-xs text-gray-500">Manage portfolios, strategies, and API keys</p>
-            </div>
-          </div>
+        {/* Page header */}
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-white" style={FONT_OUTFIT}>Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">Manage portfolios, strategies, scanner, and API configuration</p>
         </div>
 
-        <Tabs value={tab} onValueChange={setTab} className="opacity-0 animate-fade-in" style={{ animationDelay: "80ms" }}>
-          <TabsList>
-            <TabsTrigger value="portfolios">Portfolios</TabsTrigger>
-            <TabsTrigger value="strategies">Strategies</TabsTrigger>
-            <TabsTrigger value="backtests">Backtests</TabsTrigger>
-            <TabsTrigger value="henry">Henry AI</TabsTrigger>
-            <TabsTrigger value="scanner">Scanner</TabsTrigger>
-          </TabsList>
+        <Tabs value={tab} onValueChange={setTab}>
+          {/* Pill tab bar */}
+          <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
+            {[
+              { value: "portfolios", label: "Portfolios" },
+              { value: "strategies", label: "Strategies" },
+              { value: "backtests", label: "Backtests" },
+              { value: "henry", label: "Henry AI" },
+              { value: "scanner", label: "Scanner" },
+            ].map((t) => (
+              <button
+                key={t.value}
+                onClick={() => setTab(t.value)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${
+                  tab === t.value
+                    ? "bg-[#6366f1]/15 text-[#6366f1] border border-[#6366f1]/30 shadow-sm shadow-[#6366f1]/10"
+                    : "text-gray-400 hover:text-white hover:bg-[#1f2937]/40"
+                }`}
+                style={FONT_OUTFIT}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
           {/* ═══ PORTFOLIOS TAB ═══ */}
           <TabsContent value="portfolios">
@@ -333,7 +340,7 @@ export default function SettingsPage() {
                   <>
                     {activePfs.map((pf, i) => (
                       <button key={pf.id} onClick={() => { setSelectedPortfolio(pf.id); setIsCreatingPf(false); }}
-                        className={`w-full text-left settings-panel p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedPortfolio === pf.id ? "border-primary/60 bg-primary/5" : ""}`}
+                        className={`w-full text-left rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedPortfolio === pf.id ? "border-primary/60 bg-primary/5" : ""}`}
                         style={{ animationDelay: `${200 + i * 60}ms` }}>
                         <div className="flex items-start justify-between mb-2">
                           <span className="font-semibold text-sm text-white">{pf.name}</span>
@@ -354,7 +361,7 @@ export default function SettingsPage() {
                         <span className="text-[10px] uppercase tracking-widest text-gray-600 font-mono">Archived</span>
                         {archivedPfs.map((pf) => (
                           <button key={pf.id} onClick={() => { setSelectedPortfolio(pf.id); setIsCreatingPf(false); }}
-                            className={`w-full text-left settings-panel p-4 mt-2 opacity-50 hover:opacity-70 transition-all ${selectedPortfolio === pf.id ? "border-gray-500/40" : ""}`}>
+                            className={`w-full text-left rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-4 mt-2 opacity-50 hover:opacity-70 transition-all ${selectedPortfolio === pf.id ? "border-gray-500/40" : ""}`}>
                             <div className="flex items-start justify-between">
                               <span className="text-sm text-gray-400">{pf.name}</span>
                               <Badge variant="closed" className="text-[10px]">archived</Badge>
@@ -552,7 +559,7 @@ export default function SettingsPage() {
                   <>
                     {traders.map((tr, i) => (
                       <button key={tr.trader_id} onClick={() => { setSelectedTrader(tr.trader_id); setSelectedKey(null); }}
-                        className={`w-full text-left settings-panel p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedTrader === tr.trader_id ? "border-primary/60 bg-primary/5" : ""}`}
+                        className={`w-full text-left rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-4 transition-all opacity-0 animate-fade-in hover:border-primary/40 ${selectedTrader === tr.trader_id ? "border-primary/60 bg-primary/5" : ""}`}
                         style={{ animationDelay: `${200 + i * 60}ms` }}>
                         <div className="flex items-start justify-between mb-1.5">
                           <span className="font-semibold text-sm text-white">{tr.display_name || "Unnamed Strategy"}</span>
@@ -712,7 +719,7 @@ function BacktestsTab({ flash }: { flash: (msg: string, type?: "success" | "erro
   if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
 
   return (
-    <div className="settings-panel p-6 space-y-6">
+    <div className="rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-6 space-y-6">
       <div className="flex items-center justify-between">
         <SectionTitle>Backtest Imports</SectionTitle>
         <label className="cursor-pointer bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 px-4 py-2 rounded-lg text-xs font-medium transition">
@@ -963,7 +970,7 @@ function ScannerConfigTab({ flash }: { flash: (msg: string, type?: "success" | "
   if (loading) return <div className="p-8"><Skeleton className="h-60 rounded-xl" /></div>;
 
   return (
-    <div className="settings-panel p-6 space-y-6">
+    <div className="rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-6 space-y-6">
       {/* ── Scan Profiles ── */}
       <SectionTitle>Scan Profiles</SectionTitle>
       <p className="text-[10px] text-gray-500">Henry rotates through enabled profiles based on market conditions. Select a profile to edit its criteria.</p>
@@ -1254,7 +1261,7 @@ function HenryConfigTab({ flash }: { flash: (msg: string, type?: "success" | "er
   if (loading) return <div className="p-8"><Skeleton className="h-40 rounded-xl" /></div>;
 
   return (
-    <div className="settings-panel p-6 space-y-6">
+    <div className="rounded-xl border border-[#374151]/50 bg-[#1f2937]/20 p-6 space-y-6">
       <SectionTitle>Henry&apos;s Trading Decision Framework</SectionTitle>
       <p className="text-xs text-gray-500">These rules govern how Henry evaluates signals for the AI paper portfolio.</p>
 
