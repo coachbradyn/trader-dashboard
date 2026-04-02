@@ -1799,6 +1799,28 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
                   + Add Trade
                 </button>
                 <button onClick={async () => {
+                  const ticker = prompt("Ticker to resize (e.g. SNDK):");
+                  if (!ticker) return;
+                  const dollars = prompt("Target dollar amount for position:", "10");
+                  if (!dollars) return;
+                  try {
+                    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                    const res = await fetch(`${API_URL}/ai-portfolio/resize-ticker`, {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ ticker: ticker.toUpperCase(), target_dollars: parseFloat(dollars), portfolio_id: portfolioId }),
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                      alert(`Resized ${data.ticker}:\n${data.old_qty} → ${data.new_qty} shares\n$${data.old_cost} → $${data.new_cost}\nCash: $${data.portfolio_cash}`);
+                    } else {
+                      alert(`Error: ${data.detail || JSON.stringify(data)}`);
+                    }
+                    window.location.reload();
+                  } catch (e) { alert(`Failed: ${e}`); }
+                }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-[#374151] text-gray-400 hover:text-white transition" style={FONT_OUTFIT}>
+                  Resize
+                </button>
+                <button onClick={async () => {
                   if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
                   try {
                     const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";

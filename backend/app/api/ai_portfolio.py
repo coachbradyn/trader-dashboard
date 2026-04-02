@@ -611,12 +611,12 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
 
 
 @router.post("/fix-all")
-async def fix_all_trades(body: dict = None, db: AsyncSession = Depends(get_db)):
+async def fix_all_trades(body: dict | None = None, db: AsyncSession = Depends(get_db)):
     """Fix a portfolio: resize all open positions to fit available cash.
     Pass portfolio_id to target a specific portfolio, or defaults to AI portfolio."""
     from app.services.ai_portfolio import get_ai_portfolio
 
-    portfolio_id = (body or {}).get("portfolio_id")
+    portfolio_id = (body or {}).get("portfolio_id") if body else None
     if portfolio_id:
         result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
         portfolio = result.scalar_one_or_none()
@@ -707,6 +707,69 @@ async def fix_all_trades(body: dict = None, db: AsyncSession = Depends(get_db)):
         "new_cash": round(running_cash, 2),
         "fixes_applied": fixes,
         "total_trades": len(all_trades),
+    }
+
+
+@router.post("/resize-ticker")
+async def resize_ticker_position(body: dict, db: AsyncSession = Depends(get_db)):
+    """Resize a specific ticker's position to a dollar amount.
+    Example: {"ticker": "SNDK", "target_dollars": 10, "portfolio_id": "xxx"}"""
+    portfolio_id = body.get("portfolio_id")
+    ticker = body.get("ticker", "").upper()
+    target_dollars = body.get("target_dollars", 10)
+
+    if not ticker:
+        raise HTTPException(400, "Provide ticker")
+    if not portfolio_id:
+        from app.services.ai_portfolio import get_ai_portfolio
+        portfolio = await get_ai_portfolio(db)
+    else:
+        result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+        portfolio = result.scalar_one_or_none()
+
+    if not portfolio:
+        raise HTTPException(404, "Portfolio not found")
+
+    # Find the open trade for this ticker in this portfolio
+    result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.ticker == ticker,
+            Trade.status == "open",
+        )
+        .order_by(desc(Trade.entry_time))
+        .limit(1)
+    )
+    trade = result.scalar_one_or_none()
+    if not trade:
+        raise HTTPException(404, f"No open {ticker} position in this portfolio")
+
+    old_qty = trade.qty
+    old_cost = old_qty * trade.entry_price
+
+    # Calculate new qty for target dollar amount
+    new_qty = round(target_dollars / trade.entry_price, 4) if trade.entry_price > 0 else 0
+    new_cost = new_qty * trade.entry_price
+
+    # Update trade
+    trade.qty = new_qty
+
+    # Adjust cash: return old cost, deduct new cost
+    portfolio.cash = portfolio.cash + old_cost - new_cost
+
+    await db.commit()
+
+    return {
+        "status": "resized",
+        "ticker": ticker,
+        "old_qty": round(old_qty, 4),
+        "new_qty": new_qty,
+        "old_cost": round(old_cost, 2),
+        "new_cost": round(new_cost, 2),
+        "target_dollars": target_dollars,
+        "portfolio_cash": round(portfolio.cash, 2),
     }
 
 
