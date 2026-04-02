@@ -31,116 +31,258 @@ logger = logging.getLogger(__name__)
 # MAIN AUTONOMOUS LOOP
 # ══════════════════════════════════════════════════════════════════════
 
+async def _get_ai_enabled_portfolios() -> list[Portfolio]:
+    """Get all portfolios where Henry should trade autonomously:
+    AI-managed portfolios + any portfolio with ai_evaluation_enabled."""
+    try:
+        async with async_session() as db:
+            from sqlalchemy import or_
+            result = await db.execute(
+                select(Portfolio).where(
+                    Portfolio.is_active == True,
+                    or_(
+                        Portfolio.is_ai_managed == True,
+                        Portfolio.ai_evaluation_enabled == True,
+                    ),
+                )
+            )
+            return list(result.scalars().all())
+    except Exception as e:
+        logger.error(f"Failed to get AI-enabled portfolios: {e}")
+        return []
+
+
 async def run_autonomous_trading() -> dict:
     """
     Henry's autonomous trading loop. Called on schedule during market hours.
 
     Pipeline:
-    1. Check if AI portfolio exists and has capacity
-    2. Run scanner for new opportunities
-    3. Auto-execute high-confidence scanner picks
-    4. If scanner found nothing, run pattern detection
-    5. Auto-execute high-confidence pattern picks
-    6. Return summary of actions taken
+    1. Scan for opportunities ONCE (scanner profiles + pattern detection)
+    2. Execute high-conviction picks across ALL AI-enabled portfolios
+    3. Each portfolio gets independently sized positions based on its own cash
     """
-    from app.services.ai_portfolio import get_ai_portfolio, get_ai_config, _get_ai_portfolio_equity
+    from app.services.ai_portfolio import get_ai_config
     from app.services.henry_activity import log_activity
 
-    summary = {"scanner_trades": 0, "pattern_trades": 0, "skipped": 0, "errors": []}
+    summary = {"scanner_trades": 0, "pattern_trades": 0, "portfolios_traded": 0, "errors": []}
     await log_activity("Autonomous trading loop started", "scan_start")
 
-    try:
-        async with async_session() as db:
-            portfolio = await get_ai_portfolio(db)
-            if not portfolio:
-                logger.info("Autonomous trading: no AI portfolio exists")
-                return summary
-
-            equity = await _get_ai_portfolio_equity(portfolio, db)
-            cfg = get_ai_config()
-            max_positions = portfolio.max_open_positions or 15
-
-            # Count open positions
-            open_result = await db.execute(
-                select(func.count(Trade.id))
-                .join(PortfolioTrade)
-                .where(
-                    PortfolioTrade.portfolio_id == portfolio.id,
-                    Trade.status == "open",
-                    Trade.is_simulated == True,
-                )
-            )
-            open_count = open_result.scalar() or 0
-
-            if open_count >= max_positions:
-                logger.info(f"Autonomous trading: at max positions ({open_count}/{max_positions})")
-                return summary
-
-            # Check drawdown
-            snap_result = await db.execute(
-                select(func.max(PortfolioSnapshot.peak_equity))
-                .where(PortfolioSnapshot.portfolio_id == portfolio.id)
-            )
-            peak = snap_result.scalar() or portfolio.initial_capital
-            current_dd = ((peak - equity) / peak * 100) if peak > 0 else 0
-            max_dd = portfolio.max_drawdown_pct or 20.0
-
-            if current_dd >= max_dd * 0.9:
-                logger.info(f"Autonomous trading: drawdown too high ({current_dd:.1f}% near {max_dd:.1f}% max)")
-                return summary
-
-            # Get existing tickers to avoid duplicates
-            existing_result = await db.execute(
-                select(Trade.ticker)
-                .join(PortfolioTrade)
-                .where(
-                    PortfolioTrade.portfolio_id == portfolio.id,
-                    Trade.status == "open",
-                    Trade.is_simulated == True,
-                )
-            )
-            existing_tickers = {row[0] for row in existing_result.all()}
-
-            slots_available = max_positions - open_count
-
-    except Exception as e:
-        logger.error(f"Autonomous trading: failed to check portfolio state: {e}")
-        summary["errors"].append(str(e))
+    # Get all portfolios Henry should trade on
+    portfolios = await _get_ai_enabled_portfolios()
+    if not portfolios:
+        logger.info("Autonomous trading: no AI-enabled portfolios")
+        await log_activity("No AI-enabled portfolios found", "status")
         return summary
 
-    # ── Phase 1: Run scanner with market-appropriate profiles ──
+    cfg = get_ai_config()
+    portfolio_names = [p.name for p in portfolios]
+    await log_activity(f"Trading across {len(portfolios)} portfolios: {', '.join(portfolio_names)}", "scan_start")
+
+    # ── Phase 1: Find opportunities (scan ONCE, execute across all portfolios) ──
+    opportunities = []
+
+    # Try scanner first
     try:
-        scanner_trades = await _execute_multi_profile_scan(
-            portfolio, equity, cfg, existing_tickers, slots_available
-        )
-        summary["scanner_trades"] = scanner_trades
-        slots_available -= scanner_trades
+        from app.services.scanner_service import select_profiles_for_now, run_scanner
+        from app.services.fmp_service import get_api_usage
+
+        profiles = await select_profiles_for_now()
+        for profile in profiles:
+            usage = get_api_usage()
+            if usage.get("remaining", 0) < 20:
+                break
+            criteria = profile.get("criteria")
+            if not criteria:
+                continue
+            profile_name = profile.get("name", profile.get("id"))
+            await log_activity(f"Running profile: {profile_name}", "scan_profile")
+            try:
+                opps = await run_scanner(profile_criteria=criteria, profile_name=profile_name, skip_actions=True)
+                if opps:
+                    for o in opps:
+                        o["source"] = f"profile:{profile_name}"
+                    opportunities.extend(opps)
+            except Exception as e:
+                logger.warning(f"Profile '{profile_name}' failed: {e}")
     except Exception as e:
-        logger.error(f"Autonomous trading: scanner execution failed: {e}")
+        logger.error(f"Scanner phase failed: {e}")
         summary["errors"].append(f"scanner: {e}")
 
-    # ── Phase 2: Pattern detection (if no profiles produced trades) ──
-    if slots_available > 0 and summary["scanner_trades"] == 0:
+    # Phase 2: Pattern detection if scanner found nothing
+    if not opportunities:
         try:
-            pattern_trades = await _execute_pattern_opportunities(
-                portfolio, equity, cfg, existing_tickers, slots_available
-            )
-            summary["pattern_trades"] = pattern_trades
+            patterns = await _detect_patterns()
+            if patterns:
+                # Send to Henry for evaluation
+                approved = await _henry_evaluate_patterns(patterns, portfolios[0], portfolios[0].cash, cfg)
+                for a in approved:
+                    a["source"] = f"pattern:{a.get('pattern', 'unknown')}"
+                opportunities.extend(approved)
         except Exception as e:
-            logger.error(f"Autonomous trading: pattern detection failed: {e}")
+            logger.error(f"Pattern detection failed: {e}")
             summary["errors"].append(f"patterns: {e}")
 
-    total = summary["scanner_trades"] + summary["pattern_trades"]
-    logger.info(f"Autonomous trading complete: {total} trades executed ({summary})")
-    msg = f"Trading loop complete: {total} trades executed"
-    if summary["scanner_trades"]:
-        msg += f" ({summary['scanner_trades']} from scanner)"
-    if summary["pattern_trades"]:
-        msg += f" ({summary['pattern_trades']} from patterns)"
+    if not opportunities:
+        await log_activity("No opportunities found across all profiles and patterns", "status")
+        return summary
+
+    await log_activity(f"Found {len(opportunities)} opportunities — executing across {len(portfolios)} portfolios", "scan_result")
+
+    # ── Phase 3: Execute across ALL AI-enabled portfolios ──
+    min_confidence = max(cfg.get("min_confidence", 5), 6)
+
+    for portfolio in portfolios:
+        portfolio_trades = 0
+        max_positions = portfolio.max_open_positions or 15
+
+        # Get this portfolio's open positions
+        try:
+            async with async_session() as db:
+                open_result = await db.execute(
+                    select(func.count(Trade.id))
+                    .join(PortfolioTrade)
+                    .where(
+                        PortfolioTrade.portfolio_id == portfolio.id,
+                        Trade.status == "open",
+                    )
+                )
+                open_count = open_result.scalar() or 0
+
+                existing_result = await db.execute(
+                    select(Trade.ticker)
+                    .join(PortfolioTrade)
+                    .where(
+                        PortfolioTrade.portfolio_id == portfolio.id,
+                        Trade.status == "open",
+                    )
+                )
+                existing_tickers = {row[0] for row in existing_result.all()}
+        except Exception:
+            continue
+
+        slots = max_positions - open_count
+        if slots <= 0:
+            continue
+
+        for opp in opportunities:
+            if portfolio_trades >= slots:
+                break
+
+            ticker = opp.get("ticker", "")
+            confidence = opp.get("confidence", 0)
+            direction = opp.get("direction", "long")
+
+            if not ticker or ticker in existing_tickers or confidence < min_confidence:
+                continue
+
+            price = opp.get("suggested_price") or opp.get("price")
+            if not price:
+                from app.services.fmp_service import get_quote
+                quote = await get_quote(ticker)
+                if quote and isinstance(quote, list) and len(quote) > 0:
+                    price = quote[0].get("price")
+                if not price:
+                    continue
+
+            success = await _execute_autonomous_trade(
+                portfolio, ticker, direction, price, confidence,
+                f"{opp.get('source', 'scanner')}: {opp.get('reasoning', '')[:300]}",
+                portfolio.cash,  # Use this portfolio's cash for equity
+                cfg,
+                source=opp.get("source", "scanner"),
+                stop_price=opp.get("stop"),
+            )
+            if success:
+                portfolio_trades += 1
+                existing_tickers.add(ticker)
+                summary["scanner_trades"] += 1
+
+        if portfolio_trades > 0:
+            summary["portfolios_traded"] += 1
+            await log_activity(
+                f"[{portfolio.name}] Executed {portfolio_trades} trades",
+                "trade_execute",
+            )
+
+    total = summary["scanner_trades"]
+    msg = f"Trading complete: {total} trades across {summary['portfolios_traded']} portfolios"
     if total == 0:
-        msg += " — no actionable opportunities found"
+        msg = "No trades executed — opportunities didn't meet criteria or cash limits"
     await log_activity(msg, "status")
+    logger.info(f"Autonomous trading complete: {summary}")
     return summary
+
+
+async def _detect_patterns() -> list[dict]:
+    """Detect patterns without executing — returns candidate list."""
+    from app.services.fmp_service import (
+        get_api_usage, get_gainers, get_most_active,
+        get_historical_daily, get_technical_indicator,
+    )
+
+    usage = get_api_usage()
+    if usage.get("remaining", 0) < 30:
+        return []
+
+    candidates = []
+
+    # Inside day breakouts
+    try:
+        actives = await get_most_active()
+        if actives and isinstance(actives, list):
+            for stock in actives[:15]:
+                ticker = stock.get("symbol", "")
+                price = stock.get("price")
+                if not ticker or not price or price < 5:
+                    continue
+                hist = await get_historical_daily(ticker, days=5)
+                candles = None
+                if hist and isinstance(hist, dict) and "historical" in hist:
+                    candles = hist["historical"][:5]
+                elif hist and isinstance(hist, list):
+                    candles = hist[:5]
+                if candles and len(candles) >= 3:
+                    today_h, today_l = candles[0].get("high", 0), candles[0].get("low", 0)
+                    yest_h, yest_l = candles[1].get("high", 0), candles[1].get("low", 0)
+                    if today_h <= yest_h and today_l >= yest_l and price > yest_h:
+                        candidates.append({
+                            "ticker": ticker, "pattern": "inside_day_breakout", "direction": "long",
+                            "price": price, "stop": yest_l, "target": price + (yest_h - yest_l) * 2,
+                            "entry_reason": f"Inside day breakout above ${yest_h:.2f}",
+                        })
+    except Exception:
+        pass
+
+    # Volume accumulation
+    try:
+        gainers = await get_gainers()
+        if gainers and isinstance(gainers, list):
+            for stock in gainers[:10]:
+                ticker = stock.get("symbol", "")
+                price = stock.get("price")
+                change_pct = stock.get("changesPercentage", 0)
+                if not ticker or not price or price < 5 or abs(change_pct) > 15:
+                    continue
+                if any(c["ticker"] == ticker for c in candidates):
+                    continue
+                current_vol = stock.get("volume", 0)
+                hist = await get_historical_daily(ticker, days=25)
+                volumes = []
+                if hist and isinstance(hist, dict) and "historical" in hist:
+                    volumes = [d.get("volume", 0) for d in hist["historical"][:20] if d.get("volume")]
+                elif hist and isinstance(hist, list):
+                    volumes = [d.get("volume", 0) for d in hist[:20] if d.get("volume")]
+                avg_vol = sum(volumes) / len(volumes) if volumes else 0
+                if avg_vol > 0 and current_vol > avg_vol * 2 and change_pct > 2:
+                    candidates.append({
+                        "ticker": ticker, "pattern": "volume_accumulation", "direction": "long",
+                        "price": price, "stop": price * 0.95, "target": price * 1.10,
+                        "entry_reason": f"Volume surge {current_vol/avg_vol:.1f}x with +{change_pct:.1f}%",
+                    })
+    except Exception:
+        pass
+
+    return candidates
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -677,13 +819,10 @@ async def _execute_autonomous_trade(
 
 async def check_autonomous_exits() -> int:
     """
-    Check open AI portfolio positions for exit signals:
-    - Stop loss hit (if stop_price set)
-    - RSI > 75 (overbought — consider trimming)
-    - Position held > 10 days with < 2% gain (dead money)
-    Returns count of positions closed.
+    Check ALL AI-enabled portfolio positions for exit signals.
+    Returns total count of positions closed across all portfolios.
     """
-    from app.services.ai_portfolio import get_ai_portfolio, _take_ai_snapshot
+    from app.services.ai_portfolio import _take_ai_snapshot
     from app.services.fmp_service import get_quote, get_technical_indicator, get_api_usage
     import asyncio
 
@@ -691,23 +830,30 @@ async def check_autonomous_exits() -> int:
     if usage.get("remaining", 0) < 10:
         return 0
 
-    closed = 0
+    portfolios = await _get_ai_enabled_portfolios()
+    if not portfolios:
+        return 0
 
-    try:
-        async with async_session() as db:
-            portfolio = await get_ai_portfolio(db)
-            if not portfolio:
-                return 0
+    total_closed = 0
 
-            # Get open positions
-            result = await db.execute(
-                select(Trade)
-                .join(PortfolioTrade)
-                .where(
-                    PortfolioTrade.portfolio_id == portfolio.id,
-                    Trade.status == "open",
-                    Trade.is_simulated == True,
-                )
+    for portfolio in portfolios:
+        closed = 0
+        try:
+            async with async_session() as db:
+                # Re-fetch for fresh state
+                port_result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio.id))
+                portfolio = port_result.scalar_one_or_none()
+                if not portfolio:
+                    continue
+
+                # Get open positions for THIS portfolio
+                result = await db.execute(
+                    select(Trade)
+                    .join(PortfolioTrade)
+                    .where(
+                        PortfolioTrade.portfolio_id == portfolio.id,
+                        Trade.status == "open",
+                    )
             )
             open_positions = result.scalars().all()
 
@@ -820,12 +966,13 @@ async def check_autonomous_exits() -> int:
                         "trade_exit", ticker=pos.ticker,
                     )
 
-            if closed > 0:
-                await _take_ai_snapshot(portfolio, db)
+                if closed > 0:
+                    await _take_ai_snapshot(portfolio, db)
 
-            await db.commit()
+                await db.commit()
+                total_closed += closed
 
-    except Exception as e:
-        logger.error(f"Autonomous exit check failed: {e}")
+        except Exception as e:
+            logger.error(f"Autonomous exit check failed for {portfolio.name}: {e}")
 
-    return closed
+    return total_closed
