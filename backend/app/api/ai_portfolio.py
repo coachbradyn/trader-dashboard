@@ -710,6 +710,83 @@ async def fix_all_trades(body: dict | None = None, db: AsyncSession = Depends(ge
     }
 
 
+@router.post("/set-capital")
+async def set_portfolio_capital(body: dict, db: AsyncSession = Depends(get_db)):
+    """Reset a portfolio's initial capital and recalculate cash from scratch.
+    Example: {"initial_capital": 25, "portfolio_id": "xxx"}
+    This replays all closed trade P&L on top of the new starting capital,
+    and resizes all open positions to fit."""
+    from app.services.ai_portfolio import get_ai_portfolio
+
+    portfolio_id = body.get("portfolio_id")
+    new_capital = body.get("initial_capital")
+    if new_capital is None:
+        raise HTTPException(400, "Provide initial_capital")
+
+    if portfolio_id:
+        result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+        portfolio = result.scalar_one_or_none()
+    else:
+        portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        raise HTTPException(404, "Portfolio not found")
+
+    old_capital = portfolio.initial_capital
+    portfolio.initial_capital = new_capital
+
+    # Replay: start with new capital, apply closed trade P&L, resize open trades
+    running_cash = new_capital
+
+    all_result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(PortfolioTrade.portfolio_id == portfolio.id)
+        .order_by(Trade.entry_time)
+    )
+    all_trades = all_result.scalars().all()
+
+    fixes = []
+    for t in all_trades:
+        if t.status == "closed":
+            running_cash += (t.pnl_dollars or 0)
+        elif t.status == "open":
+            cost = t.entry_price * t.qty
+            max_per_trade = new_capital * 0.10
+            affordable = min(max_per_trade, running_cash * 0.90)
+
+            if cost > affordable and t.entry_price > 0:
+                old_qty = t.qty
+                if affordable < 1:
+                    # Close it
+                    cp = price_service.get_price(t.ticker) or t.entry_price
+                    t.status = "closed"
+                    t.exit_price = cp
+                    t.exit_reason = "capital_reset"
+                    t.exit_time = datetime.utcnow()
+                    t.pnl_dollars = (cp - t.entry_price) * t.qty if t.direction == "long" else (t.entry_price - cp) * t.qty
+                    t.pnl_percent = (t.pnl_dollars / cost * 100) if cost > 0 else 0
+                    running_cash += (t.pnl_dollars or 0)
+                    fixes.append({"ticker": t.ticker, "action": "closed", "old_qty": round(old_qty, 4), "reason": "insufficient capital"})
+                else:
+                    new_qty = round(affordable / t.entry_price, 4)
+                    t.qty = new_qty
+                    running_cash -= new_qty * t.entry_price
+                    fixes.append({"ticker": t.ticker, "action": "resized", "old_qty": round(old_qty, 4), "new_qty": new_qty})
+            else:
+                running_cash -= cost
+
+    portfolio.cash = round(max(running_cash, 0), 2)
+    await db.commit()
+
+    return {
+        "status": "capital_reset",
+        "old_capital": old_capital,
+        "new_capital": new_capital,
+        "cash": portfolio.cash,
+        "fixes": fixes,
+    }
+
+
 @router.post("/resize-ticker")
 async def resize_ticker_position(body: dict, db: AsyncSession = Depends(get_db)):
     """Resize a specific ticker's position to a dollar amount.

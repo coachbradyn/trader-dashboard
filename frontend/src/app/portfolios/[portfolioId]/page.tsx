@@ -1821,6 +1821,27 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
                   Resize
                 </button>
                 <button onClick={async () => {
+                  const capital = prompt("Set starting capital ($):", "25");
+                  if (!capital) return;
+                  if (!confirm(`Reset initial capital to $${capital}? This will resize all positions to fit.`)) return;
+                  try {
+                    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                    const res = await fetch(`${API_URL}/ai-portfolio/set-capital`, {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ initial_capital: parseFloat(capital), portfolio_id: portfolioId }),
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                      alert(`Capital reset: $${data.old_capital} → $${data.new_capital}\nCash: $${data.cash}\n${data.fixes?.length || 0} positions adjusted`);
+                    } else {
+                      alert(`Error: ${data.detail || JSON.stringify(data)}`);
+                    }
+                    window.location.reload();
+                  } catch (e) { alert(`Failed: ${e}`); }
+                }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-loss/30 text-loss hover:bg-loss/10 transition" style={FONT_OUTFIT}>
+                  Set Capital
+                </button>
+                <button onClick={async () => {
                   if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
                   try {
                     const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
