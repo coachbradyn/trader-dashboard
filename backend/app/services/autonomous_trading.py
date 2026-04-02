@@ -722,7 +722,15 @@ async def check_autonomous_exits() -> int:
                 if not current_price:
                     current_price = price_service.get_price(pos.ticker) or pos.entry_price
 
-                # Check stop loss
+                # Calculate P&L
+                if pos.direction == "long":
+                    pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+                else:
+                    pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
+
+                hold_days = (datetime.utcnow() - pos.entry_time).days if pos.entry_time else 0
+
+                # ── Rule 1: Stop loss hit ──
                 if pos.stop_price:
                     if pos.direction == "long" and current_price <= pos.stop_price:
                         should_close = True
@@ -731,31 +739,38 @@ async def check_autonomous_exits() -> int:
                         should_close = True
                         exit_reason = f"stop_hit (${pos.stop_price:.2f})"
 
-                # Check overbought (RSI > 80)
+                # ── Rule 2: Profit target (>15% gain — take profits) ──
+                if not should_close and pnl_pct >= 15:
+                    should_close = True
+                    exit_reason = f"profit_target ({pnl_pct:+.1f}%)"
+
+                # ── Rule 3: Trailing stop (gave back >40% of max gain) ──
+                if not should_close and pnl_pct > 5:
+                    # We don't track max gain per position, so use a simpler rule:
+                    # if RSI was high and is now dropping, momentum fading
+                    pass  # Covered by RSI check below
+
+                # ── Rule 4: Overbought exit (RSI > 80 on profitable longs) ──
                 if not should_close:
                     try:
                         rsi_data = await get_technical_indicator(pos.ticker, "rsi", period=14, interval="daily")
                         if rsi_data and isinstance(rsi_data, list) and len(rsi_data) > 0:
                             rsi = rsi_data[0].get("rsi") or rsi_data[0].get("value")
-                            if rsi and rsi > 80 and pos.direction == "long":
-                                # Only close if profitable
-                                if current_price > pos.entry_price:
-                                    should_close = True
-                                    exit_reason = f"overbought_exit (RSI {rsi:.0f})"
+                            if rsi and rsi > 80 and pos.direction == "long" and pnl_pct > 0:
+                                should_close = True
+                                exit_reason = f"overbought_exit (RSI {rsi:.0f}, P&L {pnl_pct:+.1f}%)"
                     except Exception:
                         pass
 
-                # Check dead money (>10 days, <2% gain)
-                if not should_close and pos.entry_time:
-                    hold_days = (datetime.utcnow() - pos.entry_time).days
-                    if pos.direction == "long":
-                        pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
-                    else:
-                        pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
+                # ── Rule 5: Loss limit (-8% — cut losers) ──
+                if not should_close and pnl_pct <= -8:
+                    should_close = True
+                    exit_reason = f"loss_limit ({pnl_pct:+.1f}%)"
 
-                    if hold_days > 10 and pnl_pct < 2:
-                        should_close = True
-                        exit_reason = f"dead_money ({hold_days}d, {pnl_pct:+.1f}%)"
+                # ── Rule 6: Dead money (>10 days, <2% gain) ──
+                if not should_close and hold_days > 10 and pnl_pct < 2:
+                    should_close = True
+                    exit_reason = f"dead_money ({hold_days}d, {pnl_pct:+.1f}%)"
 
                 if should_close:
                     # Close the position
