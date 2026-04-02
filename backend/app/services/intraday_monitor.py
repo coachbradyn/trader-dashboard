@@ -79,26 +79,20 @@ async def monitor_entry_levels() -> int:
                     if suggested is None or suggested <= 0:
                         continue
 
+                    # Always update current price
+                    action.current_price = current_price
+
                     # Check if price is within 1% of suggested entry
                     pct_diff = abs(current_price - suggested) / suggested * 100
                     if pct_diff <= 1.0:
-                        # Boost priority to signal imminent entry opportunity
-                        old_priority = action.priority_score
-                        action.priority_score = max(action.priority_score, 9.0)
-                        action.current_price = current_price
-                        action.reasoning = (
-                            action.reasoning +
-                            f"\n[ALERT: Price ${current_price:.2f} is within {pct_diff:.2f}% of entry ${suggested:.2f}]"
-                        )
-                        triggered += 1
-                        logger.info(
-                            f"Entry alert: {ticker} at ${current_price:.2f} "
-                            f"(target ${suggested:.2f}, {pct_diff:.1f}% away) - "
-                            f"priority {old_priority} -> {action.priority_score}"
-                        )
-                    else:
-                        # Just update current price
-                        action.current_price = current_price
+                        # Only alert once — check if we already boosted priority
+                        if action.priority_score < 9.0:
+                            action.priority_score = 9.0
+                            triggered += 1
+                            logger.info(
+                                f"Entry alert: {ticker} at ${current_price:.2f} "
+                                f"(target ${suggested:.2f}, {pct_diff:.1f}% away)"
+                            )
 
             await db.commit()
 
