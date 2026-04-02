@@ -51,14 +51,24 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
     trader.last_webhook_at = datetime.utcnow()
 
     # 2. Process based on signal type
+    ai_eval_portfolios = []
     if payload.signal == "entry":
-        trade = await _process_entry(trader, payload, db)
+        trade, ai_eval_portfolios = await _process_entry(trader, payload, db)
     elif payload.signal == "exit":
         trade = await _process_exit(trader, payload, db)
     else:
         raise ValueError(f"Unknown signal type: {payload.signal}")
 
     await db.commit()
+
+    # Route to Henry for AI-evaluation-enabled portfolios (background)
+    if ai_eval_portfolios and payload.signal == "entry":
+        import asyncio
+        from app.services.ai_portfolio import evaluate_signal_for_portfolio
+        for portfolio in ai_eval_portfolios:
+            asyncio.create_task(evaluate_signal_for_portfolio(
+                trade, trader, payload.model_dump(), portfolio
+            ))
 
     # Auto-add traded ticker to watchlist (non-blocking)
     try:
@@ -151,17 +161,20 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
     links = result.scalars().all()
 
     linked_count = 0
+    ai_eval_portfolios = []  # Portfolios where Henry evaluates first
+
     for link in links:
         # Check direction filter
         if link.direction_filter and link.direction_filter != payload.dir:
             continue
 
-        # Skip the AI-managed portfolio — Henry evaluates signals independently
-        # and creates his own simulated trades via evaluate_signal_for_ai_portfolio
-        if link.portfolio.is_ai_managed:
+        # AI-managed or AI-evaluation-enabled portfolios: Henry evaluates first
+        ai_enabled = getattr(link.portfolio, "ai_evaluation_enabled", False)
+        if link.portfolio.is_ai_managed or ai_enabled:
+            ai_eval_portfolios.append(link.portfolio)
             continue
 
-        # Create portfolio_trade entry
+        # Regular portfolio: add trade directly
         pt = PortfolioTrade(portfolio_id=link.portfolio_id, trade_id=trade.id)
         db.add(pt)
 
@@ -170,14 +183,13 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         link.portfolio.cash -= position_cost
         linked_count += 1
 
-    if linked_count == 0:
+    if linked_count == 0 and not ai_eval_portfolios:
         logger.warning(
-            f"Trade {trade.ticker} ({payload.trader}) not linked to any user portfolio. "
-            f"Found {len(links)} strategy links but all were filtered out (AI-managed or direction mismatch). "
-            f"Create a non-AI portfolio linked to this strategy to track these trades."
+            f"Trade {trade.ticker} ({payload.trader}) not linked to any portfolio. "
+            f"Found {len(links)} strategy links but all filtered out."
         )
 
-    return trade
+    return trade, ai_eval_portfolios
 
 
 async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSession) -> Trade:

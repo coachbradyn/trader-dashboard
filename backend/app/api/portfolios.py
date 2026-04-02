@@ -121,6 +121,7 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
         execution_mode=p.execution_mode or "local",
         max_order_amount=p.max_order_amount,
         has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
+        ai_evaluation_enabled=getattr(p, "ai_evaluation_enabled", False) or False,
         created_at=p.created_at,
     )
 

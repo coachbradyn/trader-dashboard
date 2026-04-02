@@ -545,6 +545,117 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
         logger.error(f"AI portfolio signal evaluation failed: {e}", exc_info=True)
 
 
+async def evaluate_signal_for_portfolio(
+    trade: Trade,
+    trader: Trader,
+    payload_dict: dict,
+    portfolio: Portfolio,
+) -> None:
+    """
+    Background task: evaluate an entry signal for a specific portfolio with AI enabled.
+    Henry decides BUY or SKIP. If BUY, creates a trade sized to available cash.
+    Works for ANY portfolio with ai_evaluation_enabled=True.
+    """
+    try:
+        async with async_session() as db:
+            # Re-fetch portfolio for fresh state
+            result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio.id))
+            port = result.scalar_one_or_none()
+            if not port:
+                return
+
+            cfg = get_ai_config()
+            min_conf = cfg.get("min_confidence", DEFAULT_MIN_CONFIDENCE)
+
+            # Quick prompt — shorter than the full AI portfolio evaluation
+            from app.services.ai_service import _call_claude_async
+            prompt = f"""You are Henry, evaluating a trade signal for the "{port.name}" portfolio.
+
+SIGNAL: {trader.trader_id} → {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f}
+Signal strength: {trade.entry_signal_strength or 'N/A'} | ADX: {trade.entry_adx or 'N/A'} | Stop: ${trade.stop_price:.2f if trade.stop_price else 'NONE'}
+
+PORTFOLIO: ${port.cash:.2f} cash | Execution: {port.execution_mode}
+
+Should this trade be taken? Consider the signal quality and portfolio cash.
+Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "1-2 sentences"}}"""
+
+            raw = await _call_claude_async(
+                prompt, max_tokens=300,
+                ticker=trade.ticker, strategy=trader.trader_id,
+                scope="signal", function_name="ai_portfolio_decision",
+            )
+
+            try:
+                import json
+                clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                result_data = json.loads(clean)
+            except Exception:
+                result_data = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
+
+            action = result_data.get("action", "SKIP").upper()
+            confidence = result_data.get("confidence", 0)
+            reasoning = result_data.get("reasoning", "")
+
+            # Log the decision
+            action_record = PortfolioAction(
+                portfolio_id=port.id,
+                ticker=trade.ticker,
+                direction=trade.direction,
+                action_type=action if action != "SKIP" else "SKIP",
+                confidence=confidence,
+                reasoning=f"[Henry AI] {reasoning}",
+                trigger_type="SIGNAL",
+                trigger_ref=trade.id,
+                current_price=trade.entry_price,
+                priority_score=confidence * 2.0,
+                status="approved" if action == "BUY" and confidence >= min_conf else "rejected",
+                resolved_at=datetime.utcnow(),
+                reject_reason=None if action == "BUY" and confidence >= min_conf else "SKIP or low confidence",
+            )
+            db.add(action_record)
+
+            if action == "BUY" and confidence >= min_conf:
+                # Size to available cash
+                alloc_pct = 0.05 if confidence >= 8 else 0.03
+                alloc_amount = min(port.cash * alloc_pct * 10, port.cash * 0.50, port.cash)
+                # At least enough for minimum trade
+                if alloc_amount >= min(10, trade.entry_price) and trade.entry_price > 0:
+                    qty = round(alloc_amount / trade.entry_price, 4)
+
+                    # Link the original trade to this portfolio
+                    pt = PortfolioTrade(portfolio_id=port.id, trade_id=trade.id)
+                    db.add(pt)
+
+                    # Override qty on the trade for this portfolio's sizing
+                    # Note: this changes the trade qty globally — for multi-portfolio
+                    # we'd need per-portfolio qty, but for now this works
+                    if qty < trade.qty:
+                        trade.qty = qty
+
+                    port.cash -= qty * trade.entry_price
+                    logger.info(f"AI eval ({port.name}): BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence})")
+
+                    try:
+                        from app.services.henry_activity import log_activity
+                        asyncio.create_task(log_activity(
+                            f"[{port.name}] BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence})",
+                            "trade_execute", ticker=trade.ticker,
+                        ))
+                    except Exception:
+                        pass
+                else:
+                    action_record.status = "rejected"
+                    action_record.reject_reason = f"Insufficient cash (${port.cash:.2f})"
+                    logger.info(f"AI eval ({port.name}): BUY rejected {trade.ticker} — cash ${port.cash:.2f}")
+            else:
+                logger.info(f"AI eval ({port.name}): SKIP {trade.ticker} (conf {confidence})")
+
+            await db.commit()
+
+    except Exception as e:
+        logger.error(f"AI evaluation for {portfolio.name} failed: {e}", exc_info=True)
+
+
 async def process_exit_for_ai_portfolio(
     trade: Trade,
     trader: Trader,

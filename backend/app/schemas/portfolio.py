@@ -16,6 +16,7 @@ class PortfolioResponse(BaseModel):
     execution_mode: str = "local"
     max_order_amount: float | None = None
     has_alpaca_credentials: bool = False
+    ai_evaluation_enabled: bool = False
     created_at: datetime
 
     class Config:

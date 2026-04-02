@@ -46,6 +46,9 @@ async def _ensure_schema():
                 if "is_ai_managed" not in portfolio_cols:
                     connection.execute(text("ALTER TABLE portfolios ADD COLUMN is_ai_managed BOOLEAN DEFAULT FALSE"))
                     logger.info("Added missing column: portfolios.is_ai_managed")
+                if "ai_evaluation_enabled" not in portfolio_cols:
+                    connection.execute(text("ALTER TABLE portfolios ADD COLUMN ai_evaluation_enabled BOOLEAN DEFAULT FALSE"))
+                    logger.info("Added missing column: portfolios.ai_evaluation_enabled")
 
                 # Add is_simulated to trades if missing
                 trade_cols = [c["name"] for c in insp.get_columns("trades")]

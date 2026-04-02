@@ -20,6 +20,7 @@ class Portfolio(Base):
     max_open_positions: Mapped[int | None] = mapped_column(Integer)
     max_drawdown_pct: Mapped[float | None] = mapped_column(Float)
     is_ai_managed: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_evaluation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # Henry evaluates signals before execution
     status: Mapped[str] = mapped_column(String(20), default="active")  # "active" / "archived"
     execution_mode: Mapped[str] = mapped_column(String(10), default="local")  # local, paper, live
     alpaca_api_key: Mapped[str | None] = mapped_column(String(255))

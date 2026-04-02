@@ -55,6 +55,7 @@ async def list_portfolios(db: AsyncSession = Depends(get_db)):
             max_order_amount=p.max_order_amount,
             has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
             alpaca_key_preview=(p.alpaca_api_key[:4] + "...") if p.alpaca_api_key and len(p.alpaca_api_key) >= 4 else None,
+            ai_evaluation_enabled=getattr(p, "ai_evaluation_enabled", False) or False,
             created_at=p.created_at,
             strategies=strats,
         ))
@@ -119,6 +120,8 @@ async def update_portfolio(portfolio_id: str, body: PortfolioFullUpdate, db: Asy
             portfolio.alpaca_secret_key = body.portfolio.alpaca_secret_key
         if body.portfolio.max_order_amount is not None:
             portfolio.max_order_amount = body.portfolio.max_order_amount
+        if hasattr(body.portfolio, "ai_evaluation_enabled") and body.portfolio.ai_evaluation_enabled is not None:
+            portfolio.ai_evaluation_enabled = body.portfolio.ai_evaluation_enabled
 
     if body.strategies is not None:
         # Remove existing strategy links

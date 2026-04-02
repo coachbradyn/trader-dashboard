@@ -116,6 +116,7 @@ export default function SettingsPage() {
   const [connectionTest, setConnectionTest] = useState<AlpacaConnectionTest | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [savingCreds, setSavingCreds] = useState(false);
+  const [aiEvalEnabled, setAiEvalEnabled] = useState(false);
 
   const [traders, setTraders] = useState<TraderSettings[]>([]);
   const [tradersLoading, setTradersLoading] = useState(true);
@@ -160,6 +161,7 @@ export default function SettingsPage() {
     setPfName(pf.name); setPfDesc(pf.description || ""); setPfCapital(pf.initial_capital);
     setPfMaxPct(pf.max_pct_per_trade ?? 25); setPfMaxPos(pf.max_open_positions ?? 10); setPfMaxDD(pf.max_drawdown_pct ?? 20);
     setExecMode((pf.execution_mode as "local" | "paper" | "live") || "local");
+    setAiEvalEnabled((pf as unknown as Record<string, unknown>).ai_evaluation_enabled as boolean || false);
     setMaxOrderAmount(pf.max_order_amount ?? 1000);
     setAlpacaApiKey(""); setAlpacaSecretKey(""); setLiveConfirmText(""); setLiveConfirmed(false); setConnectionTest(null);
     const s: Record<string, { assigned: boolean; direction: string | null }> = {};
@@ -258,7 +260,7 @@ export default function SettingsPage() {
     if (!selectedPortfolio) return;
     setSavingCreds(true);
     try {
-      const data: Record<string, unknown> = { execution_mode: execMode, max_order_amount: maxOrderAmount };
+      const data: Record<string, unknown> = { execution_mode: execMode, max_order_amount: maxOrderAmount, ai_evaluation_enabled: aiEvalEnabled };
       if (alpacaApiKey) data.alpaca_api_key = alpacaApiKey;
       if (alpacaSecretKey) data.alpaca_secret_key = alpacaSecretKey;
       await api.updatePortfolio(selectedPortfolio, { portfolio: data });
@@ -401,6 +403,38 @@ export default function SettingsPage() {
                       <div className="max-w-[200px]"><label className="text-xs text-gray-400 mb-1.5 block">Max Open Positions</label>
                         <Input type="number" value={pfMaxPos} onChange={(e) => setPfMaxPos(parseInt(e.target.value) || 1)} min={1} max={100} className="font-mono" /></div>
                     </CardContent></Card>
+
+                    {/* Henry AI Evaluation */}
+                    {!isCreatingPf && (
+                      <Card><CardContent className="space-y-3">
+                        <SectionTitle>Henry AI Evaluation</SectionTitle>
+                        <p className="text-[10px] text-gray-500">
+                          When enabled, Henry evaluates every webhook signal before it&apos;s added to this portfolio.
+                          He decides BUY or SKIP based on signal quality, portfolio state, and his analysis.
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => setAiEvalEnabled(!aiEvalEnabled)}
+                            className={`w-10 h-5 rounded-full transition ${aiEvalEnabled ? "bg-[#6366f1]" : "bg-gray-600"}`}
+                          >
+                            <div className={`rounded-full bg-white transition-transform ${aiEvalEnabled ? "translate-x-5" : "translate-x-0.5"}`} style={{ width: 18, height: 18 }} />
+                          </button>
+                          <span className={`text-xs font-medium ${aiEvalEnabled ? "text-[#6366f1]" : "text-gray-500"}`}>
+                            {aiEvalEnabled ? "Henry evaluates signals" : "Signals added directly"}
+                          </span>
+                        </div>
+                        {aiEvalEnabled && (
+                          <div className="p-3 rounded-lg bg-[#6366f1]/5 border border-[#6366f1]/20 text-[10px] text-gray-400">
+                            <strong className="text-[#6366f1]">How it works:</strong> Webhook signals go through Henry first.
+                            BUY (conf ≥5) → sized to cash and added. SKIP → logged, not executed.
+                            See the Activity tab for decisions.
+                          </div>
+                        )}
+                        <Button size="sm" onClick={handleSaveCreds} disabled={savingCreds}>
+                          {savingCreds ? "Saving..." : "Save Settings"}
+                        </Button>
+                      </CardContent></Card>
+                    )}
 
                     {/* Strategy Assignments */}
                     <Card><CardContent className="space-y-4">
