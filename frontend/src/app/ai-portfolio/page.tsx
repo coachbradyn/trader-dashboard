@@ -267,9 +267,26 @@ export default function AIPortfolioPage() {
             </p>
           </div>
         </div>
-        <span className="text-xs font-mono px-2.5 py-1 rounded-full border border-ai-blue/20 bg-ai-blue/5 text-ai-blue">
-          PAPER
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              if (!confirm("Fix portfolio: This will resize or close any oversized trades and recalculate cash. Continue?")) return;
+              try {
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, { method: "POST", headers: { "Content-Type": "application/json" } });
+                const data = await res.json();
+                alert(`Fixed! Old cash: $${data.old_cash} → New cash: $${data.new_cash}. ${data.fixes_applied?.length || 0} trades adjusted.`);
+                fetchAll();
+              } catch { alert("Fix failed"); }
+            }}
+            className="text-[10px] font-mono px-2.5 py-1 rounded-full border border-amber-500/20 bg-amber-500/5 text-amber-400 hover:bg-amber-500/10 transition"
+          >
+            Fix Portfolio
+          </button>
+          <span className="text-xs font-mono px-2.5 py-1 rounded-full border border-ai-blue/20 bg-ai-blue/5 text-ai-blue">
+            PAPER
+          </span>
+        </div>
       </div>
 
       {/* Tabs */}

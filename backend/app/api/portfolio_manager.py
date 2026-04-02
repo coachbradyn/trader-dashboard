@@ -709,10 +709,57 @@ async def delete_holding(holding_id: str, db: AsyncSession = Depends(get_db)):
     if not holding:
         raise HTTPException(404, "Holding not found")
 
-    # Return cash to portfolio (closing position = capital returns)
+    current_price = price_service.get_price(holding.ticker) if holding.is_active else holding.entry_price
+    exit_price = current_price or holding.entry_price
+    sell_value = exit_price * holding.qty
+
+    # Calculate P&L
+    if holding.direction == "long":
+        pnl_dollars = (exit_price - holding.entry_price) * holding.qty
+    else:
+        pnl_dollars = (holding.entry_price - exit_price) * holding.qty
+    pnl_pct = (pnl_dollars / (holding.entry_price * holding.qty) * 100) if holding.entry_price * holding.qty > 0 else 0
+
+    # Create a closed trade record so the sale shows in trade history
     if holding.is_active:
-        current_price = price_service.get_price(holding.ticker)
-        sell_value = (current_price or holding.entry_price) * holding.qty
+        from app.models import Trade, Trader, PortfolioTrade
+        from datetime import datetime
+
+        # Find a trader to attribute to (use strategy_name or first active)
+        trader = None
+        if holding.strategy_name:
+            trader_result = await db.execute(
+                select(Trader).where(Trader.trader_id == holding.strategy_name).limit(1)
+            )
+            trader = trader_result.scalar_one_or_none()
+        if not trader:
+            trader_result = await db.execute(select(Trader).where(Trader.is_active == True).limit(1))
+            trader = trader_result.scalar_one_or_none()
+
+        if trader:
+            trade = Trade(
+                trader_id=trader.id,
+                ticker=holding.ticker,
+                direction=holding.direction,
+                entry_price=holding.entry_price,
+                exit_price=exit_price,
+                qty=holding.qty,
+                entry_time=holding.entry_date,
+                exit_time=datetime.utcnow(),
+                exit_reason="manual_sell",
+                status="closed",
+                pnl_dollars=round(pnl_dollars, 2),
+                pnl_percent=round(pnl_pct, 2),
+                is_simulated=False,
+            )
+            db.add(trade)
+            await db.flush()
+
+            # Link to portfolio
+            pt = PortfolioTrade(portfolio_id=holding.portfolio_id, trade_id=trade.id)
+            db.add(pt)
+
+        # Return cash to portfolio
         portfolio_result = await db.execute(select(Portfolio).where(Portfolio.id == holding.portfolio_id))
         portfolio = portfolio_result.scalar_one_or_none()
         if portfolio:
@@ -720,7 +767,14 @@ async def delete_holding(holding_id: str, db: AsyncSession = Depends(get_db)):
 
     await db.delete(holding)
     await db.commit()
-    return {"status": "deleted"}
+    return {
+        "status": "sold",
+        "ticker": holding.ticker,
+        "qty": holding.qty,
+        "exit_price": round(exit_price, 2),
+        "pnl_dollars": round(pnl_dollars, 2),
+        "pnl_pct": round(pnl_pct, 2),
+    }
 
 
 @router.get("/holdings/by-ticker/{ticker}")

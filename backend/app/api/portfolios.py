@@ -97,13 +97,13 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
     unrealized = holdings_unrealized + webhook_unrealized
     open_pos = holdings_count + webhook_open
 
-    # Return % — only calculate if capital has been deployed
-    # initial_capital tracks total deposits minus withdrawals
+    # Return % = total gains / total capital deployed
+    # Gains = equity - initial_capital (deposits don't create gains, they increase both)
+    # This gives the correct return on invested capital
     if p.initial_capital > 0:
-        total_return = ((equity - p.initial_capital) / p.initial_capital * 100)
-    elif equity > 0:
-        # No initial capital set but has equity (legacy data) — show absolute return
-        total_return = 0.0
+        # Net gain = equity minus all money put in
+        net_gain = equity - p.initial_capital
+        total_return = (net_gain / p.initial_capital * 100)
     else:
         total_return = 0.0
 
