@@ -525,6 +525,95 @@ async def update_config(cfg: AITradingConfig):
     return config
 
 
+@router.post("/fix-all")
+async def fix_all_trades(db: AsyncSession = Depends(get_db)):
+    """Fix the entire AI portfolio: recalculate cash from scratch based on actual trades.
+    Closes any trades that drove cash negative and recomputes everything."""
+    from app.services.ai_portfolio import get_ai_portfolio
+
+    portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        raise HTTPException(404, "No AI portfolio exists")
+
+    # Get ALL trades linked to this portfolio
+    result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.is_simulated == True,
+        )
+        .options(selectinload(Trade.trader))
+        .order_by(Trade.entry_time)
+    )
+    all_trades = result.scalars().all()
+
+    # Replay all trades to compute correct cash
+    starting_cash = portfolio.initial_capital
+    running_cash = starting_cash
+    fixes = []
+
+    for t in all_trades:
+        cost = t.entry_price * t.qty
+
+        if t.status == "closed":
+            # Closed trade: cash was deducted on entry, returned on exit
+            # Net effect = pnl_dollars
+            running_cash += (t.pnl_dollars or 0)
+        elif t.status == "open":
+            # Open trade: cash was deducted on entry
+            # Check if this trade made cash go negative
+            if running_cash - cost < -1:  # Allow small rounding
+                # This trade is oversized — resize it to fit
+                max_affordable = max(running_cash * 0.95, 0)  # Use 95% of remaining cash
+                if max_affordable < 10:
+                    # Can't afford even a small position — close it
+                    t.status = "closed"
+                    t.exit_price = t.entry_price
+                    t.exit_reason = "fix_oversized"
+                    t.exit_time = datetime.utcnow()
+                    t.pnl_dollars = 0
+                    t.pnl_percent = 0
+                    fixes.append({
+                        "ticker": t.ticker,
+                        "action": "closed (insufficient cash)",
+                        "old_qty": t.qty,
+                        "old_cost": round(cost, 2),
+                    })
+                    # No cash change — we're closing at entry price
+                else:
+                    old_qty = t.qty
+                    new_qty = round(max_affordable / t.entry_price, 4)
+                    t.qty = new_qty
+                    new_cost = new_qty * t.entry_price
+                    running_cash -= new_cost
+                    fixes.append({
+                        "ticker": t.ticker,
+                        "action": "resized",
+                        "old_qty": old_qty,
+                        "new_qty": new_qty,
+                        "old_cost": round(cost, 2),
+                        "new_cost": round(new_cost, 2),
+                    })
+            else:
+                running_cash -= cost
+
+    # Set the corrected cash
+    old_cash = portfolio.cash
+    portfolio.cash = round(running_cash, 2)
+
+    await db.commit()
+
+    return {
+        "status": "fixed",
+        "initial_capital": portfolio.initial_capital,
+        "old_cash": round(old_cash, 2),
+        "new_cash": round(running_cash, 2),
+        "fixes_applied": fixes,
+        "total_trades": len(all_trades),
+    }
+
+
 @router.post("/fix-trade/{trade_id}")
 async def fix_trade_sizing(trade_id: str, db: AsyncSession = Depends(get_db)):
     """Fix a trade's qty to respect cash available at time of trade.
