@@ -436,6 +436,66 @@ export default function SettingsPage() {
                       </CardContent></Card>
                     )}
 
+                    {/* Portfolio Tools */}
+                    {!isCreatingPf && selectedPortfolio && (
+                      <Card><CardContent className="space-y-3">
+                        <SectionTitle>Portfolio Tools</SectionTitle>
+                        <div className="flex flex-wrap gap-2">
+                          <button onClick={async () => {
+                            const ticker = prompt("Ticker to resize (e.g. SNDK):");
+                            if (!ticker) return;
+                            const dollars = prompt("Target dollar amount:", "10");
+                            if (!dollars) return;
+                            try {
+                              const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                              const res = await fetch(`${API_URL}/ai-portfolio/resize-ticker`, {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ ticker: ticker.toUpperCase(), target_dollars: parseFloat(dollars), portfolio_id: selectedPortfolio }),
+                              });
+                              const data = await res.json();
+                              alert(res.ok ? `Resized ${data.ticker}: ${data.old_qty} → ${data.new_qty} shares\n$${data.old_cost} → $${data.new_cost}` : `Error: ${data.detail || JSON.stringify(data)}`);
+                              await fetchPortfolios();
+                            } catch (e) { alert(`Failed: ${e}`); }
+                          }} className="text-[10px] px-3 py-1.5 rounded-lg border border-[#374151] text-gray-400 hover:text-white transition" style={FONT_OUTFIT}>
+                            Resize Position
+                          </button>
+                          <button onClick={async () => {
+                            const capital = prompt("Set starting capital ($):", "25");
+                            if (!capital) return;
+                            if (!confirm(`Reset initial capital to $${capital}?`)) return;
+                            try {
+                              const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                              const res = await fetch(`${API_URL}/ai-portfolio/set-capital`, {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ initial_capital: parseFloat(capital), portfolio_id: selectedPortfolio }),
+                              });
+                              const data = await res.json();
+                              alert(res.ok ? `Capital: $${data.old_capital} → $${data.new_capital}\nCash: $${data.cash}` : `Error: ${data.detail || JSON.stringify(data)}`);
+                              await fetchPortfolios();
+                            } catch (e) { alert(`Failed: ${e}`); }
+                          }} className="text-[10px] px-3 py-1.5 rounded-lg border border-loss/30 text-loss hover:bg-loss/10 transition" style={FONT_OUTFIT}>
+                            Set Capital
+                          </button>
+                          <button onClick={async () => {
+                            if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
+                            try {
+                              const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                              const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ portfolio_id: selectedPortfolio }),
+                              });
+                              const data = await res.json();
+                              alert(res.ok ? `Cash: $${data.old_cash} → $${data.new_cash}\n${data.fixes_applied?.length || 0} trades adjusted` : `Error: ${data.detail || JSON.stringify(data)}`);
+                              await fetchPortfolios();
+                            } catch (e) { alert(`Failed: ${e}`); }
+                          }} className="text-[10px] px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition" style={FONT_OUTFIT}>
+                            Fix Portfolio
+                          </button>
+                        </div>
+                        <p className="text-[9px] text-gray-600">Resize: change a position&apos;s dollar amount. Set Capital: reset starting balance. Fix: recalculate cash from trades.</p>
+                      </CardContent></Card>
+                    )}
+
                     {/* Strategy Assignments */}
                     <Card><CardContent className="space-y-4">
                       <SectionTitle>Strategy Assignments</SectionTitle>
