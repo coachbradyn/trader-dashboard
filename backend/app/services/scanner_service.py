@@ -984,19 +984,20 @@ async def _ai_analyze_candidates(candidates: list[dict]) -> list[dict]:
         line += f"\n   {c.get('fundamentals_summary', 'No fundamentals.')}\n"
         candidate_text += line
 
-    prompt = f"""You are a stock scanner AI. Analyze these candidates and select the best trading opportunities.
+    prompt = f"""You are Henry, an AI trading analyst running a stock scanner. Analyze these candidates and select the best trading opportunities.
 
 CANDIDATES:
 {candidate_text}
 
-For each opportunity worth pursuing, provide:
-- Why this is a good setup (technical + fundamental reasoning)
-- Suggested entry approach (limit price, or market)
-- Confidence level (1-10)
-- Direction (long/short)
+For each opportunity worth pursuing, provide a DETAILED analysis including:
+- What the company does (1 sentence)
+- The technical setup: what indicators are showing and why the timing is right
+- The fundamental case: valuation, analyst sentiment, catalysts
+- Risk factors: what could go wrong
+- Entry strategy: suggested price level and sizing approach
 
 Respond with a JSON array of opportunities. Each object:
-{{"ticker": "AAPL", "direction": "long", "confidence": 7, "reasoning": "2-3 sentences", "suggested_price": 150.00, "setup_type": "oversold"}}
+{{"ticker": "AAPL", "direction": "long", "confidence": 7, "reasoning": "Apple (AAPL) is a $3T consumer tech company showing a momentum pullback to EMA 21 support at $172. RSI at 48 is cooling from overbought, ADX at 28 confirms the uptrend is intact. Analysts rate it Buy with a $195 consensus target (13% upside). Earnings in 3 weeks could be a catalyst. Risk: broad tech selloff if macro deteriorates. Entry near $172 support with a stop below $168.", "suggested_price": 172.00, "setup_type": "momentum_pullback"}}
 
 Return only the top 5-8 best opportunities. Empty array if nothing compelling.
 No markdown, no backticks. Just the JSON array."""
@@ -1045,17 +1046,43 @@ def _fallback_opportunities(candidates: list[dict]) -> list[dict]:
 
 
 def _build_fallback_reasoning(candidate: dict) -> str:
-    """Build reasoning string when AI service is unavailable."""
-    parts = [f"Scanner opportunity for {candidate.get('ticker', '?')}"]
+    """Build detailed reasoning when AI service is unavailable."""
+    ticker = candidate.get("ticker", "?")
+    sd = candidate.get("screener_data", {})
     indicators = candidate.get("indicators", {})
+    fund = candidate.get("fundamentals_summary", "")
+    price = candidate.get("price") or sd.get("price")
+
+    parts = [f"{sd.get('companyName', ticker)} ({ticker})"]
+
+    # Add sector/industry context
+    if sd.get("sector"):
+        parts.append(f"{sd['sector']}" + (f" / {sd['industry']}" if sd.get("industry") else ""))
+
+    # Price and market cap
+    if price:
+        parts.append(f"trading at ${price:.2f}")
+    if sd.get("marketCap"):
+        mc = sd["marketCap"]
+        parts.append(f"Mkt cap ${mc/1e9:.1f}B" if mc >= 1e9 else f"Mkt cap ${mc/1e6:.0f}M")
+
+    # Technical indicators
+    ind_parts = []
     for key, val in indicators.items():
-        if isinstance(val, (int, float)):
-            parts.append(f"{key}={val:.2f}")
-        elif isinstance(val, dict):
-            summary = ", ".join(f"{k}={v}" for k, v in val.items() if v is not None and isinstance(v, (int, float)))
-            if summary:
-                parts.append(f"{key}: {summary}")
-    return ". ".join(parts[:5])
+        if key in ("rsi_14", "rsi") and isinstance(val, (int, float)):
+            ind_parts.append(f"RSI {val:.0f}")
+        elif key in ("adx_14", "adx") and isinstance(val, (int, float)):
+            ind_parts.append(f"ADX {val:.0f}")
+        elif "sma" in key and isinstance(val, (int, float)):
+            ind_parts.append(f"SMA {key.split('_')[-1]}: ${val:.2f}")
+    if ind_parts:
+        parts.append(f"Technical: {', '.join(ind_parts)}")
+
+    # Fundamentals summary
+    if fund and fund != "No cached fundamentals.":
+        parts.append(fund[:200])
+
+    return ". ".join(parts)
 
 
 async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:

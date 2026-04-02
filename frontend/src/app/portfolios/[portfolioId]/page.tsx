@@ -1775,6 +1775,39 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
               style={FONT_OUTFIT}>
               Withdraw
             </button>
+            {/* AI Portfolio management buttons */}
+            {(portfolio.name?.toLowerCase().includes("ai") || portfolio.name?.toLowerCase().includes("henry")) && (
+              <>
+                <button onClick={async () => {
+                  const ticker = prompt("Enter ticker to add to this portfolio (e.g. NOK):");
+                  if (!ticker) return;
+                  try {
+                    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                    const res = await fetch(`${API_URL}/ai-portfolio/add-trade`, {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ ticker: ticker.toUpperCase() }),
+                    });
+                    const data = await res.json();
+                    alert(data.status === "linked" ? `Added ${data.ticker} x${data.qty} @ $${data.entry_price}` : data.detail || "Could not add");
+                    window.location.reload();
+                  } catch { alert("Failed"); }
+                }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-[#6366f1]/30 text-[#6366f1] hover:bg-[#6366f1]/10 transition" style={FONT_OUTFIT}>
+                  + Add Trade
+                </button>
+                <button onClick={async () => {
+                  if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
+                  try {
+                    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                    const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, { method: "POST", headers: { "Content-Type": "application/json" } });
+                    const data = await res.json();
+                    alert(`Fixed! Cash: $${data.old_cash} → $${data.new_cash}. ${data.fixes_applied?.length || 0} trades adjusted.`);
+                    window.location.reload();
+                  } catch { alert("Fix failed"); }
+                }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition" style={FONT_OUTFIT}>
+                  Fix Portfolio
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
