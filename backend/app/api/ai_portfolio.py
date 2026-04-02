@@ -527,13 +527,19 @@ async def update_config(cfg: AITradingConfig):
 
 @router.post("/add-trade")
 async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_db)):
-    """Manually add an existing trade to the AI portfolio by ticker.
-    Sizes the position to fit available cash (max 10% of equity)."""
+    """Manually add an existing trade to a portfolio by ticker.
+    Sizes the position to fit available cash (max 10% of equity).
+    Pass portfolio_id to target a specific portfolio, or defaults to AI portfolio."""
     from app.services.ai_portfolio import get_ai_portfolio, _get_ai_portfolio_equity
 
-    portfolio = await get_ai_portfolio(db)
+    portfolio_id = body.get("portfolio_id")
+    if portfolio_id:
+        result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+        portfolio = result.scalar_one_or_none()
+    else:
+        portfolio = await get_ai_portfolio(db)
     if not portfolio:
-        raise HTTPException(404, "No AI portfolio exists")
+        raise HTTPException(404, "Portfolio not found")
 
     ticker = body.get("ticker", "").upper()
     trade_id = body.get("trade_id")
@@ -566,8 +572,9 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
         return {"status": "already_linked", "ticker": trade.ticker, "trade_id": trade.id}
 
     # Size to available cash — don't just use the original qty
-    equity = await _get_ai_portfolio_equity(portfolio, db)
-    max_alloc = min(equity * 0.10, portfolio.cash) if equity > 0 else portfolio.cash * 0.50
+    # Use portfolio cash directly (works for any portfolio type)
+    cash = portfolio.cash or 0
+    max_alloc = min(cash * 0.50, cash)  # Use up to 50% of available cash
     max_alloc = max(max_alloc, 0)
 
     if max_alloc < 10 and portfolio.cash < 10:
@@ -604,14 +611,19 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
 
 
 @router.post("/fix-all")
-async def fix_all_trades(db: AsyncSession = Depends(get_db)):
-    """Fix the entire AI portfolio: resize all open positions to fit available cash.
-    Processes trades from oldest to newest, sizing each to max 10% of equity."""
+async def fix_all_trades(body: dict = None, db: AsyncSession = Depends(get_db)):
+    """Fix a portfolio: resize all open positions to fit available cash.
+    Pass portfolio_id to target a specific portfolio, or defaults to AI portfolio."""
     from app.services.ai_portfolio import get_ai_portfolio
 
-    portfolio = await get_ai_portfolio(db)
+    portfolio_id = (body or {}).get("portfolio_id")
+    if portfolio_id:
+        result = await db.execute(select(Portfolio).where(Portfolio.id == portfolio_id))
+        portfolio = result.scalar_one_or_none()
+    else:
+        portfolio = await get_ai_portfolio(db)
     if not portfolio:
-        raise HTTPException(404, "No AI portfolio exists")
+        raise HTTPException(404, "Portfolio not found")
 
     # Get ALL trades linked to this portfolio (both simulated and non-simulated)
     result = await db.execute(

@@ -1785,12 +1785,16 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
                     const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
                     const res = await fetch(`${API_URL}/ai-portfolio/add-trade`, {
                       method: "POST", headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ ticker: ticker.toUpperCase() }),
+                      body: JSON.stringify({ ticker: ticker.toUpperCase(), portfolio_id: portfolioId }),
                     });
                     const data = await res.json();
-                    alert(data.status === "linked" ? `Added ${data.ticker} x${data.qty} @ $${data.entry_price}` : data.detail || "Could not add");
+                    if (res.ok) {
+                      alert(data.status === "linked" ? `Added ${data.ticker} x${data.qty} @ $${data.entry_price} (cost $${data.cost})\nResized: ${data.resized ? "Yes" : "No"}\nCash remaining: $${data.portfolio_cash}` : data.status === "already_linked" ? `${data.ticker} already in portfolio` : JSON.stringify(data));
+                    } else {
+                      alert(`Error: ${data.detail || JSON.stringify(data)}`);
+                    }
                     window.location.reload();
-                  } catch { alert("Failed"); }
+                  } catch (e) { alert(`Failed: ${e}`); }
                 }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-[#6366f1]/30 text-[#6366f1] hover:bg-[#6366f1]/10 transition" style={FONT_OUTFIT}>
                   + Add Trade
                 </button>
@@ -1798,11 +1802,18 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
                   if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
                   try {
                     const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-                    const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, { method: "POST", headers: { "Content-Type": "application/json" } });
+                    const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ portfolio_id: portfolioId }),
+                    });
                     const data = await res.json();
-                    alert(`Fixed! Cash: $${data.old_cash} → $${data.new_cash}. ${data.fixes_applied?.length || 0} trades adjusted.`);
+                    if (res.ok) {
+                      alert(`Fixed!\nCash: $${data.old_cash} → $${data.new_cash}\n${data.fixes_applied?.length || 0} trades adjusted:\n${data.fixes_applied?.map((f: Record<string, unknown>) => `  ${f.ticker}: ${f.action} (${f.old_qty} → ${f.new_qty || "closed"})`).join("\n") || "None"}`);
+                    } else {
+                      alert(`Error: ${data.detail || JSON.stringify(data)}`);
+                    }
                     window.location.reload();
-                  } catch { alert("Fix failed"); }
+                  } catch (e) { alert(`Failed: ${e}`); }
                 }} className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-amber-500/30 text-amber-400 hover:bg-amber-500/10 transition" style={FONT_OUTFIT}>
                   Fix Portfolio
                 </button>
