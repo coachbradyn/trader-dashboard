@@ -525,6 +525,70 @@ async def update_config(cfg: AITradingConfig):
     return config
 
 
+@router.post("/add-trade")
+async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_db)):
+    """Manually add an existing trade to the AI portfolio by ticker.
+    Finds the most recent open trade for the ticker and links it.
+    Or pass trade_id directly."""
+    from app.services.ai_portfolio import get_ai_portfolio
+
+    portfolio = await get_ai_portfolio(db)
+    if not portfolio:
+        raise HTTPException(404, "No AI portfolio exists")
+
+    ticker = body.get("ticker", "").upper()
+    trade_id = body.get("trade_id")
+
+    if trade_id:
+        # Link a specific trade
+        result = await db.execute(select(Trade).where(Trade.id == trade_id))
+        trade = result.scalar_one_or_none()
+    elif ticker:
+        # Find the most recent open trade for this ticker
+        result = await db.execute(
+            select(Trade)
+            .where(Trade.ticker == ticker, Trade.status == "open")
+            .order_by(desc(Trade.entry_time))
+            .limit(1)
+        )
+        trade = result.scalar_one_or_none()
+    else:
+        raise HTTPException(400, "Provide ticker or trade_id")
+
+    if not trade:
+        raise HTTPException(404, f"No open trade found for {ticker or trade_id}")
+
+    # Check if already linked
+    existing = await db.execute(
+        select(PortfolioTrade).where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            PortfolioTrade.trade_id == trade.id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        return {"status": "already_linked", "ticker": trade.ticker, "trade_id": trade.id}
+
+    # Link it
+    pt = PortfolioTrade(portfolio_id=portfolio.id, trade_id=trade.id)
+    db.add(pt)
+
+    # Deduct cash
+    cost = trade.entry_price * trade.qty
+    portfolio.cash -= cost
+
+    await db.commit()
+
+    return {
+        "status": "linked",
+        "ticker": trade.ticker,
+        "direction": trade.direction,
+        "qty": trade.qty,
+        "entry_price": trade.entry_price,
+        "cost": round(cost, 2),
+        "portfolio_cash": round(portfolio.cash, 2),
+    }
+
+
 @router.post("/fix-all")
 async def fix_all_trades(db: AsyncSession = Depends(get_db)):
     """Fix the entire AI portfolio: recalculate cash from scratch based on actual trades.

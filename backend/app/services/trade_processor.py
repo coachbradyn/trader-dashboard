@@ -150,6 +150,7 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
     )
     links = result.scalars().all()
 
+    linked_count = 0
     for link in links:
         # Check direction filter
         if link.direction_filter and link.direction_filter != payload.dir:
@@ -167,6 +168,14 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         # Deduct position cost from portfolio cash
         position_cost = payload.price * payload.qty
         link.portfolio.cash -= position_cost
+        linked_count += 1
+
+    if linked_count == 0:
+        logger.warning(
+            f"Trade {trade.ticker} ({payload.trader}) not linked to any user portfolio. "
+            f"Found {len(links)} strategy links but all were filtered out (AI-managed or direction mismatch). "
+            f"Create a non-AI portfolio linked to this strategy to track these trades."
+        )
 
     return trade
 

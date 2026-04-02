@@ -507,12 +507,37 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                     ))
 
                     logger.info(f"AI portfolio: BUY {trade.ticker} x{qty:.2f} @ ${trade.entry_price:.2f} (conf {confidence})")
+                    # Log to activity feed
+                    try:
+                        from app.services.henry_activity import log_activity
+                        asyncio.create_task(log_activity(
+                            f"SIGNAL BUY: {trade.ticker} {trade.direction.upper()} x{qty:.2f} @ ${trade.entry_price:.2f} (conf {confidence}/10) from {trader.trader_id}",
+                            "trade_execute", ticker=trade.ticker,
+                        ))
+                    except Exception:
+                        pass
                 else:
                     action_record.status = "rejected"
-                    action_record.reject_reason = "Insufficient cash or zero quantity"
-                    logger.info(f"AI portfolio: BUY rejected for {trade.ticker} — insufficient cash")
+                    action_record.reject_reason = f"Insufficient cash (${portfolio.cash:.2f}) or zero quantity"
+                    logger.info(f"AI portfolio: BUY rejected for {trade.ticker} — insufficient cash (${portfolio.cash:.2f})")
+                    try:
+                        from app.services.henry_activity import log_activity
+                        asyncio.create_task(log_activity(
+                            f"SIGNAL REJECTED: {trade.ticker} — BUY approved (conf {confidence}) but insufficient cash (${portfolio.cash:.2f})",
+                            "trade_skip", ticker=trade.ticker,
+                        ))
+                    except Exception:
+                        pass
             else:
                 logger.info(f"AI portfolio: SKIP {trade.ticker} (conf {confidence}, action={action})")
+                try:
+                    from app.services.henry_activity import log_activity
+                    asyncio.create_task(log_activity(
+                        f"SIGNAL SKIP: {trade.ticker} from {trader.trader_id} — {reasoning[:150]}",
+                        "trade_skip", ticker=trade.ticker,
+                    ))
+                except Exception:
+                    pass
 
             await db.commit()
 

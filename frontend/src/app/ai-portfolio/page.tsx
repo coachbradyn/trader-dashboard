@@ -270,7 +270,33 @@ export default function AIPortfolioPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={async () => {
-              if (!confirm("Fix portfolio: This will resize or close any oversized trades and recalculate cash. Continue?")) return;
+              const ticker = prompt("Enter ticker to add (e.g. NOK):");
+              if (!ticker) return;
+              try {
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                const res = await fetch(`${API_URL}/ai-portfolio/add-trade`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ ticker: ticker.toUpperCase() }),
+                });
+                const data = await res.json();
+                if (data.status === "linked") {
+                  alert(`Added ${data.ticker} ${data.direction} x${data.qty} @ $${data.entry_price}`);
+                  fetchAll();
+                } else if (data.status === "already_linked") {
+                  alert(`${data.ticker} is already in the AI portfolio`);
+                } else {
+                  alert(data.detail || "Could not add trade");
+                }
+              } catch { alert("Failed to add trade"); }
+            }}
+            className="text-[10px] font-mono px-2.5 py-1 rounded-full border border-ai-blue/20 bg-ai-blue/5 text-ai-blue hover:bg-ai-blue/10 transition"
+          >
+            + Add Trade
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm("Fix portfolio: resize oversized trades and recalculate cash?")) return;
               try {
                 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
                 const res = await fetch(`${API_URL}/ai-portfolio/fix-all`, { method: "POST", headers: { "Content-Type": "application/json" } });
