@@ -528,9 +528,8 @@ async def update_config(cfg: AITradingConfig):
 @router.post("/add-trade")
 async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_db)):
     """Manually add an existing trade to the AI portfolio by ticker.
-    Finds the most recent open trade for the ticker and links it.
-    Or pass trade_id directly."""
-    from app.services.ai_portfolio import get_ai_portfolio
+    Sizes the position to fit available cash (max 10% of equity)."""
+    from app.services.ai_portfolio import get_ai_portfolio, _get_ai_portfolio_equity
 
     portfolio = await get_ai_portfolio(db)
     if not portfolio:
@@ -540,11 +539,9 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
     trade_id = body.get("trade_id")
 
     if trade_id:
-        # Link a specific trade
         result = await db.execute(select(Trade).where(Trade.id == trade_id))
         trade = result.scalar_one_or_none()
     elif ticker:
-        # Find the most recent open trade for this ticker
         result = await db.execute(
             select(Trade)
             .where(Trade.ticker == ticker, Trade.status == "open")
@@ -568,13 +565,28 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
     if existing.scalar_one_or_none():
         return {"status": "already_linked", "ticker": trade.ticker, "trade_id": trade.id}
 
-    # Link it
+    # Size to available cash — don't just use the original qty
+    equity = await _get_ai_portfolio_equity(portfolio, db)
+    max_alloc = min(equity * 0.10, portfolio.cash) if equity > 0 else portfolio.cash * 0.50
+    max_alloc = max(max_alloc, 0)
+
+    if max_alloc < 10 and portfolio.cash < 10:
+        raise HTTPException(400, f"Insufficient cash (${portfolio.cash:.2f}) to add trade")
+
+    # Resize qty to fit
+    original_qty = trade.qty
+    original_cost = trade.entry_price * trade.qty
+    if original_cost > max_alloc and trade.entry_price > 0:
+        new_qty = round(max_alloc / trade.entry_price, 4)
+        trade.qty = new_qty
+        actual_cost = new_qty * trade.entry_price
+    else:
+        actual_cost = original_cost
+
+    # Link and deduct
     pt = PortfolioTrade(portfolio_id=portfolio.id, trade_id=trade.id)
     db.add(pt)
-
-    # Deduct cash
-    cost = trade.entry_price * trade.qty
-    portfolio.cash -= cost
+    portfolio.cash -= actual_cost
 
     await db.commit()
 
@@ -582,89 +594,97 @@ async def add_trade_to_ai_portfolio(body: dict, db: AsyncSession = Depends(get_d
         "status": "linked",
         "ticker": trade.ticker,
         "direction": trade.direction,
+        "original_qty": original_qty,
         "qty": trade.qty,
         "entry_price": trade.entry_price,
-        "cost": round(cost, 2),
+        "cost": round(actual_cost, 2),
         "portfolio_cash": round(portfolio.cash, 2),
+        "resized": trade.qty != original_qty,
     }
 
 
 @router.post("/fix-all")
 async def fix_all_trades(db: AsyncSession = Depends(get_db)):
-    """Fix the entire AI portfolio: recalculate cash from scratch based on actual trades.
-    Closes any trades that drove cash negative and recomputes everything."""
+    """Fix the entire AI portfolio: resize all open positions to fit available cash.
+    Processes trades from oldest to newest, sizing each to max 10% of equity."""
     from app.services.ai_portfolio import get_ai_portfolio
 
     portfolio = await get_ai_portfolio(db)
     if not portfolio:
         raise HTTPException(404, "No AI portfolio exists")
 
-    # Get ALL trades linked to this portfolio
+    # Get ALL trades linked to this portfolio (both simulated and non-simulated)
     result = await db.execute(
         select(Trade)
         .join(PortfolioTrade)
-        .where(
-            PortfolioTrade.portfolio_id == portfolio.id,
-            Trade.is_simulated == True,
-        )
+        .where(PortfolioTrade.portfolio_id == portfolio.id)
         .options(selectinload(Trade.trader))
         .order_by(Trade.entry_time)
     )
     all_trades = result.scalars().all()
 
-    # Replay all trades to compute correct cash
+    # Recalculate from scratch: start with initial capital
     starting_cash = portfolio.initial_capital
     running_cash = starting_cash
     fixes = []
 
     for t in all_trades:
-        cost = t.entry_price * t.qty
-
         if t.status == "closed":
-            # Closed trade: cash was deducted on entry, returned on exit
-            # Net effect = pnl_dollars
+            # Closed trade: net effect is the P&L
             running_cash += (t.pnl_dollars or 0)
-        elif t.status == "open":
-            # Open trade: cash was deducted on entry
-            # Check if this trade made cash go negative
-            if running_cash - cost < -1:  # Allow small rounding
-                # This trade is oversized — resize it to fit
-                max_affordable = max(running_cash * 0.95, 0)  # Use 95% of remaining cash
-                if max_affordable < 10:
-                    # Can't afford even a small position — close it
-                    t.status = "closed"
-                    t.exit_price = t.entry_price
-                    t.exit_reason = "fix_oversized"
-                    t.exit_time = datetime.utcnow()
-                    t.pnl_dollars = 0
-                    t.pnl_percent = 0
-                    fixes.append({
-                        "ticker": t.ticker,
-                        "action": "closed (insufficient cash)",
-                        "old_qty": t.qty,
-                        "old_cost": round(cost, 2),
-                    })
-                    # No cash change — we're closing at entry price
-                else:
-                    old_qty = t.qty
-                    new_qty = round(max_affordable / t.entry_price, 4)
-                    t.qty = new_qty
-                    new_cost = new_qty * t.entry_price
-                    running_cash -= new_cost
-                    fixes.append({
-                        "ticker": t.ticker,
-                        "action": "resized",
-                        "old_qty": old_qty,
-                        "new_qty": new_qty,
-                        "old_cost": round(cost, 2),
-                        "new_cost": round(new_cost, 2),
-                    })
-            else:
-                running_cash -= cost
+            continue
 
-    # Set the corrected cash
+        # Open trade — check if it fits
+        cost = t.entry_price * t.qty
+        max_per_trade = starting_cash * 0.10  # 10% of initial capital
+
+        if cost > running_cash or cost > max_per_trade:
+            # Oversized — resize to fit
+            old_qty = t.qty
+            affordable = min(running_cash * 0.90, max_per_trade)  # Leave 10% buffer
+
+            if affordable < 5 or (t.entry_price > 0 and affordable / t.entry_price < 0.001):
+                # Can't afford — close at current price
+                cp = price_service.get_price(t.ticker) or t.entry_price
+                t.status = "closed"
+                t.exit_price = cp
+                t.exit_reason = "fix_oversized"
+                t.exit_time = datetime.utcnow()
+                if t.direction == "long":
+                    t.pnl_dollars = (cp - t.entry_price) * t.qty
+                else:
+                    t.pnl_dollars = (t.entry_price - cp) * t.qty
+                pos_val = t.entry_price * t.qty
+                t.pnl_percent = (t.pnl_dollars / pos_val * 100) if pos_val > 0 else 0
+                # Return whatever was allocated
+                running_cash += (t.pnl_dollars or 0)
+                fixes.append({
+                    "ticker": t.ticker,
+                    "action": "closed",
+                    "old_qty": old_qty,
+                    "reason": f"insufficient cash (${running_cash:.2f})",
+                    "pnl": round(t.pnl_dollars or 0, 2),
+                })
+            else:
+                # Resize to fit
+                new_qty = round(affordable / t.entry_price, 4) if t.entry_price > 0 else 0
+                t.qty = new_qty
+                new_cost = new_qty * t.entry_price
+                running_cash -= new_cost
+                fixes.append({
+                    "ticker": t.ticker,
+                    "action": "resized",
+                    "old_qty": round(old_qty, 4),
+                    "new_qty": new_qty,
+                    "old_cost": round(cost, 2),
+                    "new_cost": round(new_cost, 2),
+                })
+        else:
+            running_cash -= cost
+
+    # Set corrected cash
     old_cash = portfolio.cash
-    portfolio.cash = round(running_cash, 2)
+    portfolio.cash = round(max(running_cash, 0), 2)
 
     await db.commit()
 
