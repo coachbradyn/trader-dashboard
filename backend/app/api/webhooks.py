@@ -128,44 +128,67 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
 @router.post("/webhook")
 async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(get_db)):
     try:
-        # Check for strategy conflicts before processing
-        await _check_for_conflicts(payload, db)
-
+        # Process the trade FIRST — this is the critical path
         trade = await process_webhook(payload, db)
 
         # Register ticker for price tracking
         price_service.add_ticker(payload.ticker)
 
-        # Invalidate cached Henry analysis for this ticker
-        from app.database import async_session as _async_session
-        from app.services.henry_cache import invalidate_by_ticker
-        async with _async_session() as cache_db:
-            await invalidate_by_ticker(cache_db, payload.ticker)
-            await cache_db.commit()
-
-        # Check watchlist summary staleness for this ticker
+        # Everything else runs in the background AFTER we return 200 to TradingView
         import asyncio
-        from app.services.watchlist_ai import check_and_regenerate_if_stale
-        asyncio.create_task(check_and_regenerate_if_stale(payload.ticker))
 
-        # Route signal to AI portfolio (background, non-blocking)
-        try:
-            from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
-            # Need the trader object
-            trader_result = await db.execute(
-                select(Trader).where(Trader.trader_id == payload.trader)
-            )
-            trader_obj = trader_result.scalar_one_or_none()
-            if trader_obj:
-                if payload.signal == "entry":
-                    asyncio.create_task(evaluate_signal_for_ai_portfolio(
-                        trade, trader_obj, payload.model_dump()
-                    ))
-                elif payload.signal == "exit":
-                    asyncio.create_task(process_exit_for_ai_portfolio(trade, trader_obj))
-        except Exception as e:
-            logger.warning(f"AI portfolio routing failed (non-blocking): {e}")
+        async def _background_tasks():
+            """Run all non-critical tasks after responding to TradingView."""
+            try:
+                # Conflict detection (involves AI call — can be slow)
+                try:
+                    from app.database import async_session as _as
+                    async with _as() as bg_db:
+                        await _check_for_conflicts(payload, bg_db)
+                        await bg_db.commit()
+                except Exception as e:
+                    logger.debug(f"Conflict detection failed: {e}")
 
+                # Invalidate cached analysis
+                try:
+                    from app.database import async_session as _as2
+                    from app.services.henry_cache import invalidate_by_ticker
+                    async with _as2() as cache_db:
+                        await invalidate_by_ticker(cache_db, payload.ticker)
+                        await cache_db.commit()
+                except Exception:
+                    pass
+
+                # Check watchlist summary staleness
+                try:
+                    from app.services.watchlist_ai import check_and_regenerate_if_stale
+                    await check_and_regenerate_if_stale(payload.ticker)
+                except Exception:
+                    pass
+
+                # Route to AI portfolio evaluation
+                try:
+                    from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
+                    from app.database import async_session as _as3
+                    async with _as3() as trader_db:
+                        trader_result = await trader_db.execute(
+                            select(Trader).where(Trader.trader_id == payload.trader)
+                        )
+                        trader_obj = trader_result.scalar_one_or_none()
+                    if trader_obj:
+                        if payload.signal == "entry":
+                            await evaluate_signal_for_ai_portfolio(trade, trader_obj, payload.model_dump())
+                        elif payload.signal == "exit":
+                            await process_exit_for_ai_portfolio(trade, trader_obj)
+                except Exception as e:
+                    logger.warning(f"AI portfolio routing failed: {e}")
+
+            except Exception as e:
+                logger.error(f"Webhook background tasks failed: {e}")
+
+        asyncio.create_task(_background_tasks())
+
+        # Return immediately — TradingView gets 200 OK fast
         return {
             "status": "ok",
             "trade_id": trade.id,
