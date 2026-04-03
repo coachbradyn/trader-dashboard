@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import Trader, Trade, Portfolio, PortfolioStrategy, PortfolioTrade, PortfolioSnapshot
+from app.utils.utc import utcnow
 from app.schemas.webhook import WebhookPayload
 from app.utils.auth import verify_api_key
 from app.services.price_service import price_service
@@ -48,7 +49,7 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
         matched_key.claimed_by_id = trader.id
 
     # Update last webhook timestamp
-    trader.last_webhook_at = datetime.now(timezone.utc)
+    trader.last_webhook_at = utcnow()
 
     # 2. Process based on signal type
     ai_eval_portfolios = []
@@ -131,7 +132,7 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
     entry_time = (
         datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
         if payload.time
-        else datetime.now(timezone.utc)
+        else utcnow()
     )
 
     trade = Trade(
@@ -212,7 +213,7 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
     exit_time = (
         datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
         if payload.time
-        else datetime.now(timezone.utc)
+        else utcnow()
     )
 
     trade.exit_price = payload.price

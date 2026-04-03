@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Float, Boolean, Text, Integer
@@ -26,7 +27,7 @@ class Portfolio(Base):
     alpaca_api_key: Mapped[str | None] = mapped_column(String(255))
     alpaca_secret_key: Mapped[str | None] = mapped_column(String(255))
     max_order_amount: Mapped[float | None] = mapped_column(Float, default=1000.0)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")
     portfolio_trades: Mapped[list["PortfolioTrade"]] = relationship(back_populates="portfolio")

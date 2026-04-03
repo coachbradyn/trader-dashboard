@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 from sqlalchemy import String, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,4 +13,4 @@ class WatchlistSummary(Base):
     ticker: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     alert_count_at_generation: Mapped[int] = mapped_column(Integer, default=0)
-    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())

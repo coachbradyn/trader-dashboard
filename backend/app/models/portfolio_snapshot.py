@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Float, Integer, ForeignKey
@@ -18,6 +19,6 @@ class PortfolioSnapshot(Base):
     open_positions: Mapped[int] = mapped_column(Integer, default=0)
     drawdown_pct: Mapped[float] = mapped_column(Float, default=0.0)
     peak_equity: Mapped[float] = mapped_column(Float, default=0.0)
-    snapshot_time: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    snapshot_time: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship(back_populates="snapshots")

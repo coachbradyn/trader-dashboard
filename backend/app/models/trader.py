@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Boolean, Text
@@ -21,7 +22,7 @@ class Trader(Base):
     strategy_description: Mapped[str | None] = mapped_column(Text)
     api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     last_webhook_at: Mapped[datetime | None] = mapped_column()
 
     trades: Mapped[list["Trade"]] = relationship(back_populates="trader")

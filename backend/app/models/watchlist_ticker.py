@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 from sqlalchemy import String, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,5 +13,5 @@ class WatchlistTicker(Base):
     ticker: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     removed_at: Mapped[datetime | None] = mapped_column()

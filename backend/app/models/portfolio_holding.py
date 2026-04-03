@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, date, timezone
 
 from sqlalchemy import String, Float, Boolean, Text, Date, ForeignKey
@@ -34,7 +35,7 @@ class PortfolioHolding(Base):
     avg_cost: Mapped[float | None] = mapped_column(Float)
     total_shares: Mapped[float | None] = mapped_column(Float)
 
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship()
     trade: Mapped["Trade | None"] = relationship()

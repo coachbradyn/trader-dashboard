@@ -1,4 +1,5 @@
 import asyncio
+from app.utils.utc import utcnow
 import logging
 from datetime import datetime, timezone
 
@@ -237,7 +238,7 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
                 direction="long" if pos.get("side", "long") == "long" else "short",
                 entry_price=entry_price,
                 qty=qty,
-                entry_date=datetime.now(timezone.utc),
+                entry_date=utcnow(),
                 is_active=True,
                 notes="alpaca_sync",
             )
@@ -322,7 +323,7 @@ async def _update_holding_local(
                 direction="long",
                 entry_price=fill_price or 0,
                 qty=qty,
-                entry_date=datetime.now(timezone.utc),
+                entry_date=utcnow(),
                 is_active=True,
                 notes="execution",
             )

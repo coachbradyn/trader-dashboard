@@ -11,6 +11,7 @@ Runs as a scheduled job during market hours.
 """
 
 import json
+from app.utils.utc import utcnow
 import logging
 from datetime import datetime, timedelta, date, timezone
 
@@ -754,7 +755,7 @@ async def _execute_autonomous_trade(
                 entry_price=price,
                 qty=round(qty, 4),
                 stop_price=stop_price,
-                entry_time=datetime.now(timezone.utc),
+                entry_time=utcnow(),
                 status="open",
                 is_simulated=True,
                 raw_entry_payload={"source": source, "confidence": confidence, "autonomous": True},
@@ -783,7 +784,7 @@ async def _execute_autonomous_trade(
                 trigger_ref=sim_trade.id,
                 priority_score=confidence * 1.5,
                 status="approved",
-                resolved_at=datetime.now(timezone.utc),
+                resolved_at=utcnow(),
             )
             db.add(action)
 
@@ -874,7 +875,7 @@ async def check_autonomous_exits() -> int:
                 else:
                     pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
 
-                hold_days = (datetime.now(timezone.utc) - pos.entry_time).days if pos.entry_time else 0
+                hold_days = (utcnow() - pos.entry_time).days if pos.entry_time else 0
 
                 # ── Rule 1: Stop loss hit ──
                 if pos.stop_price:
@@ -922,7 +923,7 @@ async def check_autonomous_exits() -> int:
                     # Close the position
                     pos.exit_price = current_price
                     pos.exit_reason = exit_reason
-                    pos.exit_time = datetime.now(timezone.utc)
+                    pos.exit_time = utcnow()
                     pos.status = "closed"
 
                     if pos.direction == "long":
@@ -947,7 +948,7 @@ async def check_autonomous_exits() -> int:
                         current_price=current_price,
                         priority_score=10.5,
                         status="approved",
-                        resolved_at=datetime.now(timezone.utc),
+                        resolved_at=utcnow(),
                     ))
 
                     from app.services.ai_service import save_context

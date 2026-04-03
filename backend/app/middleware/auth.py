@@ -6,20 +6,21 @@ Set DASHBOARD_API_KEY in environment variables.
 """
 
 import logging
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 # Paths that don't require authentication
-OPEN_PATHS = {
+OPEN_PATHS = [
     "/api/webhook",
     "/api/health",
     "/docs",
     "/openapi.json",
     "/redoc",
-}
+]
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -41,6 +42,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         api_key = request.headers.get("x-api-key") or request.query_params.get("api_key")
 
         if api_key != settings.dashboard_api_key:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key"},
+            )
 
         return await call_next(request)

@@ -1,4 +1,5 @@
 import asyncio
+from app.utils.utc import utcnow
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -197,7 +198,7 @@ async def _get_cached_summary(ticker: str, db: AsyncSession) -> dict | None:
     current_alert_count = alert_count_result.scalar() or 0
 
     new_alerts_since = current_alert_count - summary.alert_count_at_generation
-    age_hours = (datetime.now(timezone.utc) - summary.generated_at).total_seconds() / 3600
+    age_hours = (utcnow() - summary.generated_at).total_seconds() / 3600
 
     # Check if any strategy trade happened since generation
     trade_since = await db.execute(
@@ -250,7 +251,7 @@ async def get_watchlist(db: AsyncSession = Depends(get_db)):
 
         # Signal events for sparkline overlay (last 60 days of alerts)
         from datetime import timedelta as _td
-        event_cutoff = datetime.now(timezone.utc) - _td(days=60)
+        event_cutoff = utcnow() - _td(days=60)
         events_result = await db.execute(
             select(IndicatorAlert.created_at, IndicatorAlert.signal)
             .where(IndicatorAlert.ticker == wt.ticker, IndicatorAlert.created_at >= event_cutoff)
@@ -356,7 +357,7 @@ async def remove_ticker(ticker: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, f"{ticker} not on watchlist")
 
     wt.is_active = False
-    wt.removed_at = datetime.now(timezone.utc)
+    wt.removed_at = utcnow()
     await db.commit()
     return {"removed": ticker}
 
@@ -393,7 +394,7 @@ async def get_ticker_detail(ticker: str, db: AsyncSession = Depends(get_db)):
     positions = await _get_strategy_positions(ticker, db)
 
     # Trade history (last 30 days, closed)
-    history_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    history_cutoff = utcnow() - timedelta(days=30)
     hist_result = await db.execute(
         select(Trade)
         .options(selectinload(Trade.trader))

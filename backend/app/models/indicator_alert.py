@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 from sqlalchemy import String, Float, Integer, JSON
 from sqlalchemy.orm import Mapped, mapped_column
@@ -13,4 +14,4 @@ class IndicatorAlert(Base):
     signal: Mapped[str] = mapped_column(String(20), nullable=False)  # "bullish" / "bearish" / "neutral"
     timeframe: Mapped[str | None] = mapped_column(String(10))
     metadata_extra: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), index=True)

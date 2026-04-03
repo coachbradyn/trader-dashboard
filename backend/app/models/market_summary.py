@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 from sqlalchemy import String, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,4 +12,4 @@ class MarketSummary(Base):
     scope: Mapped[str] = mapped_column(String(20), nullable=False)  # "portfolio" / "screener" / "combined"
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tickers_analyzed: Mapped[dict | None] = mapped_column(JSON)
-    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), index=True)
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), index=True)

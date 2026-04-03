@@ -1,4 +1,5 @@
 import csv
+from app.utils.utc import utcnow
 import io
 import logging
 import re
@@ -149,7 +150,7 @@ def parse_backtest_csv(content: str) -> list[dict]:
             try:
                 trade_date = datetime.strptime(date_str, "%Y-%m-%d")
             except ValueError:
-                trade_date = datetime.now(timezone.utc)
+                trade_date = utcnow()
 
         rows.append({
             "trade_number": int(row.get("Trade #", "0").strip()),
@@ -587,7 +588,7 @@ async def create_holding(body: HoldingCreate, db: AsyncSession = Depends(get_db)
             dca_threshold_pct=body.dca_threshold_pct,
             avg_cost=init_avg_cost,
             total_shares=init_total_shares,
-            created_at=datetime.now(timezone.utc),
+            created_at=utcnow(),
         )
         db.add(holding)
         await db.commit()
@@ -745,7 +746,7 @@ async def delete_holding(holding_id: str, db: AsyncSession = Depends(get_db)):
                 exit_price=exit_price,
                 qty=holding.qty,
                 entry_time=holding.entry_date,
-                exit_time=datetime.now(timezone.utc),
+                exit_time=utcnow(),
                 exit_reason="manual_sell",
                 status="closed",
                 pnl_dollars=round(pnl_dollars, 2),
@@ -956,7 +957,7 @@ async def list_actions(
     actions = result.scalars().all()
 
     # Auto-expire stale pending actions
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     expired_ids = []
     for a in actions:
         if a.status == "pending" and a.expires_at and a.expires_at < now:
@@ -972,7 +973,7 @@ async def list_actions(
 
 @router.get("/actions/stats", response_model=ActionStats)
 async def get_action_stats(db: AsyncSession = Depends(get_db)):
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Pending count
     pending = await db.execute(
@@ -1042,7 +1043,7 @@ async def approve_action(action_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(400, f"Action is already {action.status}")
 
     action.status = "approved"
-    action.resolved_at = datetime.now(timezone.utc)
+    action.resolved_at = utcnow()
     await db.commit()
 
     # Save user decision context (non-blocking)
@@ -1100,7 +1101,7 @@ async def reject_action(action_id: str, body: ActionReject | None = None, db: As
         raise HTTPException(400, f"Action is already {action.status}")
 
     action.status = "rejected"
-    action.resolved_at = datetime.now(timezone.utc)
+    action.resolved_at = utcnow()
     reason_text = ""
     if body and body.reason:
         action.reject_reason = body.reason
@@ -1402,7 +1403,7 @@ def _parse_trades_from_csv(content: str, mapping: dict, action_map: dict) -> lis
         # Parse date
         date_str = _parse_date_flexible(get_val(row, mapping["date"]))
         if not date_str:
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            date_str = utcnow().strftime("%Y-%m-%d")
 
         trades.append({
             "date": date_str,
@@ -1638,7 +1639,7 @@ async def confirm_import_trades(
         try:
             entry_date = datetime.strptime(date_str, "%Y-%m-%d")
         except (ValueError, TypeError):
-            entry_date = datetime.now(timezone.utc)
+            entry_date = utcnow()
 
         if action == "buy":
             if ticker not in positions:
@@ -1675,7 +1676,7 @@ async def confirm_import_trades(
                     pnl_percent=round(pnl_pct, 2),
                     status="closed",
                     is_simulated=False,
-                    created_at=datetime.now(timezone.utc),
+                    created_at=utcnow(),
                 )
                 db.add(trade_record)
                 db.add(PortfolioTrade(
@@ -1708,7 +1709,7 @@ async def confirm_import_trades(
                 strategy_name="import",
                 notes=f"Imported from CSV",
                 is_active=True,
-                created_at=datetime.now(timezone.utc),
+                created_at=utcnow(),
             )
             db.add(holding)
             holdings_created += 1
@@ -1786,8 +1787,8 @@ async def seed_actions(portfolio_id: str, db: AsyncSession = Depends(get_db)):
             trigger_ref=None,
             priority_score=s["priority_score"],
             status="pending",
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=4 if s["trigger_type"] == "SIGNAL" else 24),
-            created_at=datetime.now(timezone.utc),
+            expires_at=utcnow() + timedelta(hours=4 if s["trigger_type"] == "SIGNAL" else 24),
+            created_at=utcnow(),
         )
         db.add(action)
         created.append(s["ticker"])

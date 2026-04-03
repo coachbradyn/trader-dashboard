@@ -1,4 +1,5 @@
 import asyncio
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 import httpx
@@ -60,7 +61,7 @@ class PriceService:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    now = datetime.now(timezone.utc).isoformat()
+                    now = utcnow().isoformat()
                     for ticker, snapshot in data.items():
                         latest_trade = snapshot.get("latestTrade", {})
                         price = latest_trade.get("p", 0)

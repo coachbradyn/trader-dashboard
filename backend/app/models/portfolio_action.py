@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Float, Integer, Boolean, Text, ForeignKey
@@ -38,6 +39,6 @@ class PortfolioAction(Base):
     outcome_correct: Mapped[bool | None] = mapped_column(Boolean)
     outcome_resolved_at: Mapped[datetime | None] = mapped_column()
 
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship()

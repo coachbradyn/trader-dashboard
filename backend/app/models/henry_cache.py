@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 from sqlalchemy import String, Integer, Boolean, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
@@ -15,5 +16,5 @@ class HenryCache(Base):
     ticker: Mapped[str | None] = mapped_column(String(20), index=True)
     strategy: Mapped[str | None] = mapped_column(String(50))
     is_stale: Mapped[bool] = mapped_column(Boolean, default=False)
-    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     data_hash: Mapped[str | None] = mapped_column(String(64))  # hash of input data to detect changes

@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Float, Integer
@@ -28,6 +29,6 @@ class BacktestImport(Base):
     avg_hold_days: Mapped[float | None] = mapped_column(Float)
     total_pnl_pct: Mapped[float | None] = mapped_column(Float)
 
-    imported_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    imported_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     trades: Mapped[list["BacktestTrade"]] = relationship(back_populates="backtest_import", cascade="all, delete-orphan")

@@ -8,6 +8,7 @@ All functions are async-safe (yfinance calls run in thread pool).
 """
 
 import asyncio
+from app.utils.utc import utcnow
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -391,5 +392,5 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         "earnings": safe(earnings, []),
         "vix": safe(vix, {}),
         "spy": safe(spy, {}),
-        "gathered_at": datetime.now(timezone.utc).isoformat(),
+        "gathered_at": utcnow().isoformat(),
     }

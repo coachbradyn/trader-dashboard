@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Text, Integer, Float
@@ -38,5 +39,5 @@ class HenryMemory(Base):
     # Source: "briefing", "signal_eval", "scheduled_review", "user", "outcome_tracking"
     source: Mapped[str] = mapped_column(String(30), default="system")
 
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), onupdate=lambda: utcnow())

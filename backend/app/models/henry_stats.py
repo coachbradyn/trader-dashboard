@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Integer, ForeignKey, DateTime, JSON, Index
@@ -38,7 +39,7 @@ class HenryStats(Base):
 
     # Freshness
     period_days: Mapped[int] = mapped_column(Integer, default=30)
-    computed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: utcnow(), index=True)
 
     # Relationships
     portfolio: Mapped["Portfolio | None"] = relationship()

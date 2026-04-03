@@ -6,6 +6,7 @@ Summaries are only regenerated when significant new data arrives.
 """
 
 import json
+from app.utils.utc import utcnow
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -108,7 +109,7 @@ async def generate_watchlist_summary(ticker: str) -> None:
                 positions_text = "\n".join(pos_lines)
 
             # 3. Recent trade history
-            history_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            history_cutoff = utcnow() - timedelta(days=30)
             hist_result = await db.execute(
                 select(Trade)
                 .options(selectinload(Trade.trader))
@@ -158,7 +159,7 @@ async def generate_watchlist_summary(ticker: str) -> None:
                 select(HenryContext)
                 .where(
                     HenryContext.ticker == ticker,
-                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc)),
+                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > utcnow()),
                 )
                 .order_by(desc(HenryContext.created_at))
                 .limit(5)
@@ -245,7 +246,7 @@ Be concise (2-4 sentences), data-driven, and actionable. Format currency as $X.X
             if ws:
                 ws.summary = summary_text
                 ws.alert_count_at_generation = current_alert_count
-                ws.generated_at = datetime.now(timezone.utc)
+                ws.generated_at = utcnow()
             else:
                 ws = WatchlistSummary(
                     ticker=ticker,
@@ -305,7 +306,7 @@ async def check_and_regenerate_if_stale(ticker: str) -> None:
             current_count = alert_count_result.scalar() or 0
             new_alerts = current_count - summary.alert_count_at_generation
 
-            age_hours = (datetime.now(timezone.utc) - summary.generated_at).total_seconds() / 3600
+            age_hours = (utcnow() - summary.generated_at).total_seconds() / 3600
 
             # Check for trade signals since generation
             trade_result = await db.execute(

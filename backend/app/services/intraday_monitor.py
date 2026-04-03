@@ -9,6 +9,7 @@ Both respect FMP rate limits.
 """
 
 import logging
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import select, and_
@@ -43,7 +44,7 @@ async def monitor_entry_levels() -> int:
                 select(PortfolioAction).where(
                     PortfolioAction.action_type == "OPPORTUNITY",
                     PortfolioAction.status == "pending",
-                    PortfolioAction.expires_at > datetime.now(timezone.utc),
+                    PortfolioAction.expires_at > utcnow(),
                     PortfolioAction.suggested_price.isnot(None),
                 )
             )
@@ -185,7 +186,7 @@ async def monitor_positions() -> int:
                             PortfolioAction.ticker == ticker,
                             PortfolioAction.status == "pending",
                             PortfolioAction.trigger_type.in_(["THRESHOLD", "SCANNER"]),
-                            PortfolioAction.created_at > datetime.now(timezone.utc).replace(hour=0, minute=0, second=0),
+                            PortfolioAction.created_at > utcnow().replace(hour=0, minute=0, second=0),
                         )
                     )
                     if existing.scalars().first():

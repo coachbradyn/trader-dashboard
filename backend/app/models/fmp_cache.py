@@ -6,6 +6,7 @@ Cache tiers: realtime (60s), intraday (3600s), daily (86400s).
 """
 
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Text, DateTime, Index, JSON
@@ -21,7 +22,7 @@ class FmpCache(Base):
     endpoint: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     response_data: Mapped[dict | None] = mapped_column(JSON)
-    cached_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    cached_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: utcnow())
     cache_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="daily")  # realtime/intraday/daily
 
     __table_args__ = (

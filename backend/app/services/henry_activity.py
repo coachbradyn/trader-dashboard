@@ -7,6 +7,7 @@ Also provides a chat endpoint where the user can ask Henry about his decisions.
 """
 
 import logging
+from app.utils.utc import utcnow
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, desc
@@ -49,7 +50,7 @@ async def log_activity(
                 context_type="activity",
                 ticker=ticker,
                 strategy=activity_type,  # Reuse strategy field for activity_type
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),  # Activity log expires after 7 days
+                expires_at=utcnow() + timedelta(days=7),  # Activity log expires after 7 days
             )
             db.add(entry)
             await db.commit()

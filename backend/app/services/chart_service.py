@@ -1,4 +1,5 @@
 import logging
+from app.utils.utc import utcnow
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import asyncio
@@ -16,12 +17,12 @@ async def get_daily_chart(ticker: str, days: int = 60) -> list[dict]:
     # Check cache
     if cache_key in _chart_cache:
         cached_time, cached_data = _chart_cache[cache_key]
-        if (datetime.now(timezone.utc) - cached_time).total_seconds() < CACHE_TTL:
+        if (utcnow() - cached_time).total_seconds() < CACHE_TTL:
             return cached_data
 
     # Fetch in thread pool (yfinance is sync)
     data = await asyncio.to_thread(_fetch_yfinance, ticker, days)
-    _chart_cache[cache_key] = (datetime.now(timezone.utc), data)
+    _chart_cache[cache_key] = (utcnow(), data)
     return data
 
 

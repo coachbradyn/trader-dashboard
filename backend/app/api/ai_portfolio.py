@@ -6,6 +6,7 @@ and browsing decision logs.
 """
 
 import logging
+from app.utils.utc import utcnow
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -245,7 +246,7 @@ async def get_equity_history(
     if not portfolio:
         raise HTTPException(404, "No AI portfolio exists")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
     result = await db.execute(
         select(PortfolioSnapshot)
         .where(
@@ -369,7 +370,7 @@ async def get_holdings(db: AsyncSession = Depends(get_db)):
             pnl_pct = ((t.entry_price - cp) / t.entry_price * 100)
             pnl_dollars = (t.entry_price - cp) * t.qty
 
-        hold_hours = (datetime.now(timezone.utc) - t.entry_time).total_seconds() / 3600
+        hold_hours = (utcnow() - t.entry_time).total_seconds() / 3600
 
         # Get Henry's reasoning from the action
         reason_result = await db.execute(
@@ -661,7 +662,7 @@ async def fix_all_trades(body: dict | None = None, db: AsyncSession = Depends(ge
                 t.status = "closed"
                 t.exit_price = cp
                 t.exit_reason = "fix_oversized"
-                t.exit_time = datetime.now(timezone.utc)
+                t.exit_time = utcnow()
                 if t.direction == "long":
                     t.pnl_dollars = (cp - t.entry_price) * t.qty
                 else:
@@ -762,7 +763,7 @@ async def set_portfolio_capital(body: dict, db: AsyncSession = Depends(get_db)):
                     t.status = "closed"
                     t.exit_price = cp
                     t.exit_reason = "capital_reset"
-                    t.exit_time = datetime.now(timezone.utc)
+                    t.exit_time = utcnow()
                     t.pnl_dollars = (cp - t.entry_price) * t.qty if t.direction == "long" else (t.entry_price - cp) * t.qty
                     t.pnl_percent = (t.pnl_dollars / cost * 100) if cost > 0 else 0
                     running_cash += (t.pnl_dollars or 0)

@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, Integer, Boolean, DateTime
@@ -16,4 +17,4 @@ class AIUsage(Base):
     output_tokens = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     was_fallback = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = Column(DateTime, default=lambda: utcnow(), index=True)

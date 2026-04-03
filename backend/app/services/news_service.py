@@ -6,6 +6,7 @@ Includes keyword-based sentiment scoring and company description caching.
 """
 
 import asyncio
+from app.utils.utc import utcnow
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -253,7 +254,7 @@ class NewsService:
     ) -> list[dict]:
         """Get cached news articles, optionally filtered by ticker."""
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            cutoff = utcnow() - timedelta(hours=hours)
             async with async_session() as db:
                 query = (
                     select(NewsCache)
@@ -329,7 +330,7 @@ class NewsService:
     async def cleanup_old_news(self, days: int = 7) -> int:
         """Delete news older than N days. Returns count deleted."""
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = utcnow() - timedelta(days=days)
             async with async_session() as db:
                 result = await db.execute(
                     delete(NewsCache).where(NewsCache.fetched_at < cutoff)

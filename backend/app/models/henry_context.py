@@ -1,4 +1,5 @@
 import uuid
+from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
 from sqlalchemy import String, Text, Integer, Float, ForeignKey, DateTime, Index
@@ -40,7 +41,7 @@ class HenryContext(Base):
     action_id: Mapped[str | None] = mapped_column(ForeignKey("portfolio_actions.id"))
     trade_id: Mapped[str | None] = mapped_column(ForeignKey("trades.id"))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: utcnow(), index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships
