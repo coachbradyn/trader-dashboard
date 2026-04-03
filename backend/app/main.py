@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import select, Integer
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
@@ -564,49 +564,65 @@ async def get_conflicts(days_back: int = 7, limit: int = 50):
 
 @app.get("/api/ai/usage")
 async def get_ai_usage(days: int = 7, provider: str = None):
-    """Return AI usage analytics: total calls, tokens, costs, and breakdown by function."""
+    """Return AI usage analytics using SQL aggregation (not Python loops)."""
     from app.models.ai_usage import AIUsage
     from sqlalchemy import func as sa_func
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     try:
         async with async_session() as db:
-            query = select(AIUsage).where(AIUsage.created_at >= cutoff)
+            # Total aggregates in one query
+            base_filter = [AIUsage.created_at >= cutoff]
             if provider:
-                query = query.where(AIUsage.provider == provider)
-            result = await db.execute(query.order_by(AIUsage.created_at.desc()))
-            rows = result.scalars().all()
+                base_filter.append(AIUsage.provider == provider)
 
-        # Aggregate
-        total_calls = len(rows)
-        total_input_tokens = sum(r.input_tokens or 0 for r in rows)
-        total_output_tokens = sum(r.output_tokens or 0 for r in rows)
-        fallback_count = sum(1 for r in rows if r.was_fallback)
-        avg_latency = (sum(r.latency_ms or 0 for r in rows) / total_calls) if total_calls else 0
+            totals = await db.execute(
+                select(
+                    sa_func.count(AIUsage.id).label("total_calls"),
+                    sa_func.sum(AIUsage.input_tokens).label("total_input"),
+                    sa_func.sum(AIUsage.output_tokens).label("total_output"),
+                    sa_func.avg(AIUsage.latency_ms).label("avg_latency"),
+                    sa_func.sum(sa_func.cast(AIUsage.was_fallback, Integer)).label("fallback_count"),
+                ).where(*base_filter)
+            )
+            t = totals.one()
+            total_calls = t.total_calls or 0
+            total_input = t.total_input or 0
+            total_output = t.total_output or 0
 
-        # By provider
-        by_provider = {}
-        for r in rows:
-            p = r.provider
-            if p not in by_provider:
-                by_provider[p] = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
-            by_provider[p]["calls"] += 1
-            by_provider[p]["input_tokens"] += r.input_tokens or 0
-            by_provider[p]["output_tokens"] += r.output_tokens or 0
+            # By provider — SQL GROUP BY
+            by_prov_result = await db.execute(
+                select(
+                    AIUsage.provider,
+                    sa_func.count(AIUsage.id).label("calls"),
+                    sa_func.sum(AIUsage.input_tokens).label("input_tokens"),
+                    sa_func.sum(AIUsage.output_tokens).label("output_tokens"),
+                ).where(*base_filter).group_by(AIUsage.provider)
+            )
+            by_provider = {}
+            for row in by_prov_result.all():
+                by_provider[row.provider] = {
+                    "calls": row.calls,
+                    "input_tokens": row.input_tokens or 0,
+                    "output_tokens": row.output_tokens or 0,
+                }
 
-        # By function
-        by_function = {}
-        for r in rows:
-            fn = r.function_name
-            if fn not in by_function:
-                by_function[fn] = {"calls": 0, "provider_breakdown": {}}
-            by_function[fn]["calls"] += 1
-            p = r.provider
-            if p not in by_function[fn]["provider_breakdown"]:
-                by_function[fn]["provider_breakdown"][p] = 0
-            by_function[fn]["provider_breakdown"][p] += 1
+            # By function — SQL GROUP BY
+            by_func_result = await db.execute(
+                select(
+                    AIUsage.function_name,
+                    AIUsage.provider,
+                    sa_func.count(AIUsage.id).label("calls"),
+                ).where(*base_filter).group_by(AIUsage.function_name, AIUsage.provider)
+            )
+            by_function: dict = {}
+            for row in by_func_result.all():
+                if row.function_name not in by_function:
+                    by_function[row.function_name] = {"calls": 0, "provider_breakdown": {}}
+                by_function[row.function_name]["calls"] += row.calls
+                by_function[row.function_name]["provider_breakdown"][row.provider] = row.calls
 
-        # Approximate costs: Claude ~$3/M input, $15/M output; Gemini ~$0.10/M input, $0.40/M output
+        # Cost estimation
         estimated_cost = 0.0
         for p, stats in by_provider.items():
             if p == "claude":
@@ -617,10 +633,10 @@ async def get_ai_usage(days: int = 7, provider: str = None):
         return {
             "period_days": days,
             "total_calls": total_calls,
-            "total_input_tokens": total_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "fallback_count": fallback_count,
-            "avg_latency_ms": round(avg_latency),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "fallback_count": t.fallback_count or 0,
+            "avg_latency_ms": round(t.avg_latency or 0),
             "estimated_cost_usd": round(estimated_cost, 4),
             "by_provider": by_provider,
             "by_function": by_function,
