@@ -48,6 +48,9 @@ class PriceService:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
                     f"{settings.alpaca_base_url}/v2/stocks/snapshots",
+                    # NOTE: Using "iex" feed (free) — only shows IEX exchange data.
+                    # For accurate NBBO prices across all exchanges, upgrade to
+                    # Alpaca's paid data subscription and change to "sip".
                     params={"symbols": symbols, "feed": "iex"},
                     headers={
                         "APCA-API-KEY-ID": settings.alpaca_api_key,

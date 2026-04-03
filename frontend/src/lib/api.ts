@@ -1,9 +1,17 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...init?.headers as Record<string, string>,
+  };
+  if (API_KEY) {
+    headers["x-api-key"] = API_KEY;
+  }
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers,
   });
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${res.statusText}`);
@@ -124,7 +132,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
   killSwitch: () =>
-    fetchApi<{ status: string; portfolios_affected: number }>("/execution/kill-switch", { method: "POST" }),
+    fetchApi<{ status: string; portfolios_affected: number }>("/execution/kill-switch", {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    }),
   syncAlpacaPositions: (portfolioId: string) =>
     fetchApi<{ status: string; synced: number; created: number }>("/execution/sync", {
       method: "POST",

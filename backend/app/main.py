@@ -402,6 +402,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API key authentication (after CORS so preflight requests pass)
+if settings.dashboard_api_key:
+    from app.middleware.auth import APIKeyMiddleware
+    app.add_middleware(APIKeyMiddleware)
+    import logging as _log
+    _log.getLogger(__name__).info("API key authentication enabled")
+else:
+    import logging as _log
+    _log.getLogger(__name__).warning("DASHBOARD_API_KEY not set — API endpoints are unprotected")
+
 # Include routers
 app.include_router(webhooks.router, prefix="/api", tags=["webhooks"])
 app.include_router(trades.router, prefix="/api", tags=["trades"])
@@ -757,6 +767,8 @@ async def get_prices():
 async def seed_database(secret: str):
     """One-time seed endpoint protected by ADMIN_SECRET."""
     from fastapi import HTTPException
+    if not settings.admin_secret:
+        raise HTTPException(status_code=503, detail="ADMIN_SECRET not configured. Set it in environment variables.")
     if secret != settings.admin_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 

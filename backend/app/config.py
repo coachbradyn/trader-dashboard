@@ -4,7 +4,8 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./dev.db"
-    admin_secret: str = "change-me"
+    admin_secret: str = ""  # MUST be set via ADMIN_SECRET env var
+    dashboard_api_key: str = ""  # API key for frontend auth — set via DASHBOARD_API_KEY env var
     allowed_origins: str = "http://localhost:3000"
 
     alpaca_api_key: str = ""

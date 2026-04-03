@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -249,9 +249,22 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
     return {"status": "synced", "synced": synced, "created": created, "alpaca_positions": len(alpaca_positions)}
 
 
+@router.get("/kill-switch")
+async def kill_switch_status(db: AsyncSession = Depends(get_db)):
+    """Check kill switch status — how many portfolios are in live/paper mode."""
+    result = await db.execute(
+        select(func.count(Portfolio.id)).where(Portfolio.execution_mode.in_(["paper", "live"]))
+    )
+    active_count = result.scalar() or 0
+    return {"active_trading_portfolios": active_count, "status": "armed" if active_count > 0 else "safe"}
+
+
 @router.post("/kill-switch")
-async def kill_switch(db: AsyncSession = Depends(get_db)):
-    """Immediately set ALL portfolios to execution_mode='local'. No confirmation needed."""
+async def kill_switch(body: dict = None, db: AsyncSession = Depends(get_db)):
+    """Immediately set ALL portfolios to execution_mode='local'. Requires confirm=true."""
+    if not body or not body.get("confirm"):
+        raise HTTPException(400, "Kill switch requires confirm=true in request body")
+
     result = await db.execute(
         select(Portfolio).where(Portfolio.execution_mode.in_(["paper", "live"]))
     )

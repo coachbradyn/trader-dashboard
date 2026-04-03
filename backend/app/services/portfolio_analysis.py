@@ -306,6 +306,7 @@ async def evaluate_thresholds(db: AsyncSession):
                 continue
 
             # Check for existing pending threshold actions to avoid spam
+            # Track by ticker AND action type so higher-priority actions aren't blocked
             result = await db.execute(
                 select(PortfolioAction)
                 .where(
@@ -314,13 +315,21 @@ async def evaluate_thresholds(db: AsyncSession):
                     PortfolioAction.trigger_type == "THRESHOLD",
                 )
             )
-            pending_threshold_tickers = {a.ticker for a in result.scalars().all()}
+            pending_actions = result.scalars().all()
+            # Map ticker -> set of pending action types
+            pending_by_ticker: dict[str, set[str]] = {}
+            for a in pending_actions:
+                if a.ticker not in pending_by_ticker:
+                    pending_by_ticker[a.ticker] = set()
+                pending_by_ticker[a.ticker].add(a.action_type)
+            # Priority: CLOSE > SELL > TRIM > REBALANCE — higher priority always allowed
+            ACTION_PRIORITY = {"CLOSE": 10, "SELL": 8, "TRIM": 6, "REBALANCE": 4, "ADD": 2, "BUY": 1}
 
             # ── CHECK 1: Concentration (>25% in one ticker) ──────────
             max_concentration = portfolio.max_pct_per_trade or 25.0
             for ticker, tv in ticker_values.items():
                 pct = tv / total_value * 100
-                if pct > max_concentration and ticker not in pending_threshold_tickers:
+                if pct > max_concentration and "TRIM" not in pending_by_ticker.get(ticker, set()):
                     action = _create_action(
                         portfolio_id=portfolio.id,
                         ticker=ticker,
@@ -382,7 +391,7 @@ async def evaluate_thresholds(db: AsyncSession):
                     else:
                         distance_pct = (stop - cp) / cp * 100
 
-                    if 0 < distance_pct < 1.0 and ticker not in pending_threshold_tickers:
+                    if 0 < distance_pct < 1.0 and "CLOSE" not in pending_by_ticker.get(ticker, set()):
                         action = _create_action(
                             portfolio_id=portfolio.id,
                             ticker=ticker,
@@ -418,7 +427,7 @@ async def evaluate_thresholds(db: AsyncSession):
                     bt = bt_result.scalars().first()
 
                     if bt and bt.avg_gain_pct and pnl_pct > bt.avg_gain_pct * 2:
-                        if ticker not in pending_threshold_tickers:
+                        if "TRIM" not in pending_by_ticker.get(ticker, set()) and "CLOSE" not in pending_by_ticker.get(ticker, set()):
                             action = _create_action(
                                 portfolio_id=portfolio.id,
                                 ticker=ticker,
