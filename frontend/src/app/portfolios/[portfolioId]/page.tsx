@@ -16,6 +16,7 @@ import {
 } from "recharts";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { MetricTooltip } from "@/app/layout-shell";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
   BacktestImportData, PortfolioHolding, ActionStats, PortfolioAction,
@@ -40,10 +41,11 @@ const CHART_TOOLTIP = { background: "#1f2937", border: "1px solid #374151", bord
 
 // ── Stat Card ───────────────────────────────────────────────────────
 
-function StatCard({ label, value, color = "text-white", sub }: { label: string; value: string; color?: string; sub?: string }) {
+function StatCard({ label, value, color = "text-white", sub, tip }: { label: string; value: string; color?: string; sub?: string; tip?: string }) {
+  const labelEl = <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>{label}</div>;
   return (
     <div className="bg-surface-light/30 rounded-xl p-4 border border-border">
-      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>{label}</div>
+      {tip ? <MetricTooltip tip={tip}>{labelEl}</MetricTooltip> : labelEl}
       <div className={`text-lg font-mono font-semibold ${color}`} style={FONT_MONO}>{value}</div>
       {sub && <div className="text-[10px] text-gray-600 font-mono mt-0.5">{sub}</div>}
     </div>
@@ -58,15 +60,19 @@ function PerformanceGrid({ perf }: { perf: Performance }) {
       <StatCard label="Total Return" value={formatPercent(perf.total_return_pct)} color={pnlColor(perf.total_return_pct)} />
       <StatCard label="Win Rate" value={`${perf.win_rate.toFixed(1)}%`}
         color={perf.win_rate >= 50 ? "text-profit" : "text-loss"}
-        sub={`${perf.wins}W / ${perf.losses}L`} />
+        sub={`${perf.wins}W / ${perf.losses}L`}
+        tip="Percentage of closed trades that were profitable" />
       <StatCard label="Profit Factor" value={perf.profit_factor.toFixed(2)}
-        color={perf.profit_factor >= 1.5 ? "text-profit" : perf.profit_factor >= 1 ? "text-amber-400" : "text-loss"} />
+        color={perf.profit_factor >= 1.5 ? "text-profit" : perf.profit_factor >= 1 ? "text-amber-400" : "text-loss"}
+        tip="Gross profit divided by gross loss. Above 1.5 is good, above 2.0 is excellent" />
       <StatCard label="Total P&L" value={formatCurrency(perf.total_pnl)} color={pnlColor(perf.total_pnl)}
         sub={`${perf.total_trades} trades`} />
-      <StatCard label="Max Drawdown" value={formatPercent(-Math.abs(perf.max_drawdown_pct))} color="text-loss" />
+      <StatCard label="Max Drawdown" value={formatPercent(-Math.abs(perf.max_drawdown_pct))} color="text-loss"
+        tip="Largest peak-to-trough equity decline. Lower is better" />
       <StatCard label="Sharpe Ratio" value={perf.sharpe_ratio.toFixed(2)}
         color={perf.sharpe_ratio >= 1 ? "text-profit" : "text-gray-300"}
-        sub={perf.current_streak !== 0 ? `${perf.current_streak > 0 ? "+" : ""}${perf.current_streak} streak` : undefined} />
+        sub={perf.current_streak !== 0 ? `${perf.current_streak > 0 ? "+" : ""}${perf.current_streak} streak` : undefined}
+        tip="Risk-adjusted return. Above 1.0 is acceptable, above 2.0 is excellent" />
     </div>
   );
 }
@@ -343,7 +349,7 @@ function BacktestSummary({ imports }: { imports: BacktestImportData[] }) {
                   <span className="text-white">{imp.trade_count}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">Win Rate</span>
+                  <MetricTooltip tip="Percentage of closed trades that were profitable"><span className="text-gray-500">Win Rate</span></MetricTooltip>
                   <span className={imp.win_rate && imp.win_rate >= 50 ? "text-profit" : "text-loss"}>
                     {imp.win_rate?.toFixed(1) ?? "—"}%
                   </span>
@@ -1753,7 +1759,7 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
                     <span className="font-mono text-loss">{formatPercent(-Math.abs(performance.max_drawdown_pct))}</span>
                   </span>
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                    <span className="text-gray-500">Win Rate</span>
+                    <MetricTooltip tip="Percentage of closed trades that were profitable"><span className="text-gray-500">Win Rate</span></MetricTooltip>
                     <span className={`font-mono ${performance.win_rate >= 50 ? "text-profit" : "text-loss"}`}>{performance.win_rate.toFixed(1)}%</span>
                   </span>
                 </>

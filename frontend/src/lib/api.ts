@@ -397,6 +397,10 @@ export const api = {
   getTickerFundamentals: (ticker: string) =>
     fetchApi<import("./types").TickerFundamentals>("/ai/fundamentals/" + ticker),
 
+  // AI Usage
+  getAIUsage: (days?: number) =>
+    fetchApi<{ total_calls: number; estimated_cost_usd: number; total_input_tokens: number; total_output_tokens: number }>("/ai/usage" + (days ? "?days=" + days : "")),
+
   // News
   getTickerNews: (ticker: string) =>
     fetchApi<import("./types").TickerNewsResponse>("/news/ticker/" + ticker),

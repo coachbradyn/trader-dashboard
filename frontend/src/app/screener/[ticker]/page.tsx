@@ -13,6 +13,7 @@ import {
   ResponsiveContainer, AreaChart, Area, Line,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
 } from "recharts";
+import { MetricTooltip } from "@/app/layout-shell";
 import type {
   WatchlistTickerDetail, ChartDataPoint, BacktestImportData,
   BacktestTradeData, MonteCarloResponse, MonteCarloRequest,
@@ -451,9 +452,15 @@ export default function TickerDetailPage() {
           fundamentals?.debt_to_equity != null && ["D/E", fundamentals.debt_to_equity.toFixed(2)],
         ].filter(Boolean).map((stat, i) => {
           const [label, value] = stat as [string, string];
+          const tipMap: Record<string, string> = {
+            "P/E": "Price relative to earnings. Lower may indicate value",
+            "Beta": "Volatility vs market. Below 1 = less volatile, above 1 = more volatile",
+          };
+          const tip = tipMap[label];
+          const labelEl = <div className="text-[8px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>{label}</div>;
           return (
             <div key={i} className="shrink-0 px-3 py-1.5 rounded-lg bg-surface-light/20 border border-border/20">
-              <div className="text-[8px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>{label}</div>
+              {tip ? <MetricTooltip tip={tip}>{labelEl}</MetricTooltip> : labelEl}
               <div className="text-xs font-mono text-white">{value}</div>
             </div>
           );
@@ -508,7 +515,7 @@ export default function TickerDetailPage() {
               {/* DCF */}
               {fundamentals.dcf_value != null && (
                 <div className="p-3 rounded-lg bg-surface-light/20">
-                  <div className="text-[9px] text-gray-500 mb-1">DCF Value</div>
+                  <MetricTooltip tip="Discounted Cash Flow estimate of fair value"><div className="text-[9px] text-gray-500 mb-1">DCF Value</div></MetricTooltip>
                   <div className="text-lg font-bold font-mono text-white">${fundamentals.dcf_value.toFixed(2)}</div>
                   {fundamentals.dcf_diff_pct != null && (
                     <Badge className={`text-[9px] mt-1 ${fundamentals.dcf_diff_pct > 0 ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
