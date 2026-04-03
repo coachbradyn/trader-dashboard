@@ -6,7 +6,7 @@ One row per ticker, upserted on each refresh. No historical data — just curren
 """
 
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from sqlalchemy import String, Text, Integer, Float, Date, DateTime, Index
 from sqlalchemy.orm import Mapped, mapped_column

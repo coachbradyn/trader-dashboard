@@ -6,7 +6,7 @@ Cache tiers: realtime (60s), intraday (3600s), daily (86400s).
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import String, Text, DateTime, Index, JSON
 from sqlalchemy.orm import Mapped, mapped_column
