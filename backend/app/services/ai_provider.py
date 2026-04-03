@@ -104,8 +104,7 @@ async def call_ai(
 
 
 async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bool = False) -> tuple:
-    """Call Claude API. Returns (text, model, input_tokens, output_tokens).
-    When web_search=True, adds web search tool and handles multi-turn tool use."""
+    """Call Claude API using async client. Returns (text, model, input_tokens, output_tokens)."""
     try:
         import anthropic
     except ImportError:
@@ -123,7 +122,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
         tools = [{"type": "web_search_20260209", "name": "web_search"}]
 
     try:
-        client = anthropic.Anthropic()
+        client = anthropic.AsyncAnthropic()
         for model in MODELS:
             try:
                 kwargs = dict(
@@ -136,7 +135,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                 if tools:
                     kwargs["tools"] = tools
 
-                response = client.messages.create(**kwargs)
+                response = await client.messages.create(**kwargs)
 
                 # Handle web search: Claude may use web search and return multiple
                 # content blocks. We need to loop if stop_reason is "tool_use" (for
@@ -152,7 +151,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                             {"role": "user", "content": prompt},
                             {"role": "assistant", "content": response.content},
                         ]
-                        response = client.messages.create(
+                        response = await client.messages.create(
                             model=model,
                             max_tokens=max_tokens,
                             system=system,
