@@ -8,7 +8,7 @@ Handles auto-research triggers and research extraction from AI responses.
 import json
 import logging
 import asyncio
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 from app.database import async_session
 from app.models.henry_context import HenryContext
@@ -29,7 +29,7 @@ async def save_research(
         content = content[:497] + "..." if content else ""
 
     try:
-        expires_at = datetime.utcnow() + timedelta(days=expires_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=expires_days)
 
         async with async_session() as db:
             ctx = HenryContext(
@@ -136,12 +136,12 @@ async def check_auto_research_triggers() -> list[str]:
                     select(func.count(HenryContext.id)).where(
                         HenryContext.ticker == ticker,
                         HenryContext.context_type == "research",
-                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc)),
                     )
                 )
                 has_research = (research_count.scalar() or 0) > 0
 
-                if not has_research and fund.updated_at < datetime.utcnow() - timedelta(hours=48):
+                if not has_research and fund.updated_at < datetime.now(timezone.utc) - timedelta(hours=48):
                     tickers_to_research.append(ticker)
                     continue
 
@@ -181,7 +181,7 @@ async def auto_research_ticker(ticker: str) -> None:
                 select(func.count(HenryContext.id)).where(
                     HenryContext.ticker == ticker,
                     HenryContext.context_type == "research",
-                    HenryContext.created_at >= datetime.utcnow() - timedelta(hours=12),
+                    HenryContext.created_at >= datetime.now(timezone.utc) - timedelta(hours=12),
                 )
             )
             if (recent.scalar() or 0) >= 2:

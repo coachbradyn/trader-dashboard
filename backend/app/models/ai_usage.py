@@ -16,4 +16,4 @@ class AIUsage(Base):
     output_tokens = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     was_fallback = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)

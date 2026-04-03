@@ -14,7 +14,7 @@ Scanner criteria stored in henry_cache with cache_type="scanner_config".
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -247,7 +247,7 @@ async def save_scan_profiles(profiles: list[dict]) -> list[dict]:
             existing = result.scalar_one_or_none()
             if existing:
                 existing.content = profiles
-                existing.generated_at = datetime.utcnow()
+                existing.generated_at = datetime.now(timezone.utc)
             else:
                 db.add(HenryCache(
                     cache_key=PROFILES_CACHE_KEY,
@@ -405,7 +405,7 @@ async def update_scanner_criteria(criteria: dict) -> dict:
             if existing:
                 existing.content = merged
                 existing.cache_type = "scanner_config"
-                existing.generated_at = datetime.utcnow()
+                existing.generated_at = datetime.now(timezone.utc)
             else:
                 entry = HenryCache(
                     cache_key=SCANNER_CACHE_KEY,
@@ -1108,7 +1108,7 @@ async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:
                     continue
 
                 confidence = min(max(int(opp.get("confidence", 5)), 1), 10)
-                expiry = datetime.utcnow() + timedelta(hours=24)
+                expiry = datetime.now(timezone.utc) + timedelta(hours=24)
 
                 action = PortfolioAction(
                     portfolio_id=portfolio.id,
@@ -1269,7 +1269,7 @@ async def get_scanner_stats() -> dict:
                     PortfolioAction.action_type == "OPPORTUNITY",
                     PortfolioAction.trigger_type == "SCANNER",
                     PortfolioAction.status == "pending",
-                    PortfolioAction.expires_at > datetime.utcnow(),
+                    PortfolioAction.expires_at > datetime.now(timezone.utc),
                 )
             )
             pending = pending_result.scalar() or 0

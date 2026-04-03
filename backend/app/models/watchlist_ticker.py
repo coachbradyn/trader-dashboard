@@ -12,5 +12,5 @@ class WatchlistTicker(Base):
     ticker: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     removed_at: Mapped[datetime | None] = mapped_column()

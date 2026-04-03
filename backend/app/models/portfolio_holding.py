@@ -34,7 +34,7 @@ class PortfolioHolding(Base):
     avg_cost: Mapped[float | None] = mapped_column(Float)
     total_shares: Mapped[float | None] = mapped_column(Float)
 
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     portfolio: Mapped["Portfolio"] = relationship()
     trade: Mapped["Trade | None"] = relationship()

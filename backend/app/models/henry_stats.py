@@ -38,7 +38,7 @@ class HenryStats(Base):
 
     # Freshness
     period_days: Mapped[int] = mapped_column(Integer, default=30)
-    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Relationships
     portfolio: Mapped["Portfolio | None"] = relationship()

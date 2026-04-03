@@ -9,7 +9,7 @@ Henry's portfolio management brain. Three analysis tiers:
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,7 +69,7 @@ def _create_action(
         trigger_type=trigger_type,
         trigger_ref=trigger_ref,
         priority_score=_compute_priority(trigger_type, confidence),
-        expires_at=datetime.utcnow() + timedelta(hours=expiry_h),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=expiry_h),
     )
 
 
@@ -478,7 +478,7 @@ async def scheduled_review(db: AsyncSession):
             backtest_summary = "No backtest data imported yet."
 
         # Get recent action history
-        cutoff_7d = datetime.utcnow() - timedelta(days=7)
+        cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
         result = await db.execute(
             select(PortfolioAction)
             .where(PortfolioAction.created_at >= cutoff_7d)
@@ -528,7 +528,7 @@ async def scheduled_review(db: AsyncSession):
                 else:
                     pnl_pct = (h.entry_price - cp) / h.entry_price * 100
 
-                hold_days = (datetime.utcnow() - h.entry_date).days
+                hold_days = (datetime.now(timezone.utc) - h.entry_date).days
 
                 holdings_text += (
                     f"  {h.ticker} {h.direction.upper()} {h.qty} @ ${h.entry_price:.2f} "
@@ -648,7 +648,7 @@ async def track_action_outcome(trade: Trade, db: AsyncSession):
         for action in actions:
             action.outcome_pnl = trade.pnl_percent
             action.outcome_correct = (trade.pnl_dollars or 0) > 0
-            action.outcome_resolved_at = datetime.utcnow()
+            action.outcome_resolved_at = datetime.now(timezone.utc)
 
     except Exception as e:
         logger.warning(f"Outcome tracking failed (non-blocking): {e}")

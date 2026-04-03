@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -423,7 +423,7 @@ app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"
 
 async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
     """Fetch trades from the last N days, formatted as webhook-style dicts for ai_service."""
-    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     async with async_session() as db:
         result = await db.execute(
             select(Trade)
@@ -535,7 +535,7 @@ register_ai_routes(app, get_trades_for_ai, get_positions_for_ai, get_market_data
 @app.get("/api/ai/conflicts")
 async def get_conflicts(days_back: int = 7, limit: int = 50):
     """Return recent conflict resolutions."""
-    cutoff = datetime.utcnow() - timedelta(days=days_back)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     async with async_session() as db:
         result = await db.execute(
             select(ConflictResolution)
@@ -568,7 +568,7 @@ async def get_ai_usage(days: int = 7, provider: str = None):
     from app.models.ai_usage import AIUsage
     from sqlalchemy import func as sa_func
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     try:
         async with async_session() as db:
             query = select(AIUsage).where(AIUsage.created_at >= cutoff)

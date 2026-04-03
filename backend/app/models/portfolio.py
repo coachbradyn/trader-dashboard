@@ -26,7 +26,7 @@ class Portfolio(Base):
     alpaca_api_key: Mapped[str | None] = mapped_column(String(255))
     alpaca_secret_key: Mapped[str | None] = mapped_column(String(255))
     max_order_amount: Mapped[float | None] = mapped_column(Float, default=1000.0)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")
     portfolio_trades: Mapped[list["PortfolioTrade"]] = relationship(back_populates="portfolio")

@@ -15,7 +15,7 @@ Features:
 import hashlib
 import json
 import logging
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 import httpx
 
@@ -112,7 +112,7 @@ async def _get_from_cache(endpoint: str, params: dict | None, tier: str) -> dict
             )
             entry = result.scalar_one_or_none()
             if entry:
-                age = (datetime.utcnow() - entry.cached_at).total_seconds()
+                age = (datetime.now(timezone.utc) - entry.cached_at).total_seconds()
                 if age < ttl:
                     return entry.response_data
     except Exception as e:
@@ -134,7 +134,7 @@ async def _set_cache(endpoint: str, params: dict | None, tier: str, data: dict |
             existing = result.scalar_one_or_none()
             if existing:
                 existing.response_data = data
-                existing.cached_at = datetime.utcnow()
+                existing.cached_at = datetime.now(timezone.utc)
                 existing.cache_tier = tier
             else:
                 entry = FmpCache(
@@ -579,7 +579,7 @@ async def fetch_fundamentals_for_ticker(ticker: str) -> dict | None:
     if not settings.fmp_api_key:
         return None
 
-    data: dict = {"ticker": ticker, "updated_at": datetime.utcnow()}
+    data: dict = {"ticker": ticker, "updated_at": datetime.now(timezone.utc)}
 
     # 1. Company profile
     profile = await _fmp_get("/stable/profile", {"symbol": ticker}, cache_tier="daily")
@@ -738,7 +738,7 @@ async def upsert_fundamentals(ticker: str, data: dict) -> None:
             for key, value in data.items():
                 if key != "ticker" and value is not None:
                     setattr(existing, key, value)
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             fundamentals = TickerFundamentals(**data)
             db.add(fundamentals)
@@ -813,7 +813,7 @@ async def is_stale(ticker: str, max_hours: int = 168) -> bool:
     fund = await get_fundamentals(ticker)
     if not fund:
         return True
-    age = datetime.utcnow() - fund.updated_at
+    age = datetime.now(timezone.utc) - fund.updated_at
     return age > timedelta(hours=max_hours)
 
 
@@ -927,7 +927,7 @@ def format_fundamentals_for_prompt(fund: TickerFundamentals) -> str:
 
     # Staleness warning
     if fund.updated_at:
-        age_hours = (datetime.utcnow() - fund.updated_at).total_seconds() / 3600
+        age_hours = (datetime.now(timezone.utc) - fund.updated_at).total_seconds() / 3600
         if age_hours > 168:  # 7 days
             lines.append(f"[Data is {age_hours / 24:.0f} days old -- may be stale]")
 

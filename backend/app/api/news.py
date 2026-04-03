@@ -1,3 +1,4 @@
+from datetime import timezone
 """
 News API Endpoints
 ==================
@@ -345,7 +346,7 @@ Be specific to {ticker} — reference actual business drivers, not generic state
                     content=json.dumps(thesis_data),
                     ticker=ticker,
                     is_stale=False,
-                    generated_at=datetime.utcnow(),
+                    generated_at=datetime.now(timezone.utc),
                 )
                 db.add(cache_entry)
                 await db.commit()
@@ -368,7 +369,7 @@ Be specific to {ticker} — reference actual business drivers, not generic state
         return {
             "ticker": ticker,
             "thesis": thesis_data,
-            "generated_at": datetime.utcnow().isoformat() if 'datetime' in dir() else None,
+            "generated_at": datetime.now(timezone.utc).isoformat() if 'datetime' in dir() else None,
             "cached": False,
         }
 

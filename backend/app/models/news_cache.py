@@ -21,4 +21,4 @@ class NewsCache(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, nullable=True)
     url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # -1.0 to 1.0
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

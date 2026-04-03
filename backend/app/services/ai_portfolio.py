@@ -9,7 +9,7 @@ logged with reasoning. Exit signals close matching simulated trades.
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 
@@ -88,7 +88,7 @@ async def save_ai_config(config: dict) -> None:
             entry = result.scalar_one_or_none()
             if entry:
                 entry.content = config
-                entry.generated_at = datetime.utcnow()
+                entry.generated_at = datetime.now(timezone.utc)
             else:
                 db.add(HenryCache(
                     cache_key="ai_trading_config",
@@ -312,7 +312,7 @@ async def evaluate_signal_for_ai_portfolio(
                 select(HenryContext)
                 .where(
                     HenryContext.ticker == trade.ticker,
-                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc)),
                 )
                 .order_by(desc(HenryContext.created_at))
                 .limit(5)
@@ -445,7 +445,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 current_price=trade.entry_price,
                 priority_score=confidence * 2.0,
                 status="approved" if action == "BUY" and confidence >= min_conf else "rejected",
-                resolved_at=datetime.utcnow(),
+                resolved_at=datetime.now(timezone.utc),
                 reject_reason="Low confidence or SKIP" if action == "SKIP" or confidence < min_conf else None,
             )
             db.add(action_record)
@@ -609,7 +609,7 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                 current_price=trade.entry_price,
                 priority_score=confidence * 2.0,
                 status="approved" if action == "BUY" and confidence >= min_conf else "rejected",
-                resolved_at=datetime.utcnow(),
+                resolved_at=datetime.now(timezone.utc),
                 reject_reason=None if action == "BUY" and confidence >= min_conf else "SKIP or low confidence",
             )
             db.add(action_record)
@@ -692,7 +692,7 @@ async def process_exit_for_ai_portfolio(
             # Close simulated trade with exit data from the real trade
             sim_trade.exit_price = trade.exit_price
             sim_trade.exit_reason = trade.exit_reason
-            sim_trade.exit_time = trade.exit_time or datetime.utcnow()
+            sim_trade.exit_time = trade.exit_time or datetime.now(timezone.utc)
             sim_trade.bars_in_trade = trade.bars_in_trade
             sim_trade.status = "closed"
             sim_trade.raw_exit_payload = {"source": "ai_portfolio_exit"}
@@ -765,7 +765,7 @@ async def scheduled_ai_portfolio_review() -> None:
                     pnl = ((cp - pos.entry_price) / pos.entry_price * 100)
                 else:
                     pnl = ((pos.entry_price - cp) / pos.entry_price * 100)
-                hold_hours = (datetime.utcnow() - pos.entry_time).total_seconds() / 3600
+                hold_hours = (datetime.now(timezone.utc) - pos.entry_time).total_seconds() / 3600
                 pos_lines.append(
                     f"  {pos.trader.trader_id}: {pos.direction.upper()} {pos.ticker} "
                     f"x{pos.qty:.2f} @ ${pos.entry_price:.2f} → ${cp:.2f} ({pnl:+.2f}%) "
@@ -836,7 +836,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                             cp = price_service.get_price(pos.ticker) or pos.entry_price
                             pos.exit_price = cp
                             pos.exit_reason = "ai_review_close"
-                            pos.exit_time = datetime.utcnow()
+                            pos.exit_time = datetime.now(timezone.utc)
                             pos.status = "closed"
 
                             if pos.direction == "long":
@@ -860,7 +860,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                                 current_price=cp,
                                 priority_score=7.0,
                                 status="approved",
-                                resolved_at=datetime.utcnow(),
+                                resolved_at=datetime.now(timezone.utc),
                             ))
 
                             logger.info(f"AI portfolio review: CLOSED {ticker} | PnL: {pos.pnl_percent:+.2f}%")

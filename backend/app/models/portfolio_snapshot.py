@@ -18,6 +18,6 @@ class PortfolioSnapshot(Base):
     open_positions: Mapped[int] = mapped_column(Integer, default=0)
     drawdown_pct: Mapped[float] = mapped_column(Float, default=0.0)
     peak_equity: Mapped[float] = mapped_column(Float, default=0.0)
-    snapshot_time: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    snapshot_time: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     portfolio: Mapped["Portfolio"] = relationship(back_populates="snapshots")

@@ -8,7 +8,7 @@ APScheduler-based background jobs for:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -65,14 +65,14 @@ async def _generate_morning_summary():
                 })
 
             # Get yesterday's trades
-            yesterday = datetime.utcnow() - timedelta(days=1)
+            yesterday = datetime.now(timezone.utc) - timedelta(days=1)
             result = await db.execute(
                 select(Trade).where(Trade.created_at >= yesterday, Trade.is_simulated == False)
             )
             yesterday_trades = result.scalars().all()
 
             # Get screener data (last 12h)
-            cutoff = datetime.utcnow() - timedelta(hours=12)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
             result = await db.execute(
                 select(IndicatorAlert).where(IndicatorAlert.created_at >= cutoff)
             )
@@ -127,7 +127,7 @@ async def _generate_nightly_summary():
 
         async with async_session() as db:
             # Get today's closed trades
-            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0)
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)
             result = await db.execute(
                 select(Trade).where(
                     Trade.status == "closed",
@@ -202,7 +202,7 @@ async def _refresh_screener_analysis():
         from sqlalchemy import select, desc
 
         async with async_session() as db:
-            cutoff = datetime.utcnow() - timedelta(hours=24)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
             result = await db.execute(
                 select(IndicatorAlert)
                 .where(IndicatorAlert.created_at >= cutoff)
@@ -400,7 +400,7 @@ async def _cleanup_expired_context():
         from sqlalchemy import delete, and_, or_
 
         async with async_session() as db:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # Delete expired rows (where expires_at < now)
             await db.execute(

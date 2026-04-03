@@ -21,7 +21,7 @@ class FmpCache(Base):
     endpoint: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     params_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     response_data: Mapped[dict | None] = mapped_column(JSON)
-    cached_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    cached_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     cache_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="daily")  # realtime/intraday/daily
 
     __table_args__ = (

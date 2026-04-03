@@ -16,7 +16,7 @@ Four features:
 
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import anthropic
 
@@ -74,7 +74,7 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
         _now_et = datetime.now(ZoneInfo("America/New_York"))
         sections.append(f"CURRENT DATE/TIME: {_now_et.strftime('%A, %B %d, %Y %I:%M %p ET')}")
     except Exception:
-        sections.append(f"CURRENT DATE/TIME: {datetime.utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}")
+        sections.append(f"CURRENT DATE/TIME: {datetime.now(timezone.utc).strftime('%A, %B %d, %Y %I:%M %p UTC')}")
 
     # Pull strategy descriptions dynamically — separate session to isolate errors
     try:
@@ -140,7 +140,7 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
             query = (
                 select(HenryContext)
                 .where(
-                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow())
+                    (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc))
                 )
                 .order_by(HenryContext.created_at.desc())
             )
@@ -287,7 +287,7 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
                     .where(
                         HenryContext.ticker == ticker,
                         HenryContext.context_type == "research",
-                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc)),
                     )
                     .order_by(HenryContext.created_at.desc())
                     .limit(5)
@@ -401,7 +401,7 @@ async def save_context(
 
         expires_at = None
         if expires_days:
-            expires_at = datetime.utcnow() + timedelta(days=expires_days)
+            expires_at = datetime.now(timezone.utc) + timedelta(days=expires_days)
 
         async with async_session() as db:
             ctx = HenryContext(
@@ -735,8 +735,8 @@ async def morning_briefing(
         date_str = now_et.strftime("%A, %B %d, %Y")
         time_str = now_et.strftime("%I:%M %p ET")
     except Exception:
-        date_str = datetime.utcnow().strftime("%A, %B %d, %Y")
-        time_str = datetime.utcnow().strftime("%I:%M %p UTC")
+        date_str = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+        time_str = datetime.now(timezone.utc).strftime("%I:%M %p UTC")
 
     prompt = f"""Generate a comprehensive morning briefing for today's trading session.
 TODAY IS: {date_str} ({time_str})
@@ -1257,7 +1257,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         return {
             "briefing": result,
             "open_positions": len(positions),
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
             "cached": False,
         }
     
@@ -1385,7 +1385,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                             select(HenryCache).where(
                                 HenryCache.cache_key == cache_key,
                                 HenryCache.is_stale == False,
-                                HenryCache.generated_at >= datetime.utcnow() - timedelta(days=5),
+                                HenryCache.generated_at >= datetime.now(timezone.utc) - timedelta(days=5),
                             )
                         )
                         hit = cached.scalar_one_or_none()
@@ -1466,7 +1466,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 query = (
                     select(HenryContext)
                     .where(
-                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow())
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc))
                     )
                     .order_by(HenryContext.created_at.desc())
                     .limit(limit)
@@ -1646,7 +1646,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
                 cached = await db.execute(
                     select(HenryCache).where(
                         HenryCache.cache_key == f"price_targets:{ticker}",
-                        HenryCache.generated_at >= datetime.utcnow() - timedelta(hours=12),
+                        HenryCache.generated_at >= datetime.now(timezone.utc) - timedelta(hours=12),
                     )
                 )
                 hit = cached.scalar_one_or_none()
@@ -1677,7 +1677,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
                 ctx_result = await db.execute(
                     select(HenryContext).where(
                         HenryContext.ticker == ticker,
-                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.utcnow()),
+                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > datetime.now(timezone.utc)),
                     ).order_by(HenryContext.created_at.desc()).limit(5)
                 )
                 for c in ctx_result.scalars().all():
@@ -1722,7 +1722,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                     old_entry = old.scalar_one_or_none()
                     if old_entry:
                         old_entry.content = targets
-                        old_entry.generated_at = datetime.utcnow()
+                        old_entry.generated_at = datetime.now(timezone.utc)
                     else:
                         db.add(HenryCache(
                             cache_key=f"price_targets:{ticker}",

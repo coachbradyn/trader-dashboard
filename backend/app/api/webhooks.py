@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -81,7 +81,7 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
                 strategies_involved.append(t.trader.trader_id)
 
         # Get recent trade history for context
-        cutoff = datetime.utcnow() - timedelta(days=14)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
         result = await db.execute(
             select(Trade)
             .options(selectinload(Trade.trader))

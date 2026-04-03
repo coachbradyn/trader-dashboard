@@ -10,4 +10,4 @@ class ScreenerAnalysis(Base):
     picks: Mapped[dict | None] = mapped_column(JSON)  # Array of trade ideas
     market_context: Mapped[dict | None] = mapped_column(JSON)  # Sector heat, catalysts, noise ratio
     alerts_analyzed: Mapped[int] = mapped_column(Integer, default=0)
-    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), index=True)

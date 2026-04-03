@@ -13,4 +13,4 @@ class IndicatorAlert(Base):
     signal: Mapped[str] = mapped_column(String(20), nullable=False)  # "bullish" / "bearish" / "neutral"
     timeframe: Mapped[str | None] = mapped_column(String(10))
     metadata_extra: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), index=True)

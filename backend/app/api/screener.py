@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func, desc
@@ -68,13 +68,13 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
             raise HTTPException(401, "Invalid API key")
 
     # Update last webhook timestamp
-    authenticated_trader.last_webhook_at = datetime.utcnow()
+    authenticated_trader.last_webhook_at = datetime.now(timezone.utc)
 
     # Create alert
     alert_time = (
-        datetime.utcfromtimestamp(payload.time / 1000)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
         if payload.time
-        else datetime.utcnow()
+        else datetime.now(timezone.utc)
     )
 
     alert = IndicatorAlert(
@@ -112,7 +112,7 @@ async def get_alerts(
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = select(IndicatorAlert).where(IndicatorAlert.created_at >= cutoff)
 
     if ticker:
@@ -145,7 +145,7 @@ async def get_ticker_aggregations(
     hours: int = 24,
     db: AsyncSession = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # Get all alerts within window
     result = await db.execute(
@@ -229,7 +229,7 @@ async def analyze_ticker(
 
     hours = body.hours if body else 24
     ticker = ticker.upper()
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     # 1. Gather recent alerts for this ticker
     result = await db.execute(
@@ -262,7 +262,7 @@ async def analyze_ticker(
     if not force_refresh:
         cached = await get_cached(db, cache_key, max_age_hours=4, data_hash=data_hash)
         if cached:
-            return TickerAnalysisResponse(ticker=ticker, generated_at=datetime.utcnow(), **cached)
+            return TickerAnalysisResponse(ticker=ticker, generated_at=datetime.now(timezone.utc), **cached)
 
     # 2. Fetch chart data
     chart_data = await get_daily_chart(ticker, 60)
@@ -289,7 +289,7 @@ async def analyze_ticker(
     ]
 
     # 4. Get trade history for this ticker (last 30 days)
-    history_cutoff = datetime.utcnow() - timedelta(days=30)
+    history_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     hist_result = await db.execute(
         select(TradeModel)
         .options(selectinload(TradeModel.trader))
@@ -332,6 +332,6 @@ async def analyze_ticker(
 
     return TickerAnalysisResponse(
         ticker=ticker,
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(timezone.utc),
         **analysis,
     )

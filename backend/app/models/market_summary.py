@@ -11,4 +11,4 @@ class MarketSummary(Base):
     scope: Mapped[str] = mapped_column(String(20), nullable=False)  # "portfolio" / "screener" / "combined"
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tickers_analyzed: Mapped[dict | None] = mapped_column(JSON)
-    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, index=True)
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), index=True)

@@ -15,5 +15,5 @@ class HenryCache(Base):
     ticker: Mapped[str | None] = mapped_column(String(20), index=True)
     strategy: Mapped[str | None] = mapped_column(String(50))
     is_stale: Mapped[bool] = mapped_column(Boolean, default=False)
-    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    generated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     data_hash: Mapped[str | None] = mapped_column(String(64))  # hash of input data to detect changes

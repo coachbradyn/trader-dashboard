@@ -38,6 +38,6 @@ class PortfolioAction(Base):
     outcome_correct: Mapped[bool | None] = mapped_column(Boolean)
     outcome_resolved_at: Mapped[datetime | None] = mapped_column()
 
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     portfolio: Mapped["Portfolio"] = relationship()

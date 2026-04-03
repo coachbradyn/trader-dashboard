@@ -67,7 +67,7 @@ class TickerFundamentals(Base):
     institutional_ownership_pct: Mapped[float | None] = mapped_column(Float)
     company_description: Mapped[str | None] = mapped_column(Text)
 
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     __table_args__ = (
         Index("ix_ticker_fundamentals_ticker", "ticker", unique=True),

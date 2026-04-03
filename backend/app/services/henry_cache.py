@@ -8,7 +8,7 @@ Invalidated by: new webhooks, manual refresh, scheduled refresh.
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,7 +60,7 @@ async def get_cached(
 
     # Check age
     age_limit = max_age_hours or MAX_AGE_HOURS.get(entry.cache_type, DEFAULT_MAX_AGE)
-    age_hours = (datetime.utcnow() - entry.generated_at).total_seconds() / 3600
+    age_hours = (datetime.now(timezone.utc) - entry.generated_at).total_seconds() / 3600
     if age_hours > age_limit:
         return None
 
@@ -92,7 +92,7 @@ async def set_cached(
         existing.ticker = ticker
         existing.strategy = strategy
         existing.is_stale = False
-        existing.generated_at = datetime.utcnow()
+        existing.generated_at = datetime.now(timezone.utc)
         existing.data_hash = data_hash
     else:
         entry = HenryCache(
@@ -136,7 +136,7 @@ async def invalidate_all(db: AsyncSession) -> int:
 
 async def cleanup_old_cache(db: AsyncSession, days: int = 7) -> int:
     """Delete cache entries older than N days."""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = await db.execute(
         delete(HenryCache).where(HenryCache.generated_at < cutoff)
     )

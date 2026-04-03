@@ -40,7 +40,7 @@ class HenryContext(Base):
     action_id: Mapped[str | None] = mapped_column(ForeignKey("portfolio_actions.id"))
     trade_id: Mapped[str | None] = mapped_column(ForeignKey("trades.id"))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships

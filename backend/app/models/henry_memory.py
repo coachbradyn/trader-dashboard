@@ -38,5 +38,5 @@ class HenryMemory(Base):
     # Source: "briefing", "signal_eval", "scheduled_review", "user", "outcome_tracking"
     source: Mapped[str] = mapped_column(String(30), default="system")
 
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

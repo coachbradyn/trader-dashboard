@@ -28,6 +28,6 @@ class BacktestImport(Base):
     avg_hold_days: Mapped[float | None] = mapped_column(Float)
     total_pnl_pct: Mapped[float | None] = mapped_column(Float)
 
-    imported_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    imported_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     trades: Mapped[list["BacktestTrade"]] = relationship(back_populates="backtest_import", cascade="all, delete-orphan")

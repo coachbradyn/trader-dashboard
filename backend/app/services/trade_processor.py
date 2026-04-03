@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +48,7 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
         matched_key.claimed_by_id = trader.id
 
     # Update last webhook timestamp
-    trader.last_webhook_at = datetime.utcnow()
+    trader.last_webhook_at = datetime.now(timezone.utc)
 
     # 2. Process based on signal type
     ai_eval_portfolios = []
@@ -129,9 +129,9 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
 
 async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSession) -> Trade:
     entry_time = (
-        datetime.utcfromtimestamp(payload.time / 1000)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
         if payload.time
-        else datetime.utcnow()
+        else datetime.now(timezone.utc)
     )
 
     trade = Trade(
@@ -210,9 +210,9 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
         raise ValueError(f"No open {payload.dir} trade found for {payload.ticker}")
 
     exit_time = (
-        datetime.utcfromtimestamp(payload.time / 1000)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
         if payload.time
-        else datetime.utcnow()
+        else datetime.now(timezone.utc)
     )
 
     trade.exit_price = payload.price

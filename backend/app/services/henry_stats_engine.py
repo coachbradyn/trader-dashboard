@@ -7,7 +7,7 @@ Each sub-function queries trades/actions, computes stats, upserts to HenryStats.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 from sqlalchemy import select, delete, func, and_
@@ -68,7 +68,7 @@ async def _upsert_stat(db, stat_type: str, data: dict, strategy: str = None,
         portfolio_id=portfolio_id,
         data=data,
         period_days=period_days,
-        computed_at=datetime.utcnow(),
+        computed_at=datetime.now(timezone.utc),
     )
     db.add(stat)
 
@@ -78,7 +78,7 @@ async def _compute_strategy_performance(db):
     from app.models import Trade, Trader
     from sqlalchemy.orm import selectinload
 
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     result = await db.execute(
         select(Trade)
         .options(selectinload(Trade.trader))
@@ -137,7 +137,7 @@ async def _compute_exit_reason_analysis(db):
     """Closed trades (30 days), grouped by exit_reason."""
     from app.models import Trade
 
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     result = await db.execute(
         select(Trade).where(Trade.status == "closed", Trade.exit_time >= cutoff)
     )
@@ -206,7 +206,7 @@ async def _compute_hold_time_analysis(db):
     """Closed trades with bars_in_trade, split winners/losers."""
     from app.models import Trade
 
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     result = await db.execute(
         select(Trade).where(
             Trade.status == "closed",
@@ -288,7 +288,7 @@ async def _compute_strategy_correlation(db):
     from app.models import Trade, Trader
     from sqlalchemy.orm import selectinload
 
-    cutoff = datetime.utcnow() - timedelta(days=90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
     result = await db.execute(
         select(Trade)
         .options(selectinload(Trade.trader))
