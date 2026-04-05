@@ -689,6 +689,203 @@ Return empty array if nothing is compelling. No markdown, no backticks."""
 # TRADE EXECUTION
 # ══════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════
+# CAPITAL REALLOCATION — free cash by closing weak positions
+# ══════════════════════════════════════════════════════════════════════
+
+async def _liquidate_for_capital(
+    portfolio: Portfolio,
+    target_amount: float,
+    incoming_confidence: int,
+    incoming_ticker: str,
+    db,  # AsyncSession — caller provides; we do NOT commit
+) -> float:
+    """
+    Attempt to free capital by closing existing positions to fund a higher-
+    conviction incoming trade. Returns the amount of cash freed (may be 0).
+    Only closes positions where the case for doing so is clear-cut.
+
+    Priority tiers (sell weakest first):
+      1. Losers beyond stop — unmanaged risk, close unconditionally
+      2. Underperformers — pnl < -3%, held > 24h, incoming conf >= 8
+      3. Low-conviction winners — autonomous positions where incoming conf
+         beats the position's logged confidence, held > 4h
+
+    Max ONE non-stop position closed per call to prevent cascade liquidation.
+    """
+    import asyncio
+    from app.services.henry_activity import log_activity
+
+    cash_before = portfolio.cash
+
+    # Already have enough cash — nothing to do
+    if portfolio.cash >= target_amount:
+        return 0.0
+
+    # Get all open positions for this portfolio
+    result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "open",
+        )
+    )
+    open_positions = result.scalars().all()
+
+    if not open_positions:
+        return 0.0
+
+    def _close_position(pos, cp, exit_reason):
+        """Apply the standard close pattern to a position (no commit)."""
+        pos.exit_price = cp
+        pos.exit_reason = exit_reason
+        pos.exit_time = utcnow()
+        pos.status = "closed"
+
+        if pos.direction == "long":
+            pos.pnl_dollars = (cp - pos.entry_price) * pos.qty
+        else:
+            pos.pnl_dollars = (pos.entry_price - cp) * pos.qty
+
+        position_value = pos.entry_price * pos.qty
+        pos.pnl_percent = (pos.pnl_dollars / position_value * 100) if position_value > 0 else 0
+
+        portfolio.cash += position_value + pos.pnl_dollars
+
+        db.add(PortfolioAction(
+            portfolio_id=portfolio.id,
+            ticker=pos.ticker,
+            direction=pos.direction,
+            action_type="CLOSE",
+            confidence=7,
+            reasoning=f"[Reallocation] Closed to fund higher-conviction trade in {incoming_ticker} (conf {incoming_confidence}). Reason: {exit_reason}",
+            trigger_type="REALLOCATION",
+            current_price=cp,
+            priority_score=10.5,
+            status="approved",
+            resolved_at=utcnow(),
+        ))
+
+        from app.services.ai_service import save_context
+        asyncio.create_task(save_context(
+            content=(
+                f"REALLOCATION EXIT: {pos.ticker} {pos.direction.upper()} | "
+                f"PnL: {pos.pnl_percent:+.2f}% (${pos.pnl_dollars:+.2f}) | "
+                f"Reason: {exit_reason} | Freed cash for {incoming_ticker}"
+            ),
+            context_type="outcome",
+            ticker=pos.ticker,
+            trade_id=pos.id,
+        ))
+
+        asyncio.create_task(log_activity(
+            f"REALLOCATION CLOSE: {pos.ticker} | PnL: {pos.pnl_percent:+.2f}% (${pos.pnl_dollars:+.2f}) | "
+            f"Reason: {exit_reason} → funding {incoming_ticker} (conf {incoming_confidence})",
+            "trade_exit", ticker=pos.ticker,
+        ))
+
+    # Enrich positions with current price and P&L
+    enriched = []
+    for pos in open_positions:
+        # Skip same ticker — don't churn
+        if pos.ticker == incoming_ticker:
+            continue
+
+        cp = price_service.get_price(pos.ticker) or pos.entry_price
+        if pos.direction == "long":
+            pnl_pct = (cp - pos.entry_price) / pos.entry_price * 100
+        else:
+            pnl_pct = (pos.entry_price - cp) / pos.entry_price * 100
+
+        hold_hours = (utcnow() - pos.entry_time).total_seconds() / 3600 if pos.entry_time else 0
+        enriched.append({
+            "pos": pos,
+            "cp": cp,
+            "pnl_pct": pnl_pct,
+            "hold_hours": hold_hours,
+        })
+
+    # ── TIER 1: Stop breaches — close unconditionally ──────────────────
+    for e in enriched:
+        pos = e["pos"]
+        if not pos.stop_price:
+            continue
+        breached = False
+        if pos.direction == "long" and e["cp"] <= pos.stop_price:
+            breached = True
+        elif pos.direction == "short" and e["cp"] >= pos.stop_price:
+            breached = True
+
+        if breached:
+            _close_position(pos, e["cp"], f"stop_breach (${pos.stop_price:.2f})")
+            logger.info(f"Reallocation: closed {pos.ticker} — stop breach")
+
+        if portfolio.cash >= target_amount:
+            return portfolio.cash - cash_before
+
+    # Don't liquidate for medium-conviction trades (except stop breaches above)
+    if incoming_confidence < 8:
+        return portfolio.cash - cash_before
+
+    # Safety: don't leave portfolio completely empty
+    remaining_open = [e for e in enriched if e["pos"].status == "open"]
+    if len(remaining_open) <= 1 and portfolio.cash <= 0:
+        return portfolio.cash - cash_before
+
+    non_stop_closed = False  # Max one non-stop close per call
+
+    # ── TIER 2: Underperformers (pnl < -3%, held > 24h) ───────────────
+    if not non_stop_closed and portfolio.cash < target_amount:
+        underperformers = [
+            e for e in remaining_open
+            if e["pnl_pct"] < -3 and e["hold_hours"] > 24
+        ]
+        # Sell worst performer first
+        underperformers.sort(key=lambda e: e["pnl_pct"])
+        if underperformers:
+            worst = underperformers[0]
+            _close_position(worst["pos"], worst["cp"], f"underperformer ({worst['pnl_pct']:+.1f}%, {worst['hold_hours']:.0f}h)")
+            logger.info(f"Reallocation: closed underperformer {worst['pos'].ticker} ({worst['pnl_pct']:+.1f}%)")
+            non_stop_closed = True
+
+    if portfolio.cash >= target_amount:
+        return portfolio.cash - cash_before
+
+    # ── TIER 3: Low-conviction winners (autonomous, incoming conf > position conf) ──
+    if not non_stop_closed and portfolio.cash < target_amount:
+        candidates = []
+        for e in remaining_open:
+            pos = e["pos"]
+            if pos.status != "open":
+                continue
+            if e["pnl_pct"] <= 0:
+                continue
+            if e["hold_hours"] <= 4:
+                continue
+            # Must be an autonomous position
+            payload = pos.raw_entry_payload
+            if not isinstance(payload, dict) or not payload.get("autonomous"):
+                continue
+            # Get the position's logged confidence from its PortfolioAction
+            pos_confidence = payload.get("confidence", 10)
+            if incoming_confidence <= pos_confidence:
+                continue
+            candidates.append({**e, "pos_confidence": pos_confidence})
+
+        # Sell lowest-confidence winner first
+        candidates.sort(key=lambda c: c["pos_confidence"])
+        if candidates:
+            weakest = candidates[0]
+            _close_position(
+                weakest["pos"], weakest["cp"],
+                f"low_conviction_winner (conf {weakest['pos_confidence']}, pnl {weakest['pnl_pct']:+.1f}%)"
+            )
+            logger.info(f"Reallocation: closed low-conviction winner {weakest['pos'].ticker}")
+
+    return portfolio.cash - cash_before
+
+
 async def _execute_autonomous_trade(
     portfolio: Portfolio,
     ticker: str,
@@ -729,8 +926,16 @@ async def _execute_autonomous_trade(
             qty = alloc_amount / price if price > 0 and alloc_amount >= min_trade else 0
 
             if qty <= 0:
-                logger.info(f"Autonomous: skipped {ticker} — insufficient cash (have ${port_obj.cash:.2f}, need ${min_trade:.2f} min, target was ${target_amount:.2f})")
-                return False
+                if confidence >= 8:
+                    freed = await _liquidate_for_capital(
+                        port_obj, target_amount, confidence, ticker, db
+                    )
+                    if freed > 0:
+                        alloc_amount = min(target_amount, max_amount, port_obj.cash)
+                        qty = alloc_amount / price if price > 0 and alloc_amount >= min_trade else 0
+                if qty <= 0:
+                    logger.info(f"Autonomous: skipped {ticker} — insufficient cash after reallocation attempt (have ${port_obj.cash:.2f})")
+                    return False
 
             # Get or create a pseudo-trader for autonomous trades
             trader_result = await db.execute(

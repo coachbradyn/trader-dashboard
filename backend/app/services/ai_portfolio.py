@@ -518,17 +518,74 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                     except Exception:
                         pass
                 else:
-                    action_record.status = "rejected"
-                    action_record.reject_reason = f"Insufficient cash (${portfolio.cash:.2f}) or zero quantity"
-                    logger.info(f"AI portfolio: BUY rejected for {trade.ticker} — insufficient cash (${portfolio.cash:.2f})")
-                    try:
-                        from app.services.henry_activity import log_activity
-                        asyncio.create_task(log_activity(
-                            f"SIGNAL REJECTED: {trade.ticker} — BUY approved (conf {confidence}) but insufficient cash (${portfolio.cash:.2f})",
-                            "trade_skip", ticker=trade.ticker,
+                    # Attempt reallocation for high-conviction trades
+                    if confidence >= 8:
+                        from app.services.autonomous_trading import _liquidate_for_capital
+                        freed = await _liquidate_for_capital(
+                            portfolio, target_amount, confidence, trade.ticker, db
+                        )
+                        if freed > 0:
+                            alloc_amount = min(target_amount, max_amount, portfolio.cash)
+                            qty = alloc_amount / trade.entry_price if trade.entry_price > 0 and alloc_amount >= min_trade else 0
+
+                    if qty > 0:
+                        # Retry execution after successful reallocation
+                        sim_trade = Trade(
+                            trader_id=trade.trader_id,
+                            ticker=trade.ticker,
+                            direction=trade.direction,
+                            entry_price=trade.entry_price,
+                            qty=round(qty, 4),
+                            entry_signal_strength=trade.entry_signal_strength,
+                            entry_adx=trade.entry_adx,
+                            entry_atr=trade.entry_atr,
+                            stop_price=trade.stop_price,
+                            timeframe=trade.timeframe,
+                            entry_time=trade.entry_time,
+                            status="open",
+                            is_simulated=True,
+                            raw_entry_payload={"source": "ai_portfolio", "confidence": confidence},
+                        )
+                        db.add(sim_trade)
+                        await db.flush()
+                        pt = PortfolioTrade(portfolio_id=portfolio.id, trade_id=sim_trade.id)
+                        db.add(pt)
+                        portfolio.cash -= alloc_amount
+                        action_record.status = "approved"
+                        action_record.reject_reason = None
+                        action_record.trigger_ref = sim_trade.id
+
+                        from app.services.ai_service import save_context
+                        asyncio.create_task(save_context(
+                            content=f"AI PORTFOLIO (realloc): BOUGHT {trade.ticker} {trade.direction.upper()} x{qty:.2f} @ ${trade.entry_price:.2f} | conf {confidence}/10 | {reasoning}",
+                            context_type="recommendation",
+                            ticker=trade.ticker,
+                            strategy=trader.trader_id,
+                            confidence=confidence,
+                            trade_id=sim_trade.id,
+                            expires_days=30,
                         ))
-                    except Exception:
-                        pass
+                        logger.info(f"AI portfolio: BUY {trade.ticker} x{qty:.2f} @ ${trade.entry_price:.2f} (conf {confidence}, after reallocation)")
+                        try:
+                            from app.services.henry_activity import log_activity
+                            asyncio.create_task(log_activity(
+                                f"SIGNAL BUY (realloc): {trade.ticker} {trade.direction.upper()} x{qty:.2f} @ ${trade.entry_price:.2f} (conf {confidence}/10) from {trader.trader_id}",
+                                "trade_execute", ticker=trade.ticker,
+                            ))
+                        except Exception:
+                            pass
+                    else:
+                        action_record.status = "rejected"
+                        action_record.reject_reason = f"Insufficient cash (${portfolio.cash:.2f}), reallocation failed"
+                        logger.info(f"AI portfolio: BUY rejected for {trade.ticker} — insufficient cash (${portfolio.cash:.2f})")
+                        try:
+                            from app.services.henry_activity import log_activity
+                            asyncio.create_task(log_activity(
+                                f"SIGNAL REJECTED: {trade.ticker} — BUY approved (conf {confidence}) but insufficient cash (${portfolio.cash:.2f})",
+                                "trade_skip", ticker=trade.ticker,
+                            ))
+                        except Exception:
+                            pass
             else:
                 logger.info(f"AI portfolio: SKIP {trade.ticker} (conf {confidence}, action={action})")
                 try:
@@ -645,9 +702,39 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                     except Exception:
                         pass
                 else:
-                    action_record.status = "rejected"
-                    action_record.reject_reason = f"Insufficient cash (${port.cash:.2f})"
-                    logger.info(f"AI eval ({port.name}): BUY rejected {trade.ticker} — cash ${port.cash:.2f}")
+                    realloc_success = False
+                    # Attempt reallocation for high-conviction trades
+                    if confidence >= 8:
+                        from app.services.autonomous_trading import _liquidate_for_capital
+                        freed = await _liquidate_for_capital(
+                            port, alloc_amount, confidence, trade.ticker, db
+                        )
+                        if freed > 0:
+                            alloc_amount = min(port.cash * alloc_pct * 10, port.cash * 0.50, port.cash)
+                            if alloc_amount >= min(10, trade.entry_price) and trade.entry_price > 0:
+                                qty = round(alloc_amount / trade.entry_price, 4)
+                                pt = PortfolioTrade(portfolio_id=port.id, trade_id=trade.id)
+                                db.add(pt)
+                                if qty < trade.qty:
+                                    trade.qty = qty
+                                port.cash -= qty * trade.entry_price
+                                action_record.status = "approved"
+                                action_record.reject_reason = None
+                                realloc_success = True
+                                logger.info(f"AI eval ({port.name}): BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence}, after reallocation)")
+                                try:
+                                    from app.services.henry_activity import log_activity
+                                    asyncio.create_task(log_activity(
+                                        f"[{port.name}] BUY (realloc) {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence})",
+                                        "trade_execute", ticker=trade.ticker,
+                                    ))
+                                except Exception:
+                                    pass
+
+                    if not realloc_success:
+                        action_record.status = "rejected"
+                        action_record.reject_reason = f"Insufficient cash (${port.cash:.2f}), reallocation failed"
+                        logger.info(f"AI eval ({port.name}): BUY rejected {trade.ticker} — cash ${port.cash:.2f}")
             else:
                 logger.info(f"AI eval ({port.name}): SKIP {trade.ticker} (conf {confidence})")
 
