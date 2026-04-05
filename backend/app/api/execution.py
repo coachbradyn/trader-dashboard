@@ -8,12 +8,15 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import get_db, async_session
 from app.models import Portfolio
 from app.models.portfolio_holding import PortfolioHolding
 from app.services.alpaca_service import alpaca_service
 
 logger = logging.getLogger(__name__)
+
+# Background task tracking — prevents GC from dropping fire-and-forget tasks
+_background_tasks: set[asyncio.Task] = set()
 
 router = APIRouter(prefix="/execution", tags=["execution"])
 
@@ -131,11 +134,11 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
     if order_result.get("status") == "error":
         return order_result
 
-    # Poll for fill (up to 5 seconds)
+    # Phase 1 (inline, fast): poll 6 × 0.5s = 3s for fill confirmation
     order_id = order_result.get("order_id")
     fill_result = None
     if order_id:
-        for _ in range(10):
+        for _ in range(6):
             await asyncio.sleep(0.5)
             fill_result = await alpaca_service.get_order_status(
                 api_key=portfolio.alpaca_api_key,
@@ -148,6 +151,7 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
 
     # On fill, update holdings
     holding_updated = False
+    background_polling = False
     if fill_result and fill_result.get("status") == "filled":
         fill_price = fill_result.get("filled_price")
         fill_qty = fill_result.get("filled_qty", body.qty)
@@ -155,11 +159,69 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
             db, portfolio, body.ticker, fill_qty, body.side, fill_price,
         )
         holding_updated = True
+    elif order_id and (not fill_result or fill_result.get("status") not in ("filled",)):
+        # Phase 2 (background): continue polling every 2s for up to 60s
+        background_polling = True
+        _portfolio_id = portfolio.id
+        _api_key = portfolio.alpaca_api_key
+        _secret_key = portfolio.alpaca_secret_key
+        _ticker = body.ticker
+        _qty = body.qty
+        _side = body.side
+
+        async def _poll_for_delayed_fill():
+            from app.services.henry_activity import log_activity
+            try:
+                for _ in range(30):  # 30 × 2s = 60s
+                    await asyncio.sleep(2)
+                    status = await alpaca_service.get_order_status(
+                        api_key=_api_key,
+                        secret_key=_secret_key,
+                        paper=is_paper,
+                        order_id=order_id,
+                    )
+                    if status.get("status") == "filled":
+                        fill_price = status.get("filled_price")
+                        fill_qty = status.get("filled_qty", _qty)
+                        async with async_session() as bg_db:
+                            bg_port_result = await bg_db.execute(
+                                select(Portfolio).where(Portfolio.id == _portfolio_id)
+                            )
+                            bg_port = bg_port_result.scalar_one_or_none()
+                            if bg_port:
+                                await _update_holding_local(
+                                    bg_db, bg_port, _ticker, fill_qty, _side, fill_price,
+                                )
+                        await log_activity(
+                            f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f}",
+                            "trade_execute", ticker=_ticker,
+                        )
+                        logger.info(f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f} (order {order_id})")
+                        return
+                    if status.get("status") in ("canceled", "expired", "rejected"):
+                        await log_activity(
+                            f"Order {order_id} for {_ticker} was {status.get('status')}",
+                            "error", ticker=_ticker,
+                        )
+                        return
+                # Timeout — no fill after 60s
+                await log_activity(
+                    f"Order {order_id} for {_ticker} did not confirm within 60s — verify manually",
+                    "error", ticker=_ticker,
+                )
+                logger.warning(f"Order {order_id} for {_ticker} did not fill within 60s")
+            except Exception as e:
+                logger.error(f"Background fill poll failed for {order_id}: {e}")
+
+        task = asyncio.create_task(_poll_for_delayed_fill())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     return {
         **order_result,
         "fill": fill_result,
         "holding_updated": holding_updated,
+        "background_polling": background_polling,
         "mode": portfolio.execution_mode,
     }
 
@@ -245,9 +307,18 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
             db.add(new_holding)
             created += 1
 
+    # Removal pass: close DB holdings that no longer exist at Alpaca
+    alpaca_tickers = {pos["symbol"] for pos in alpaca_positions}
+    closed = 0
+    for ticker, holding in existing_holdings.items():
+        if ticker not in alpaca_tickers:
+            holding.is_active = False
+            holding.notes = (holding.notes or "") + " | closed_by_alpaca_sync"
+            closed += 1
+
     await db.commit()
-    logger.info(f"SYNC | portfolio={body.portfolio_id} synced={synced} created={created}")
-    return {"status": "synced", "synced": synced, "created": created, "alpaca_positions": len(alpaca_positions)}
+    logger.info(f"SYNC | portfolio={body.portfolio_id} synced={synced} created={created} closed={closed}")
+    return {"status": "synced", "synced": synced, "created": created, "closed": closed, "alpaca_positions": len(alpaca_positions)}
 
 
 @router.get("/kill-switch")

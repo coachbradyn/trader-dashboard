@@ -392,6 +392,122 @@ async def _run_intraday_monitor():
         logger.error(f"Intraday monitor failed: {e}")
 
 
+async def _reconcile_alpaca_positions():
+    """Reconcile DB holdings against live Alpaca positions for paper/live portfolios."""
+    logger.info("Running Alpaca position reconciliation...")
+    try:
+        from app.database import async_session
+        from app.models import Portfolio
+        from app.models.portfolio_holding import PortfolioHolding
+        from app.services.alpaca_service import alpaca_service
+        from app.services.henry_activity import log_activity
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(Portfolio).where(
+                    Portfolio.execution_mode.in_(["paper", "live"]),
+                    Portfolio.is_active == True,
+                    Portfolio.alpaca_api_key.isnot(None),
+                )
+            )
+            portfolios = result.scalars().all()
+
+        if not portfolios:
+            return
+
+        for portfolio in portfolios:
+            try:
+                is_paper = portfolio.execution_mode == "paper"
+                alpaca_positions = await alpaca_service.get_positions(
+                    api_key=portfolio.alpaca_api_key,
+                    secret_key=portfolio.alpaca_secret_key,
+                    paper=is_paper,
+                )
+
+                async with async_session() as db:
+                    # Re-fetch portfolio for fresh state
+                    port_result = await db.execute(
+                        select(Portfolio).where(Portfolio.id == portfolio.id)
+                    )
+                    port = port_result.scalar_one_or_none()
+                    if not port:
+                        continue
+
+                    holdings_result = await db.execute(
+                        select(PortfolioHolding).where(
+                            PortfolioHolding.portfolio_id == portfolio.id,
+                            PortfolioHolding.is_active == True,
+                        )
+                    )
+                    existing_holdings = {h.ticker: h for h in holdings_result.scalars().all()}
+
+                    # Guard: empty Alpaca response with existing holdings is likely an API error
+                    if not alpaca_positions and existing_holdings:
+                        await log_activity(
+                            f"Alpaca returned 0 positions for {port.name} but DB has {len(existing_holdings)} active holdings — possible API/credentials error, skipping removal",
+                            "error",
+                        )
+                        continue
+
+                    synced = 0
+                    created = 0
+                    for pos in alpaca_positions:
+                        ticker = pos["symbol"]
+                        qty = pos["qty"]
+                        entry_price = pos["avg_entry_price"]
+
+                        if ticker in existing_holdings:
+                            h = existing_holdings[ticker]
+                            # Update qty if drifted by more than 0.01%
+                            if h.qty > 0 and abs(qty - h.qty) / h.qty > 0.0001:
+                                h.qty = qty
+                                synced += 1
+                            if abs(entry_price - h.entry_price) > 0.001:
+                                h.entry_price = entry_price
+                                if not synced or existing_holdings[ticker].qty == qty:
+                                    synced += 1
+                        else:
+                            new_holding = PortfolioHolding(
+                                portfolio_id=portfolio.id,
+                                ticker=ticker,
+                                direction="long" if pos.get("side", "long") == "long" else "short",
+                                entry_price=entry_price,
+                                qty=qty,
+                                entry_date=utcnow(),
+                                is_active=True,
+                                notes="alpaca_reconcile",
+                            )
+                            db.add(new_holding)
+                            created += 1
+
+                    # Removal pass: close DB holdings not in Alpaca
+                    alpaca_tickers = {pos["symbol"] for pos in alpaca_positions}
+                    closed = 0
+                    today_str = utcnow().strftime("%Y-%m-%d")
+                    for ticker, holding in existing_holdings.items():
+                        if ticker not in alpaca_tickers:
+                            holding.is_active = False
+                            holding.notes = (holding.notes or "") + f" | reconciled_out_{today_str}"
+                            closed += 1
+
+                    await db.commit()
+
+                    # Only log if drift was detected
+                    if synced > 0 or closed > 0 or created > 0:
+                        await log_activity(
+                            f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed}",
+                            "status",
+                        )
+                        logger.info(f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed}")
+
+            except Exception as e:
+                logger.error(f"Alpaca reconciliation failed for portfolio {portfolio.name}: {e}")
+
+    except Exception as e:
+        logger.error(f"Alpaca reconciliation failed: {e}")
+
+
 async def _cleanup_expired_context():
     """Delete expired HenryContext rows and old non-outcome rows."""
     logger.info("Cleaning up expired Henry context...")
@@ -636,6 +752,14 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Alpaca position reconciliation: every 30 min during market hours (9:30 AM – 4:15 PM ET, M-F)
+    scheduler.add_job(
+        _reconcile_alpaca_positions,
+        CronTrigger(hour="9-16", minute="0,30", timezone=ET, day_of_week="mon-fri"),
+        id="alpaca_reconcile",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "
@@ -645,7 +769,8 @@ def start_scheduler():
         "fundamentals refresh (Monday 5:00 PM), auto-research (daily 9:00 AM), "
         "FMP scanner (8:30 AM, 12:00 PM, 4:30 PM M-F), "
         "intraday monitor (every 5m 9:30 AM-4:00 PM M-F), "
-        "autonomous trading (10:15 AM, 1:15 PM M-F), autonomous exits (every 30m M-F)"
+        "autonomous trading (10:15 AM, 1:15 PM M-F), autonomous exits (every 30m M-F), "
+        "alpaca reconcile (every 30m market hours M-F)"
     )
 
 
