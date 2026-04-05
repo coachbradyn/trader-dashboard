@@ -5,9 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func, desc, and_
+from sqlalchemy import select, func, desc, and_, literal_column, over
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 
 from app.database import get_db
 from app.models.watchlist_ticker import WatchlistTicker
@@ -227,55 +227,219 @@ async def _get_cached_summary(ticker: str, db: AsyncSession) -> dict | None:
 
 @router.get("")
 async def get_watchlist(db: AsyncSession = Depends(get_db)):
-    """Get all active watchlist tickers with their latest signal state."""
+    """Get all active watchlist tickers with their latest signal state.
+
+    Uses batched queries (8 total, independent of ticker count) instead of
+    per-ticker loops to avoid N+1 query patterns.
+    """
+    from app.services.price_service import price_service
+    from collections import defaultdict
+
+    # ── Query 1: Active watchlist tickers ──────────────────────────────
     result = await db.execute(
         select(WatchlistTicker)
         .where(WatchlistTicker.is_active == True)
         .order_by(WatchlistTicker.created_at)
     )
-    tickers = result.scalars().all()
+    wt_rows = result.scalars().all()
+    if not wt_rows:
+        return []
 
+    ticker_list = [wt.ticker for wt in wt_rows]
+
+    # ── Query 2: Latest signal per (ticker, indicator) via window fn ───
+    # ROW_NUMBER partitioned by (ticker, indicator) ordered by created_at desc
+    row_num = func.row_number().over(
+        partition_by=[IndicatorAlert.ticker, IndicatorAlert.indicator],
+        order_by=IndicatorAlert.created_at.desc(),
+    ).label("rn")
+    signals_subq = (
+        select(
+            IndicatorAlert.ticker,
+            IndicatorAlert.indicator,
+            IndicatorAlert.value,
+            IndicatorAlert.signal,
+            IndicatorAlert.timeframe,
+            IndicatorAlert.created_at,
+            row_num,
+        )
+        .where(IndicatorAlert.ticker.in_(ticker_list))
+        .subquery()
+    )
+    signals_result = await db.execute(
+        select(
+            signals_subq.c.ticker,
+            signals_subq.c.indicator,
+            signals_subq.c.value,
+            signals_subq.c.signal,
+            signals_subq.c.timeframe,
+            signals_subq.c.created_at,
+        ).where(signals_subq.c.rn == 1)
+    )
+    signals_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for row in signals_result.all():
+        signals_by_ticker[row[0]].append({
+            "indicator": row[1],
+            "value": row[2],
+            "signal": row[3],
+            "timeframe": row[4],
+            "created_at": (row[5].isoformat() + "Z") if row[5] else None,
+        })
+
+    # ── Query 3: Open trades with joined trader (positions) ────────────
+    positions_result = await db.execute(
+        select(Trade)
+        .options(joinedload(Trade.trader))
+        .where(Trade.ticker.in_(ticker_list), Trade.status == "open")
+    )
+    positions_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for t in positions_result.unique().scalars().all():
+        current_price = price_service.get_price(t.ticker) or t.entry_price
+        if t.direction == "long":
+            pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+        else:
+            pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
+        positions_by_ticker[t.ticker].append({
+            "strategy_name": t.trader.display_name,
+            "strategy_id": t.trader.trader_id,
+            "direction": t.direction,
+            "entry_price": t.entry_price,
+            "current_price": current_price,
+            "pnl_pct": round(pnl_pct, 2),
+        })
+
+    # ── Query 4: Cached summaries ──────────────────────────────────────
+    summaries_result = await db.execute(
+        select(WatchlistSummary).where(WatchlistSummary.ticker.in_(ticker_list))
+    )
+    summaries_by_ticker = {s.ticker: s for s in summaries_result.scalars().all()}
+
+    # ── Query 5: Last alert time per ticker ────────────────────────────
+    last_alert_result = await db.execute(
+        select(IndicatorAlert.ticker, func.max(IndicatorAlert.created_at))
+        .where(IndicatorAlert.ticker.in_(ticker_list))
+        .group_by(IndicatorAlert.ticker)
+    )
+    last_alert_by_ticker = {row[0]: row[1] for row in last_alert_result.all()}
+
+    # ── Query 6: Total alert count per ticker (for staleness check) ────
+    alert_count_result = await db.execute(
+        select(IndicatorAlert.ticker, func.count(IndicatorAlert.id))
+        .where(IndicatorAlert.ticker.in_(ticker_list))
+        .group_by(IndicatorAlert.ticker)
+    )
+    alert_counts = {row[0]: row[1] for row in alert_count_result.all()}
+
+    # ── Query 7: Signal events for sparkline (last 60 days, capped) ────
+    event_cutoff = utcnow() - timedelta(days=60)
+    events_row_num = func.row_number().over(
+        partition_by=IndicatorAlert.ticker,
+        order_by=IndicatorAlert.created_at.desc(),
+    ).label("rn")
+    events_subq = (
+        select(
+            IndicatorAlert.ticker,
+            IndicatorAlert.created_at,
+            IndicatorAlert.signal,
+            events_row_num,
+        )
+        .where(
+            IndicatorAlert.ticker.in_(ticker_list),
+            IndicatorAlert.created_at >= event_cutoff,
+        )
+        .subquery()
+    )
+    events_result = await db.execute(
+        select(
+            events_subq.c.ticker,
+            events_subq.c.created_at,
+            events_subq.c.signal,
+        )
+        .where(events_subq.c.rn <= 30)
+        .order_by(events_subq.c.ticker, events_subq.c.created_at)
+    )
+    signal_events_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for row in events_result.all():
+        signal_events_by_ticker[row[0]].append({
+            "date": row[1].strftime("%Y-%m-%d"),
+            "signal": row[2],
+        })
+
+    # ── Query 8: Trade events for sparkline (last 60 days) ─────────────
+    trade_events_result = await db.execute(
+        select(Trade.ticker, Trade.entry_time, Trade.direction, Trade.status)
+        .where(
+            Trade.ticker.in_(ticker_list),
+            Trade.entry_time >= event_cutoff,
+            Trade.is_simulated == False,
+        )
+        .order_by(Trade.ticker, Trade.entry_time)
+    )
+    trade_events_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for row in trade_events_result.all():
+        trade_events_by_ticker[row[0]].append({
+            "date": row[1].strftime("%Y-%m-%d"),
+            "direction": row[2],
+            "status": row[3],
+        })
+
+    # Also batch: trades-since-generation count for staleness (avoids N queries)
+    # Build a union of (ticker, generated_at) from summaries to count trades since
+    trades_since_by_ticker: dict[str, int] = {}
+    summary_tickers_with_gen = {
+        tk: s.generated_at for tk, s in summaries_by_ticker.items()
+        if s.generated_at is not None
+    }
+    if summary_tickers_with_gen:
+        # Single query: count trades per ticker created after its summary generation
+        # Use the earliest generation time as a floor, then filter in Python
+        earliest_gen = min(summary_tickers_with_gen.values())
+        trades_since_result = await db.execute(
+            select(Trade.ticker, Trade.created_at)
+            .where(
+                Trade.ticker.in_(list(summary_tickers_with_gen.keys())),
+                Trade.created_at > earliest_gen,
+            )
+        )
+        # Count per ticker only trades after that ticker's generation time
+        for row in trades_since_result.all():
+            gen_at = summary_tickers_with_gen.get(row[0])
+            if gen_at and row[1] > gen_at:
+                trades_since_by_ticker[row[0]] = trades_since_by_ticker.get(row[0], 0) + 1
+
+    # ── Assemble response ──────────────────────────────────────────────
     items = []
-    for wt in tickers:
-        signals = await _get_latest_signals_per_indicator(wt.ticker, db)
-        positions = await _get_strategy_positions(wt.ticker, db)
+    now = utcnow()
+    for wt in wt_rows:
+        tk = wt.ticker
+        signals = signals_by_ticker.get(tk, [])
+        positions = positions_by_ticker.get(tk, [])
         consensus = _compute_consensus(signals, positions)
-        cached_summary = await _get_cached_summary(wt.ticker, db)
 
-        # Find last alert time
-        last_alert_result = await db.execute(
-            select(func.max(IndicatorAlert.created_at))
-            .where(IndicatorAlert.ticker == wt.ticker)
-        )
-        last_alert_at = last_alert_result.scalar()
+        # Compute staleness from batched data
+        cached_summary = None
+        summary_obj = summaries_by_ticker.get(tk)
+        if summary_obj:
+            current_alert_count = alert_counts.get(tk, 0)
+            new_alerts_since = current_alert_count - summary_obj.alert_count_at_generation
+            age_hours = (now - summary_obj.generated_at).total_seconds() / 3600
+            trades_since_count = trades_since_by_ticker.get(tk, 0)
+            is_stale = (
+                new_alerts_since > 2
+                or age_hours > 4
+                or trades_since_count > 0
+            )
+            cached_summary = {
+                "summary": summary_obj.summary,
+                "generated_at": (summary_obj.generated_at.isoformat() + "Z") if summary_obj.generated_at else None,
+                "is_stale": is_stale,
+            }
 
-        # Signal events for sparkline overlay (last 60 days of alerts)
-        from datetime import timedelta as _td
-        event_cutoff = utcnow() - _td(days=60)
-        events_result = await db.execute(
-            select(IndicatorAlert.created_at, IndicatorAlert.signal)
-            .where(IndicatorAlert.ticker == wt.ticker, IndicatorAlert.created_at >= event_cutoff)
-            .order_by(IndicatorAlert.created_at)
-        )
-        signal_events = [
-            {"date": row[0].strftime("%Y-%m-%d"), "signal": row[1]}
-            for row in events_result.all()
-        ]
-
-        # Trade events for sparkline overlay
-        trade_events_result = await db.execute(
-            select(Trade.entry_time, Trade.direction, Trade.status)
-            .where(Trade.ticker == wt.ticker, Trade.entry_time >= event_cutoff, Trade.is_simulated == False)
-            .order_by(Trade.entry_time)
-        )
-        trade_events = [
-            {"date": row[0].strftime("%Y-%m-%d"), "direction": row[1], "status": row[2]}
-            for row in trade_events_result.all()
-        ]
+        last_alert_at = last_alert_by_ticker.get(tk)
 
         items.append({
             "id": wt.id,
-            "ticker": wt.ticker,
+            "ticker": tk,
             "notes": wt.notes,
             "created_at": (wt.created_at.isoformat() + "Z") if wt.created_at else None,
             "latest_signals": signals,
@@ -283,8 +447,8 @@ async def get_watchlist(db: AsyncSession = Depends(get_db)):
             "consensus": consensus,
             "cached_summary": cached_summary,
             "last_alert_at": (last_alert_at.isoformat() + "Z") if last_alert_at else None,
-            "signal_events": signal_events,
-            "trade_events": trade_events,
+            "signal_events": signal_events_by_ticker.get(tk, []),
+            "trade_events": trade_events_by_ticker.get(tk, []),
         })
 
     return items
