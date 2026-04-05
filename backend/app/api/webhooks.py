@@ -1,6 +1,9 @@
+import asyncio
 import json
+import time
 from app.utils.utc import utcnow
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,10 +16,43 @@ from app.schemas.webhook import WebhookPayload
 from app.services.trade_processor import process_webhook
 from app.services.price_service import price_service
 from app.models import Trade, Trader, ConflictResolution
+from app.utils.dedup import make_webhook_fingerprint, is_duplicate_webhook
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Per-trader token-bucket rate limiter (in-process, no external deps)
+# ---------------------------------------------------------------------------
+MAX_WEBHOOKS_PER_MINUTE = 60
+_rate_buckets: dict[str, list[float]] = defaultdict(list)
+
+
+def _check_rate_limit(trader_id: str) -> None:
+    """Raise HTTP 429 if *trader_id* exceeds MAX_WEBHOOKS_PER_MINUTE."""
+    now = time.monotonic()
+    bucket = _rate_buckets[trader_id]
+    # Prune timestamps older than 60 s
+    cutoff = now - 60
+    _rate_buckets[trader_id] = bucket = [ts for ts in bucket if ts > cutoff]
+    if len(bucket) >= MAX_WEBHOOKS_PER_MINUTE:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded for trader {trader_id}: max {MAX_WEBHOOKS_PER_MINUTE}/min",
+        )
+    bucket.append(now)
+
+
+# ---------------------------------------------------------------------------
+# AI concurrency semaphore — at most 3 concurrent AI calls from webhooks
+# ---------------------------------------------------------------------------
+_ai_semaphore = asyncio.Semaphore(3)
+
+# ---------------------------------------------------------------------------
+# Background-task tracking set — prevents GC from dropping fire-and-forget tasks
+# ---------------------------------------------------------------------------
+_background_tasks: set[asyncio.Task] = set()
 
 
 async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
@@ -106,9 +142,10 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
                 "tf": rt.timeframe or "?",
             })
 
-        # Call AI conflict resolver
+        # Call AI conflict resolver (under semaphore)
         from app.services.ai_service import resolve_conflict
-        ai_result = await resolve_conflict(conflicting_signals, recent_formatted)
+        async with _ai_semaphore:
+            ai_result = await resolve_conflict(conflicting_signals, recent_formatted)
 
         # Store the conflict resolution
         conflict = ConflictResolution(
@@ -128,6 +165,21 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
 
 @router.post("/webhook")
 async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(get_db)):
+    # 1. Rate-limit check (per trader) — fast, before any DB work
+    _check_rate_limit(payload.trader)
+
+    # 2. Idempotency check — reject duplicate signals
+    fp = make_webhook_fingerprint(
+        trader=payload.trader,
+        ticker=payload.ticker,
+        signal=payload.signal,
+        direction=payload.dir,
+        price=payload.price,
+        unix_time=payload.time or 0,
+    )
+    if is_duplicate_webhook(fp):
+        return {"status": "duplicate", "trade_id": None}
+
     try:
         # Process the trade FIRST — this is the critical path
         trade = await process_webhook(payload, db)
@@ -136,9 +188,7 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
         price_service.add_ticker(payload.ticker)
 
         # Everything else runs in the background AFTER we return 200 to TradingView
-        import asyncio
-
-        async def _background_tasks():
+        async def _bg_tasks():
             """Run all non-critical tasks after responding to TradingView."""
             try:
                 # Conflict detection (involves AI call — can be slow)
@@ -167,7 +217,7 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
                 except Exception:
                     pass
 
-                # Route to AI portfolio evaluation
+                # Route to AI portfolio evaluation (under semaphore)
                 try:
                     from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
                     from app.database import async_session as _as3
@@ -177,17 +227,20 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
                         )
                         trader_obj = trader_result.scalar_one_or_none()
                     if trader_obj:
-                        if payload.signal == "entry":
-                            await evaluate_signal_for_ai_portfolio(trade, trader_obj, payload.model_dump())
-                        elif payload.signal == "exit":
-                            await process_exit_for_ai_portfolio(trade, trader_obj)
+                        async with _ai_semaphore:
+                            if payload.signal == "entry":
+                                await evaluate_signal_for_ai_portfolio(trade, trader_obj, payload.model_dump())
+                            elif payload.signal == "exit":
+                                await process_exit_for_ai_portfolio(trade, trader_obj)
                 except Exception as e:
                     logger.warning(f"AI portfolio routing failed: {e}")
 
             except Exception as e:
                 logger.error(f"Webhook background tasks failed: {e}")
 
-        asyncio.create_task(_background_tasks())
+        task = asyncio.create_task(_bg_tasks())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
         # Return immediately — TradingView gets 200 OK fast
         return {

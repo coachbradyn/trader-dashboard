@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from app.utils.utc import utcnow
 import re
@@ -18,6 +19,7 @@ from app.schemas.screener import (
 )
 from app.utils.auth import verify_api_key
 from app.services.chart_service import get_daily_chart
+from app.utils.dedup import make_screener_fingerprint, is_duplicate_webhook
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/screener", tags=["screener"])
@@ -29,20 +31,31 @@ def _slugify(name: str) -> str:
     return slug[:50] if slug else "unnamed-strategy"
 
 
+def _fast_hash_key(raw_key: str) -> str:
+    """SHA-256 digest of a raw API key for fast DB lookup."""
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
 @router.post("/webhook")
 async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = Depends(get_db)):
-    # Validate API key — same flow as trade webhook
-    # 1. Check known traders
-    result = await db.execute(select(Trader))
-    traders = result.scalars().all()
+    # Validate API key — fast path via SHA-256 lookup, bcrypt fallback
+    # 1. Fast O(1) lookup: SHA-256 hash of the raw key against traders table
+    key_digest = _fast_hash_key(payload.key)
+    result = await db.execute(
+        select(Trader).where(Trader.api_key_hash == key_digest).limit(1)
+    )
+    authenticated_trader = result.scalar_one_or_none()
 
-    authenticated_trader = None
-    for t in traders:
-        if verify_api_key(payload.key, t.api_key_hash):
-            authenticated_trader = t
-            break
+    # 2. Fallback: bcrypt scan for traders whose hashes are bcrypt (legacy)
+    if not authenticated_trader:
+        result = await db.execute(select(Trader))
+        traders = result.scalars().all()
+        for t in traders:
+            if verify_api_key(payload.key, t.api_key_hash):
+                authenticated_trader = t
+                break
 
-    # 2. Check allowlisted keys if no trader match
+    # 3. Check allowlisted keys if no trader match
     if not authenticated_trader:
         result = await db.execute(
             select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
@@ -67,6 +80,18 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
 
         if not authenticated_trader:
             raise HTTPException(401, "Invalid API key")
+
+    # Screener-specific idempotency check
+    fp = make_screener_fingerprint(
+        trader=authenticated_trader.trader_id,
+        ticker=payload.ticker,
+        indicator=payload.indicator,
+        signal=payload.signal,
+        timeframe=payload.tf or "",
+        unix_time=payload.time or 0,
+    )
+    if is_duplicate_webhook(fp):
+        return {"status": "duplicate", "alert_id": None, "ticker": payload.ticker.upper()}
 
     # Update last webhook timestamp
     authenticated_trader.last_webhook_at = utcnow()
