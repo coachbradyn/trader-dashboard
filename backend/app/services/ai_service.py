@@ -111,25 +111,42 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
 
             if memories:
                 mem_lines = []
+                mem_ids = []
                 for m in memories:
                     prefix = f"[{m.memory_type.upper()}]"
-                    scope = ""
+                    mem_scope = ""
                     if m.strategy_id:
-                        scope += f" ({m.strategy_id})"
+                        mem_scope += f" ({m.strategy_id})"
                     if m.ticker:
-                        scope += f" [{m.ticker}]"
+                        mem_scope += f" [{m.ticker}]"
                     validated = " ✓" if m.validated else (" ✗" if m.validated is False else "")
-                    mem_lines.append(f"  {prefix}{scope}{validated}: {m.content}")
 
-                    # Increment reference count
-                    m.reference_count += 1
+                    # Sanitize content: truncate, strip injection patterns
+                    import re as _re
+                    sanitized = m.content[:300].strip()
+                    sanitized = _re.sub(
+                        r"(?i)(IGNORE|SYSTEM:|ASSISTANT:|USER:)",
+                        "[filtered]",
+                        sanitized,
+                    )
+
+                    mem_lines.append(f"  {prefix}{mem_scope}{validated}: {sanitized}")
+                    mem_ids.append(m.id)
 
                 sections.append(
                     "YOUR MEMORY LOG (past observations & lessons — reference these in analysis):\n"
                     + "\n".join(mem_lines)
                 )
 
-                await db.commit()
+                # Atomic reference_count increment — avoids read-modify-write race
+                if mem_ids:
+                    from sqlalchemy import update
+                    await db.execute(
+                        update(HenryMemory)
+                        .where(HenryMemory.id.in_(mem_ids))
+                        .values(reference_count=HenryMemory.reference_count + 1)
+                    )
+                    await db.commit()
 
     except Exception:
         pass  # Memory table may not exist yet — continue without it
@@ -356,6 +373,14 @@ async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = 
     return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens, enable_web_search=enable_web_search)
 
 
+def _memory_fingerprint(ticker: str | None, strategy_id: str | None, content: str) -> str:
+    """SHA-256 fingerprint for deduplicating memory content."""
+    import hashlib, re
+    normalized = re.sub(r"\s+", " ", (content or "").lower().strip())
+    raw = f"{ticker or ''}|{strategy_id or ''}|{normalized}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 async def save_memory(
     content: str,
     memory_type: str = "observation",
@@ -368,8 +393,24 @@ async def save_memory(
     try:
         from app.database import async_session
         from app.models import HenryMemory
+        from sqlalchemy import select
+
+        content_hash = _memory_fingerprint(ticker, strategy_id, content)
 
         async with async_session() as db:
+            # Deduplicate: skip if same content_hash exists within last 30 days
+            cutoff = utcnow() - timedelta(days=30)
+            existing = await db.execute(
+                select(HenryMemory.id)
+                .where(
+                    HenryMemory.content_hash == content_hash,
+                    HenryMemory.created_at >= cutoff,
+                )
+                .limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                return  # Duplicate — skip
+
             memory = HenryMemory(
                 memory_type=memory_type,
                 strategy_id=strategy_id,
@@ -377,6 +418,7 @@ async def save_memory(
                 content=content,
                 importance=importance,
                 source=source,
+                content_hash=content_hash,
             )
             db.add(memory)
             await db.commit()
@@ -472,12 +514,16 @@ async def extract_and_save_memories(analysis_text: str, source: str = "briefing"
 
         if isinstance(memories, list):
             for m in memories[:3]:  # Cap at 3 memories per analysis
+                try:
+                    importance = max(1, min(10, int(m.get("importance", 5))))
+                except (ValueError, TypeError):
+                    importance = 5
                 await save_memory(
                     content=m.get("content", ""),
                     memory_type=m.get("memory_type", "observation"),
                     strategy_id=m.get("strategy_id"),
                     ticker=m.get("ticker"),
-                    importance=m.get("importance", 5),
+                    importance=importance,
                     source=source,
                 )
     except Exception:

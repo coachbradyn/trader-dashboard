@@ -76,6 +76,13 @@ async def _ensure_schema():
                         )
                     """))
                     logger.info("Created missing table: henry_memory")
+                else:
+                    # Add content_hash column if missing (dedup support)
+                    mem_cols = [c["name"] for c in insp.get_columns("henry_memory")]
+                    if "content_hash" not in mem_cols:
+                        connection.execute(text("ALTER TABLE henry_memory ADD COLUMN content_hash VARCHAR(64)"))
+                        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_memory_content_hash ON henry_memory (content_hash)"))
+                        logger.info("Added missing column: henry_memory.content_hash")
 
                 if "henry_context" not in tables:
                     connection.execute(text("""

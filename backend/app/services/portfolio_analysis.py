@@ -513,6 +513,8 @@ async def scheduled_review(db: AsyncSession):
         if vix:
             market_ctx += f" | VIX: {vix:.1f}"
 
+        raw = None  # Set before cache check so it's always defined
+
         for portfolio in portfolios:
             result = await db.execute(
                 select(PortfolioHolding)
@@ -624,12 +626,13 @@ No markdown, no backticks. Just the JSON array."""
         logger.info("Scheduled portfolio review complete")
 
         # Extract and save memories from the review (non-blocking)
-        import asyncio
-        asyncio.create_task(extract_and_save_memories(raw, source="scheduled_review"))
+        if raw:
+            import asyncio
+            asyncio.create_task(extract_and_save_memories(raw, source="scheduled_review"))
 
-        # Extract and save context notes from the review (non-blocking)
-        from app.services.ai_service import _extract_and_save_context
-        asyncio.create_task(_extract_and_save_context(raw, context_type="pattern", expires_days=30))
+            # Extract and save context notes from the review (non-blocking)
+            from app.services.ai_service import _extract_and_save_context
+            asyncio.create_task(_extract_and_save_context(raw, context_type="pattern", expires_days=30))
 
     except Exception as e:
         logger.error(f"Scheduled review failed: {e}")
@@ -659,6 +662,25 @@ async def track_action_outcome(trade: Trade, db: AsyncSession):
             action.outcome_pnl = trade.pnl_percent
             action.outcome_correct = (trade.pnl_dollars or 0) > 0
             action.outcome_resolved_at = utcnow()
+
+        # Best-effort: validate related HenryMemory rows based on trade outcome
+        try:
+            from app.models import HenryMemory
+            was_profitable = (trade.pnl_dollars or 0) > 0
+            mem_cutoff = utcnow() - timedelta(days=90)
+            mem_result = await db.execute(
+                select(HenryMemory).where(
+                    HenryMemory.source.in_(("signal_eval", "scheduled_review", "outcome_tracking")),
+                    HenryMemory.ticker == trade.ticker,
+                    HenryMemory.validated.is_(None),
+                    HenryMemory.created_at >= mem_cutoff,
+                )
+            )
+            related_memories = mem_result.scalars().all()
+            for mem in related_memories:
+                mem.validated = was_profitable
+        except Exception:
+            pass  # Non-blocking — memory validation is best-effort
 
     except Exception as e:
         logger.warning(f"Outcome tracking failed (non-blocking): {e}")

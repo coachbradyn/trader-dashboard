@@ -423,6 +423,74 @@ async def _cleanup_expired_context():
             await db.commit()
             logger.info("Henry context cleanup complete")
 
+        # Prune HenryMemory rows
+        try:
+            from app.models import HenryMemory
+            from sqlalchemy import delete, func
+
+            async with async_session() as db:
+                now = utcnow()
+
+                # (a) Low-importance, never-referenced, older than 14 days
+                cutoff_14d = now - timedelta(days=14)
+                result_a = await db.execute(
+                    delete(HenryMemory).where(
+                        HenryMemory.importance < 4,
+                        HenryMemory.reference_count == 0,
+                        HenryMemory.created_at < cutoff_14d,
+                    )
+                )
+                deleted_low = result_a.rowcount
+
+                # (b) Invalidated memories older than 60 days
+                cutoff_60d = now - timedelta(days=60)
+                result_b = await db.execute(
+                    delete(HenryMemory).where(
+                        HenryMemory.validated == False,
+                        HenryMemory.created_at < cutoff_60d,
+                    )
+                )
+                deleted_invalid = result_b.rowcount
+
+                # (c) Cap total rows at 500 — delete oldest, exempt user-added and high-importance
+                from sqlalchemy import select as sa_select
+                count_result = await db.execute(
+                    sa_select(func.count()).select_from(HenryMemory)
+                )
+                total = count_result.scalar() or 0
+
+                deleted_overflow = 0
+                if total > 500:
+                    excess = total - 500
+                    # Find oldest non-exempt IDs
+                    oldest = await db.execute(
+                        sa_select(HenryMemory.id)
+                        .where(
+                            HenryMemory.source != "user",
+                            HenryMemory.importance < 9,
+                        )
+                        .order_by(HenryMemory.created_at.asc())
+                        .limit(excess)
+                    )
+                    ids_to_delete = [row[0] for row in oldest.all()]
+                    if ids_to_delete:
+                        result_c = await db.execute(
+                            delete(HenryMemory).where(HenryMemory.id.in_(ids_to_delete))
+                        )
+                        deleted_overflow = result_c.rowcount
+
+                await db.commit()
+                total_pruned = deleted_low + deleted_invalid + deleted_overflow
+                if total_pruned:
+                    logger.info(
+                        f"Henry memory pruning: {deleted_low} low-importance, "
+                        f"{deleted_invalid} invalidated, {deleted_overflow} overflow — "
+                        f"{total_pruned} total removed"
+                    )
+
+        except Exception as e:
+            logger.error(f"Henry memory pruning failed: {e}")
+
         # Also clean up old henry_cache entries
         from app.services.henry_cache import cleanup_old_cache
         async with async_session() as db:

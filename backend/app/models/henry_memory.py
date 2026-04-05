@@ -36,6 +36,8 @@ class HenryMemory(Base):
     reference_count: Mapped[int] = mapped_column(Integer, default=0)
     # Was this memory validated by outcomes? (null = not yet validated)
     validated: Mapped[bool | None] = mapped_column(default=None)
+    # SHA-256 of (ticker, strategy_id, normalized content) for dedup
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     # Source: "briefing", "signal_eval", "scheduled_review", "user", "outcome_tracking"
     source: Mapped[str] = mapped_column(String(30), default="system")
 
