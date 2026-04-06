@@ -130,7 +130,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                     max_tokens=max_tokens,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
-                    timeout=90.0 if web_search else 60.0,
+                    timeout=60.0 if web_search else 45.0,
                 )
                 if tools:
                     kwargs["tools"] = tools
@@ -144,7 +144,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                 # blocks alongside text blocks. We just extract all text blocks.
                 # If stop_reason is "pause_turn", re-send to let server continue.
                 messages = kwargs["messages"]
-                max_continuations = 3
+                max_continuations = 1
                 for _ in range(max_continuations):
                     if response.stop_reason == "pause_turn":
                         messages = [

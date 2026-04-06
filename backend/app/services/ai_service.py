@@ -922,7 +922,7 @@ RULES:
         result = await call_ai(
             system, prompt,
             function_name="signal_evaluation",
-            max_tokens=6000,
+            max_tokens=4000,
             enable_web_search=True,
         )
     except Exception as e:
@@ -932,7 +932,7 @@ RULES:
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: fallback to Claude without web search")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=6000)
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=4000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
