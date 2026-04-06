@@ -736,11 +736,11 @@ def _format_market_intel(intel: dict) -> str:
             news_lines = [f"  • [{a.get('source', '?')}] {a['headline']}" for a in general_unique]
             sections.append("NEWS — GENERAL MARKET:\n" + "\n".join(news_lines))
 
-    # ── Position snapshots (live prices) ──
+    # ── Position snapshots (live prices — top holdings only) ──
     snapshots = intel.get("snapshots", {})
     if snapshots:
         snap_lines = []
-        for ticker, snap in list(snapshots.items())[:20]:
+        for ticker, snap in list(snapshots.items())[:8]:
             if ticker in ("SPY", "QQQ"):
                 continue
             snap_lines.append(
@@ -881,15 +881,15 @@ Use the SECTOR PERFORMANCE and MARKET MOVERS data above. Show a sector table:
 Show all sectors sorted best-to-worst. List top gainers and losers from market movers. Note which sectors your held tickers belong to and whether they're in favorable sectors.
 
 ## 6. PORTFOLIO DASHBOARD
-Use a markdown table for ALL held positions, combining HELD TICKER LIVE PRICES and TECHNICAL INDICATORS:
+Use a markdown table for TOP HOLDINGS (largest positions), combining HELD TICKER LIVE PRICES and TECHNICAL INDICATORS:
 
-| Ticker | Dir | Entry | Current | P&L% | RSI | EMA50 | MACD | Signal |
-|--------|-----|-------|---------|------|-----|-------|------|--------|
+| Ticker | Dir | Entry | Current | P&L% | RSI | MACD | Signal |
+|--------|-----|-------|---------|------|-----|------|--------|
 
-Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. Below the table, add a one-line assessment per position. Show total portfolio exposure, drawdown from 30d peak, and concentration risk from the RISK METRICS. Flag positions >25% of equity or drawdown >10%.
+Only include the most significant positions — skip small or negligible ones. Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. One-line assessment per row. Then a summary line with total exposure, drawdown from 30d peak, and concentration risk. Flag positions >25% of equity or drawdown >10%.
 
 ## 7. PRICE TARGETS & BACKTEST CROSS-REFERENCE
-Use a table for held tickers:
+Use a table for TOP HOLDINGS only:
 
 | Ticker | Support | Stop | Resistance | 1wk Target | Backtest WR | Conf |
 |--------|---------|------|------------|------------|-------------|------|
