@@ -1,6 +1,6 @@
 /**
  * Lightweight markdown-to-HTML converter for AI responses.
- * Handles: headers, bold, italic, code, bullets, blockquotes, line breaks.
+ * Handles: headers, bold, italic, code, bullets, blockquotes, tables, line breaks.
  * No external dependency needed.
  */
 export function renderMarkdown(text: string): string {
@@ -19,9 +19,59 @@ export function renderMarkdown(text: string): string {
   const result: string[] = [];
   let inList = false;
   let inBlockquote = false;
+  let inTable = false;
+  let tableHeaderDone = false;
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
+
+    // ── Table detection ──
+    // A table row starts with | and ends with |
+    const isTableRow = /^\|(.+)\|$/.test(line.trim());
+    const isSeparator = /^\|[\s\-:|]+\|$/.test(line.trim());
+
+    if (isTableRow || isSeparator) {
+      if (inList) { result.push("</ul>"); inList = false; }
+      if (inBlockquote) { result.push("</blockquote>"); inBlockquote = false; }
+
+      if (!inTable) {
+        result.push('<div class="table-wrap"><table>');
+        inTable = true;
+        tableHeaderDone = false;
+      }
+
+      if (isSeparator) {
+        // This is the header/body separator — close thead, open tbody
+        if (!tableHeaderDone) {
+          result.push("</thead><tbody>");
+          tableHeaderDone = true;
+        }
+        continue;
+      }
+
+      // Parse cells
+      const cells = line.trim().slice(1, -1).split("|").map((c) => c.trim());
+      const tag = !tableHeaderDone ? "th" : "td";
+
+      if (!tableHeaderDone && i === 0 || (!tableHeaderDone && !result[result.length - 1]?.includes("<tr>"))) {
+        result.push("<thead>");
+      }
+
+      result.push(
+        "<tr>" + cells.map((c) => `<${tag}>${inlineFormat(c)}</${tag}>`).join("") + "</tr>"
+      );
+      continue;
+    } else if (inTable) {
+      // End of table
+      if (tableHeaderDone) {
+        result.push("</tbody>");
+      } else {
+        result.push("</thead>");
+      }
+      result.push("</table></div>");
+      inTable = false;
+      tableHeaderDone = false;
+    }
 
     // Headers
     if (line.startsWith("### ")) {
@@ -85,6 +135,10 @@ export function renderMarkdown(text: string): string {
 
   if (inList) result.push("</ul>");
   if (inBlockquote) result.push("</blockquote>");
+  if (inTable) {
+    if (tableHeaderDone) result.push("</tbody>");
+    result.push("</table></div>");
+  }
 
   return result.join("\n");
 }
@@ -99,8 +153,9 @@ function inlineFormat(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     // Italic
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    // Checkmark/cross indicators
+    // Colored indicators
     .replace(/✓/g, '<span class="text-profit">✓</span>')
     .replace(/✗/g, '<span class="text-loss">✗</span>')
+    .replace(/⚠/g, '<span class="text-amber-400">⚠</span>')
     .replace(/~/g, '<span class="text-gray-400">~</span>');
 }

@@ -155,6 +155,15 @@
   .ai-prose blockquote { @apply border-l-2 border-ai-blue pl-4 py-2 my-3 bg-ai-blue/5 rounded-r-lg; }
   .ai-prose blockquote p { @apply text-gray-200 italic; }
 
+  /* Tables in AI responses */
+  .ai-prose .table-wrap { @apply overflow-x-auto my-3 rounded-lg border border-[#374151]/50; }
+  .ai-prose table       { @apply w-full text-xs border-collapse; }
+  .ai-prose thead       { @apply bg-[#1f2937]/60; }
+  .ai-prose th          { @apply text-left text-[10px] text-gray-400 uppercase tracking-wider font-semibold px-3 py-2 border-b border-[#374151]/50; }
+  .ai-prose td          { @apply text-sm text-gray-300 px-3 py-2 border-b border-[#374151]/30 font-mono; }
+  .ai-prose tbody tr:hover { @apply bg-[#1f2937]/30; }
+  .ai-prose tbody tr:last-child td { @apply border-b-0; }
+
   /* ── Screener Design System ────────────────────────────────── */
 
   .screener-card {

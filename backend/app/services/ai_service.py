@@ -748,15 +748,18 @@ async def morning_briefing(
     market_intel: dict = None,
     cumulative_stats: dict = None,
     holdings_context: str = None,
+    technicals_context: str = None,
+    backtest_context: str = None,
+    risk_context: str = None,
+    watchlist_context: str = None,
 ) -> str:
     """
-    Generate enhanced morning briefing with full market intelligence.
-    Now async — builds dynamic system prompt with strategy descriptions + memory.
+    Generate enhanced morning briefing with full market + technical + risk intelligence.
+    Routes to Claude with web search for macro/economic calendar awareness.
     """
     positions_text = _format_positions_for_prompt(open_positions)
     yesterday_text = _format_trades_for_prompt(yesterdays_trades)
 
-    # Format rich market intel
     if market_intel:
         intel_text = _format_market_intel(market_intel)
     else:
@@ -775,7 +778,6 @@ async def morning_briefing(
 
     holdings_text = holdings_context or "No manual holdings."
 
-    # Get current date in ET for the prompt
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -787,10 +789,22 @@ async def morning_briefing(
 
     prompt = f"""Generate a comprehensive morning briefing for today's trading session.
 TODAY IS: {date_str} ({time_str})
-You have access to real-time market data, news, sector rotation, and portfolio context.
-Reference your memory log where relevant — if you've seen patterns before on these tickers or strategies, call them out.
+
+You have access to web search. USE IT to find:
+- Today's economic calendar (Fed decisions, CPI/PPI releases, jobless claims, PMI, etc.)
+- Overnight futures action and pre-market moves on major indices
+- Any breaking macro or geopolitical news from the last 12 hours
+- International market closes (Europe, Asia) and their sentiment
+- Analyst upgrades/downgrades on held tickers from today or yesterday
+
+══════════════════════════════════════════════════════════
+DATA CONTEXT (from our systems — do NOT fabricate numbers):
+══════════════════════════════════════════════════════════
 
 {intel_text}
+
+TECHNICAL INDICATORS PER HELD TICKER:
+{technicals_context or 'Not available'}
 
 OPEN STRATEGY POSITIONS (carrying over):
 {positions_text}
@@ -798,58 +812,92 @@ OPEN STRATEGY POSITIONS (carrying over):
 MANUAL HOLDINGS:
 {holdings_text}
 
+BACKTEST CROSS-REFERENCE (current positions vs historical performance):
+{backtest_context or 'Not available'}
+
+PORTFOLIO RISK METRICS:
+{risk_context or 'Not available'}
+
+WATCHLIST SIGNALS (new trade candidates):
+{watchlist_context or 'No active signals'}
+
 YESTERDAY'S ACTIVITY:
 {yesterday_text}
 
 CUMULATIVE STRATEGY PERFORMANCE (30 days):
 {stats_text}
 
-Write a 6-section briefing. ALL recommendations must be specific to the holdings listed above. Do not give advice about stocks not in the portfolio.
+══════════════════════════════════════════════════════════
+FORMAT INSTRUCTIONS:
+══════════════════════════════════════════════════════════
 
-1. **MARKET OVERVIEW** — What happened overnight, where are futures/indices, VIX regime, any gap risks on held tickers. Reference specific numbers.
+Write a detailed 8-section briefing using rich markdown. Use tables where data is tabular. Use **bold** for key numbers, ✓ for bullish signals, ✗ for bearish ones.
 
-2. **NEWS & EVENTS** — Key headlines affecting your portfolio or watchlist. Flag any earnings within the week for held tickers. Mention sector rotation (what's leading/lagging) and whether your holdings are in favorable sectors.
+## 1. MACRO & ECONOMIC CALENDAR
+What macro events are scheduled today and this week? Fed, CPI, PPI, jobs, earnings — anything that moves markets. If a Fed meeting or major data release is today, lead with it and explain the expected impact. Include overnight international market action (Nikkei, DAX, FTSE) and US futures direction.
 
-3. **PORTFOLIO STATUS** — For EACH holding: current P&L, key levels, and a brief assessment. Respect position types: don't recommend selling accumulation or catalyst positions on price weakness. Reference the user's thesis for non-momentum positions. Show total exposure and concentration risk.
+## 2. TOP STORIES & NEWS
+Key headlines from the last 12 hours. Separate into: (a) headlines directly affecting held tickers, (b) sector/macro headlines, (c) international/geopolitical. Flag any analyst upgrades or downgrades on held tickers.
 
-4. **PRICE TARGETS** — For each held ticker, provide:
-   - Entry target: a price level where adding to the position makes sense (or "fully allocated" if at max)
-   - Exit/trim target: a price level to consider taking profits or reducing exposure
-   - Stop level: where the thesis breaks and the position should be reconsidered
-   Base these on technical levels, backtest data, and the position's archetype.
+## 3. PORTFOLIO DASHBOARD
+Use a markdown table for ALL held positions:
 
-5. **YESTERDAY'S TAKEAWAY** — What worked, what didn't, patterns in exit signals. One specific data-backed lesson.
+| Ticker | Dir | Entry | Current | P&L% | RSI | MACD | Signal |
+|--------|-----|-------|---------|------|-----|------|--------|
 
-6. **TODAY'S GAME PLAN** — Specific levels to watch on held tickers, which strategies are in favorable conditions given today's VIX/trend, any trades to be cautious about.
+For each: show the technical indicators provided above. Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. Add a one-line assessment per position below the table. Respect position archetypes: don't recommend selling accumulation or catalyst positions on price weakness.
 
-Be specific. Use dollar amounts and percentages. Reference actual headlines and sector data. No generic advice like "stay disciplined" — give me actionable intelligence.
-Keep it under 600 words."""
+## 4. RISK DASHBOARD
+Total portfolio exposure, drawdown from 30-day peak, concentration risk (largest position as % of equity). Use the risk metrics data above. Flag any position >25% of equity or drawdown >10%.
 
-    # Use async call that includes strategy descriptions + memory
+## 5. PRICE TARGETS (per held ticker)
+Use a table:
+
+| Ticker | Support | Stop | Resistance | 1wk Target | Confidence |
+|--------|---------|------|------------|------------|------------|
+
+Base on technical levels (EMA50/200, recent high/low), backtest data, and position archetype. Include the backtest win rate context where available — e.g. if backtest shows a strategy has 22% WR past bar 36 and we're at bar 38, flag that.
+
+## 6. WATCHLIST — BEST NEW CANDIDATES
+Stocks on the watchlist with active signals that aren't already held. For each: what strategy triggered, at what price, and a one-sentence case for/against entry. Limit to top 3.
+
+## 7. YESTERDAY'S TAKEAWAY
+What worked, what didn't, patterns in exit signals. One specific data-backed lesson. Reference the cumulative stats — which strategies are outperforming?
+
+## 8. TODAY'S GAME PLAN
+Prioritized action items. Specific price levels to watch on held tickers. Which strategies are in favorable conditions given today's VIX regime and trend? Flag any positions that backtest data suggests are in danger zones. What would change the plan (e.g. "if CPI comes in hot, expect X").
+
+Be specific. Use dollar amounts and percentages. Reference actual data from the context above. No generic advice — give actionable intelligence. Every recommendation must reference a specific holding or watchlist ticker."""
+
     from app.services.ai_provider import call_ai
     import logging as _log
     import asyncio
     _logger = _log.getLogger(__name__)
 
-    system = await _build_system_prompt(scope="briefing")
+    system = await _build_system_prompt(scope="briefing", enable_web_search=True)
 
-    # Attempt 1: Full briefing via primary provider (Gemini for speed, 4000 tokens)
+    # Route to Claude with web search for full macro awareness
     result = None
     try:
-        _logger.info("Briefing: attempt 1 (primary provider, 4000 tokens)")
-        result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=4000)
+        _logger.info("Briefing: generating via Claude with web search (6000 tokens)")
+        result = await call_ai(
+            system, prompt,
+            function_name="signal_evaluation",
+            max_tokens=6000,
+            enable_web_search=True,
+        )
     except Exception as e:
-        _logger.error(f"Briefing attempt 1 failed: {e}", exc_info=True)
+        _logger.error(f"Briefing attempt 1 (Claude+web) failed: {e}", exc_info=True)
 
-    # Attempt 2: Full briefing via Claude directly (if primary failed)
+    # Fallback: Claude without web search
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
-            _logger.info("Briefing: attempt 2 (Claude direct, 4000 tokens)")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=4000)
+            _logger.info("Briefing: fallback to Claude without web search")
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=6000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
-    # Attempt 3: Simplified briefing with shorter prompt (if full briefing keeps failing)
+    # Fallback: simplified prompt
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: attempt 3 (simplified prompt)")
@@ -862,22 +910,25 @@ OPEN POSITIONS:
 MANUAL HOLDINGS:
 {holdings_text}
 
+TECHNICAL INDICATORS:
+{technicals_context or 'Not available'}
+
 YESTERDAY:
 {yesterday_text}
 
-Give a 3-section briefing:
-1. **Portfolio Status** — current P&L on each holding, key levels
-2. **Yesterday's Takeaway** — what happened, one lesson
-3. **Today's Plan** — what to watch, any actions to consider
+Give a 4-section briefing:
+1. **Portfolio Status** — table with each holding: ticker, P&L, RSI, key level
+2. **Risk Check** — exposure, drawdown, any red flags
+3. **Yesterday's Takeaway** — what happened, one lesson
+4. **Today's Plan** — what to watch, any actions
 
-Keep it under 300 words. Be specific with numbers."""
+Keep it under 400 words. Use markdown tables. Be specific with numbers."""
             simple_system = BASE_SYSTEM_PROMPT
-            result = await call_ai(simple_system, simple_prompt, function_name="signal_evaluation", max_tokens=2000)
+            result = await call_ai(simple_system, simple_prompt, function_name="signal_evaluation", max_tokens=3000)
         except Exception as e:
             _logger.error(f"Briefing attempt 3 failed: {e}")
             result = "Briefing generation failed after 3 attempts. Check that your AI API keys (ANTHROPIC_API_KEY or GEMINI_API_KEY) are configured and working."
 
-    # Extract and save key observations from the briefing (non-blocking, cheap)
     if result and not result.startswith("Briefing generation failed"):
         asyncio.create_task(extract_and_save_memories(result, source="briefing"))
         asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
@@ -1302,6 +1353,184 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         for s in cumulative.values():
             s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
 
+        # ── NEW: Gather enriched context in parallel ──────────────────
+        import asyncio as _aio2
+
+        async def _fetch_technicals_per_ticker():
+            """RSI, MACD, EMA50/200 per held ticker."""
+            lines = []
+            try:
+                from app.services.fmp_service import get_technical_indicator, compute_macd
+                for tk in held_tickers[:10]:
+                    try:
+                        rsi_data, ema50_data, ema200_data, macd_data = await _aio2.gather(
+                            get_technical_indicator(tk, "rsi", period=14, interval="daily"),
+                            get_technical_indicator(tk, "ema", period=50, interval="daily"),
+                            get_technical_indicator(tk, "ema", period=200, interval="daily"),
+                            compute_macd(tk, timeframe="daily"),
+                            return_exceptions=True,
+                        )
+                        parts = [f"  {tk}:"]
+                        if isinstance(rsi_data, list) and rsi_data:
+                            rsi_val = rsi_data[0].get("rsi", rsi_data[0].get("value"))
+                            if rsi_val is not None:
+                                label = "OVERBOUGHT" if rsi_val > 70 else ("OVERSOLD" if rsi_val < 30 else "")
+                                parts.append(f"RSI={rsi_val:.1f}{' ' + label if label else ''}")
+                        if isinstance(ema50_data, list) and ema50_data:
+                            ema50 = ema50_data[0].get("ema", ema50_data[0].get("value"))
+                            if ema50 is not None:
+                                parts.append(f"EMA50=${ema50:.2f}")
+                        if isinstance(ema200_data, list) and ema200_data:
+                            ema200 = ema200_data[0].get("ema", ema200_data[0].get("value"))
+                            if ema200 is not None:
+                                parts.append(f"EMA200=${ema200:.2f}")
+                        if isinstance(macd_data, dict) and macd_data.get("macd") is not None:
+                            hist = macd_data.get("histogram", 0) or 0
+                            bias = "bullish" if hist > 0 else "bearish"
+                            parts.append(f"MACD hist={hist:.3f} ({bias})")
+                        if len(parts) > 1:
+                            lines.append(" | ".join(parts))
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"Technicals fetch failed: {e}")
+            return "\n".join(lines) if lines else "Not available"
+
+        async def _fetch_backtest_xref():
+            """Cross-reference open positions against backtest stats."""
+            lines = []
+            try:
+                from app.models.backtest import BacktestImport
+                async with async_session() as xdb:
+                    for pos in positions:
+                        tk = pos.get("ticker", "")
+                        trader_id = pos.get("trader", "")
+                        bars = pos.get("bars_in_trade", 0) or 0
+                        bt_result = await xdb.execute(
+                            select(BacktestImport).where(
+                                BacktestImport.ticker == tk,
+                                BacktestImport.strategy_name == trader_id,
+                            )
+                        )
+                        bt = bt_result.scalar_one_or_none()
+                        if bt and bt.trade_count and bt.trade_count > 5:
+                            lines.append(
+                                f"  {tk} ({trader_id}): bar {bars} of trade | "
+                                f"backtest WR={bt.win_rate:.0f}% PF={bt.profit_factor:.2f} "
+                                f"avg_gain={bt.avg_gain_pct:.1f}% avg_loss={bt.avg_loss_pct:.1f}% "
+                                f"over {bt.trade_count} trades"
+                            )
+            except Exception as e:
+                logger.debug(f"Backtest xref failed: {e}")
+            return "\n".join(lines) if lines else "No backtest data for current positions"
+
+        async def _fetch_risk_metrics():
+            """Portfolio risk: drawdown from peak, concentration, total exposure."""
+            lines = []
+            try:
+                from app.models.portfolio_snapshot import PortfolioSnapshot
+                async with async_session() as rdb:
+                    # Get portfolios with holdings
+                    port_result = await rdb.execute(
+                        select(Portfolio).where(Portfolio.is_active == True)
+                    )
+                    for port in port_result.scalars().all():
+                        # Current equity from latest snapshot
+                        snap_result = await rdb.execute(
+                            select(PortfolioSnapshot)
+                            .where(PortfolioSnapshot.portfolio_id == port.id)
+                            .order_by(PortfolioSnapshot.timestamp.desc())
+                            .limit(30)
+                        )
+                        snaps = snap_result.scalars().all()
+                        if snaps:
+                            current_eq = snaps[0].total_equity
+                            peak_eq = max(s.total_equity for s in snaps)
+                            dd_pct = ((current_eq - peak_eq) / peak_eq * 100) if peak_eq > 0 else 0
+
+                            # Concentration: % of total equity in top holding
+                            hold_result = await rdb.execute(
+                                select(PortfolioHolding).where(
+                                    PortfolioHolding.portfolio_id == port.id,
+                                    PortfolioHolding.is_active == True,
+                                )
+                            )
+                            active_h = hold_result.scalars().all()
+                            if active_h and current_eq > 0:
+                                holding_values = []
+                                for h in active_h:
+                                    price = price_service.get_price(h.ticker) or h.entry_price
+                                    holding_values.append((h.ticker, h.qty * price))
+                                total_invested = sum(v for _, v in holding_values)
+                                holding_values.sort(key=lambda x: x[1], reverse=True)
+                                top_name, top_val = holding_values[0]
+                                conc_pct = (top_val / current_eq * 100) if current_eq > 0 else 0
+                                exposure_pct = (total_invested / current_eq * 100) if current_eq > 0 else 0
+
+                                lines.append(
+                                    f"  {port.name}: equity ${current_eq:,.0f} | "
+                                    f"drawdown {dd_pct:.1f}% from 30d peak | "
+                                    f"exposure {exposure_pct:.0f}% | "
+                                    f"top position: {top_name} ({conc_pct:.0f}% of equity) | "
+                                    f"{len(active_h)} positions"
+                                )
+            except Exception as e:
+                logger.debug(f"Risk metrics failed: {e}")
+            return "\n".join(lines) if lines else "Not available"
+
+        async def _fetch_watchlist_signals():
+            """Active signals on watchlist tickers."""
+            lines = []
+            try:
+                from app.models.watchlist_ticker import WatchlistTicker
+                from app.models import Trade
+                async with async_session() as wdb:
+                    wl_result = await wdb.execute(select(WatchlistTicker))
+                    wl_tickers = [w.ticker for w in wl_result.scalars().all()]
+                    # Get most recent open trade per watchlist ticker
+                    for tk in wl_tickers[:15]:
+                        if tk in held_tickers:
+                            continue  # Already in positions
+                        trade_result = await wdb.execute(
+                            select(Trade)
+                            .where(Trade.ticker == tk, Trade.status == "open")
+                            .order_by(Trade.created_at.desc())
+                            .limit(1)
+                        )
+                        trade = trade_result.scalar_one_or_none()
+                        if trade:
+                            lines.append(
+                                f"  {tk}: {trade.direction.upper()} signal from {trade.trader_id or '?'} "
+                                f"@ ${trade.entry_price:.2f} (bar {trade.bars_in_trade or 0})"
+                            )
+            except Exception as e:
+                logger.debug(f"Watchlist signals failed: {e}")
+            return "\n".join(lines) if lines else "No active signals on watchlist"
+
+        # Run all enrichment in parallel with timeout
+        try:
+            technicals_ctx, backtest_ctx, risk_ctx, watchlist_ctx = await _aio2.wait_for(
+                _aio2.gather(
+                    _fetch_technicals_per_ticker(),
+                    _fetch_backtest_xref(),
+                    _fetch_risk_metrics(),
+                    _fetch_watchlist_signals(),
+                    return_exceptions=True,
+                ),
+                timeout=25.0,
+            )
+            # Handle exceptions from gather
+            if isinstance(technicals_ctx, Exception):
+                technicals_ctx = "Not available"
+            if isinstance(backtest_ctx, Exception):
+                backtest_ctx = "Not available"
+            if isinstance(risk_ctx, Exception):
+                risk_ctx = "Not available"
+            if isinstance(watchlist_ctx, Exception):
+                watchlist_ctx = "Not available"
+        except Exception:
+            technicals_ctx = backtest_ctx = risk_ctx = watchlist_ctx = "Not available"
+
         # Generate briefing with full context (now async — includes strategy descriptions + memory)
         result = await morning_briefing(
             positions,
@@ -1309,6 +1538,10 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             market_intel=market_intel,
             cumulative_stats=cumulative,
             holdings_context=holdings_context,
+            technicals_context=technicals_ctx,
+            backtest_context=backtest_ctx,
+            risk_context=risk_ctx,
+            watchlist_context=watchlist_ctx,
         )
 
         # Cache in database
@@ -2000,6 +2233,33 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
                             ticker=ticker,
                         ))
                     await db.commit()
+            except Exception:
+                pass
+
+            # Save to Henry's memory for future reference
+            try:
+                memory_parts = [f"Price targets for {ticker}"]
+                if targets.get("technical_bias"):
+                    memory_parts.append(f"bias={targets['technical_bias']}")
+                for tf in ("short_term", "medium_term"):
+                    t = targets.get(tf)
+                    if t and t.get("target"):
+                        memory_parts.append(f"{tf}=${t['target']:.2f} ({t.get('confidence', '?')} conf)")
+                if targets.get("scenarios"):
+                    for sc in ("bear", "base", "bull"):
+                        s = targets["scenarios"].get(sc)
+                        if s and s.get("target"):
+                            memory_parts.append(f"{sc}=${s['target']:.2f}")
+                if targets.get("reasoning"):
+                    memory_parts.append(targets["reasoning"][:200])
+
+                await save_memory(
+                    content=". ".join(memory_parts),
+                    memory_type="observation",
+                    ticker=ticker,
+                    importance=7,
+                    source="price_targets",
+                )
             except Exception:
                 pass
 
