@@ -13,7 +13,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func, or_
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import cast as sa_cast
 
 from app.config import get_settings
 from app.database import async_session
@@ -252,29 +254,31 @@ class NewsService:
         limit: int = 20,
         hours: int = 24,
     ) -> list[dict]:
-        """Get cached news articles, optionally filtered by ticker."""
+        """Get cached news articles, optionally filtered by ticker.
+
+        Filters by published_at (not fetched_at) so on-demand per-ticker
+        articles don't age out prematurely.  Ticker filtering uses native
+        PostgreSQL JSONB @> containment for exact matching.
+        """
         try:
             cutoff = utcnow() - timedelta(hours=hours)
             async with async_session() as db:
                 query = (
                     select(NewsCache)
-                    .where(NewsCache.fetched_at >= cutoff)
+                    .where(
+                        or_(
+                            NewsCache.published_at >= cutoff,
+                            NewsCache.published_at.is_(None),
+                        )
+                    )
                     .order_by(NewsCache.published_at.desc())
                     .limit(limit)
                 )
 
                 if ticker:
-                    # Filter by ticker in the JSON tickers array
-                    # Use delimited contains to avoid substring matches
-                    # e.g. searching "A" shouldn't match articles tagged "AAPL"
-                    from sqlalchemy import cast, String as SAString, or_
                     ticker_upper = ticker.upper()
                     query = query.where(
-                        or_(
-                            # Exact match patterns in JSON array string representation
-                            cast(NewsCache.tickers, SAString).contains(f'"{ticker_upper}"'),
-                            cast(NewsCache.tickers, SAString).contains(f"'{ticker_upper}'"),
-                        )
+                        sa_cast(NewsCache.tickers, JSONB).contains([ticker_upper])
                     )
 
                 result = await db.execute(query)
@@ -293,14 +297,41 @@ class NewsService:
                     for a in articles
                 ]
         except Exception as e:
-            logger.error(f"get_cached_news failed: {e}")
+            # JSONB cast fails on SQLite (local dev) — return empty rather
+            # than return wrong-ticker results via a string fallback.
+            if "ProgrammingError" in type(e).__name__ or "OperationalError" in type(e).__name__:
+                logger.warning(f"get_cached_news: JSONB query failed (SQLite?): {e}")
+            else:
+                logger.error(f"get_cached_news failed: {e}")
             return []
 
     async def get_ticker_headlines(self, ticker: str, limit: int = 5) -> list[dict]:
-        """Get recent headlines for a specific ticker."""
-        # Try to fetch fresh news first, then return cached
-        await self.fetch_and_cache_ticker_news(ticker, limit=limit)
-        return await self.get_cached_news(ticker=ticker, limit=limit, hours=48)
+        """Get recent headlines for a specific ticker.
+
+        Skips the Alpaca fetch if we already have fresh articles (< 30 min old)
+        for this ticker — avoids hammering the API on every page load.
+        """
+        ticker_upper = ticker.upper()
+
+        should_fetch = True
+        try:
+            async with async_session() as db:
+                recent = await db.execute(
+                    select(func.max(NewsCache.fetched_at))
+                    .where(
+                        sa_cast(NewsCache.tickers, JSONB).contains([ticker_upper])
+                    )
+                )
+                last_fetch = recent.scalar()
+                if last_fetch and (utcnow() - last_fetch).total_seconds() < 1800:
+                    should_fetch = False
+        except Exception:
+            pass
+
+        if should_fetch:
+            await self.fetch_and_cache_ticker_news(ticker_upper, limit=limit)
+
+        return await self.get_cached_news(ticker=ticker_upper, limit=limit, hours=72)
 
     async def get_news_sentiment(self, ticker: str) -> dict:
         """Get aggregated sentiment for a ticker from cached articles."""
