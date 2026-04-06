@@ -3,6 +3,7 @@ import { Trade } from "@/lib/types";
 import { formatCurrency, formatPercent, formatDateTime, formatExitReason, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableHeader,
@@ -82,10 +83,21 @@ export default function TradeHistory({ trades }: { trades: Trade[] }) {
       {/* ── Desktop Table View ── */}
       <Card className="overflow-hidden hidden md:block">
         <CardContent className="p-0">
-          <div className="px-5 pt-5 pb-3">
+          <div className="px-5 pt-5 pb-3 flex items-center justify-between">
             <h3 className="font-bold text-white">
               Trade History <span className="text-gray-500 text-sm font-normal ml-1">({closedTrades.length})</span>
             </h3>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-[10px] h-7"
+              onClick={() => {
+                const url = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api") + "/trades/export?status=closed";
+                window.open(url, "_blank");
+              }}
+            >
+              Export CSV
+            </Button>
           </div>
           <Table>
             <TableHeader>

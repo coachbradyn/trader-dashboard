@@ -108,7 +108,7 @@ export default function MonteCarloPage() {
   useFonts();
 
   // Controls state
-  const [source, setSource] = useState<"live" | "backtest" | "combined">("combined");
+  const [source, setSource] = useState<"live" | "backtest" | "combined" | "ai_portfolio">("combined");
   const [strategy, setStrategy] = useState("");
   const [ticker, setTicker] = useState("");
   const [numSimulations, setNumSimulations] = useState(1000);
@@ -284,7 +284,7 @@ Does the strategy justify its complexity over simply holding ${ticker || "the st
                 Source
               </label>
               <div className="flex rounded-lg overflow-hidden border border-border">
-                {(["live", "backtest", "combined"] as const).map((s) => (
+                {(["live", "backtest", "combined", "ai_portfolio"] as const).map((s) => (
                   <button
                     key={s}
                     onClick={() => setSource(s)}
@@ -295,7 +295,7 @@ Does the strategy justify its complexity over simply holding ${ticker || "the st
                     }`}
                     style={FONT_OUTFIT}
                   >
-                    {s}
+                    {s === "ai_portfolio" ? "AI Portfolio" : s}
                   </button>
                 ))}
               </div>

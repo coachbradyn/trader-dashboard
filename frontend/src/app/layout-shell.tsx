@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
+import NotificationCenter from "@/components/NotificationCenter";
 
 const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
 
@@ -13,6 +14,7 @@ const NAV_LINKS = [
   { href: "/portfolios", label: "Portfolios", key: "p" },
   { href: "/scanner", label: "Scanner", dot: "bg-ai-blue", key: "s" },
   { href: "/settings", label: "Settings" },
+  { href: "/memory", label: "Memory", dot: "bg-[#6366f1]" },
 ];
 
 // ── MetricTooltip ─────────────────────────────────────────────────
@@ -251,6 +253,7 @@ function Navbar() {
         {/* Desktop right side */}
         <div className="ml-auto hidden md:flex items-center gap-4">
           <AIUsageMeter />
+          <NotificationCenter />
           <NotificationBell />
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-profit animate-pulse" />

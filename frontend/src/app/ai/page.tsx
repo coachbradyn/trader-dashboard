@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import AskHenry from "@/components/ai/AskHenry";
+import OnboardingWizard from "@/components/OnboardingWizard";
 import type {
   Portfolio, PortfolioAction, ActionStats,
   BriefingResponse, HenryContextEntry, HenryStatsEntry,
@@ -744,12 +745,18 @@ export default function HomePage() {
   const [signalCount, setSignalCount] = useState(0);
   const [scannerCount, setScannerCount] = useState(0);
   const [activityCount, setActivityCount] = useState(0);
+  const [traders, setTraders] = useState<{ id: string }[] | null>(null);
 
   useEffect(() => {
     api.getScreenerAlerts({ hours: 24 }).then((a) => setSignalCount(a.length)).catch(() => {});
     api.getScannerResults().then((r) => setScannerCount(r.length)).catch(() => {});
     api.getHenryActivity(50).then((a) => setActivityCount(a.length)).catch(() => {});
+    api.getTraders().then((t) => setTraders(t)).catch(() => setTraders([]));
   }, []);
+
+  if (traders !== null && traders.length === 0 && (!portfolios || portfolios.length === 0)) {
+    return <OnboardingWizard />;
+  }
 
   return (
     <div className="max-w-5xl mx-auto">

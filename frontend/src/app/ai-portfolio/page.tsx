@@ -99,40 +99,71 @@ function EquityChart({ data, initialCapital, benchmarkData }: { data: EquityPoin
     );
   }
 
-  const chartData = data.map((d) => ({
-    date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    equity: d.equity,
-    returnPct: ((d.equity - initialCapital) / initialCapital * 100),
-  }));
+  const benchmarkMap = new Map<string, number>();
+  if (benchmarkData && benchmarkData.length > 0) {
+    const startPrice = benchmarkData[0].equity;
+    benchmarkData.forEach((b) => {
+      const dateKey = new Date(b.time).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      benchmarkMap.set(dateKey, (b.equity / startPrice) * initialCapital);
+    });
+  }
+
+  const chartData = data.map((d) => {
+    const dateKey = new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return {
+      date: dateKey,
+      equity: d.equity,
+      returnPct: ((d.equity - initialCapital) / initialCapital * 100),
+      spy: benchmarkMap.get(dateKey) ?? undefined,
+    };
+  });
 
   const up = data[data.length - 1].equity >= data[0].equity;
   const strokeColor = up ? "#22c55e" : "#ef4444";
   const gradId = "aip-eq-grad";
+  const hasBenchmark = chartData.some((d) => d.spy !== undefined);
 
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <AreaChart data={chartData}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={strokeColor} stopOpacity={0.25} />
-            <stop offset="95%" stopColor={strokeColor} stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-        <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
-        <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(1)}k`} />
-        <Tooltip
-          contentStyle={CHART_TOOLTIP}
-          labelStyle={{ color: "#9ca3af" }}
-          formatter={(value: number, name: string) => [
-            name === "equity" ? formatCurrency(value) : formatPercent(value),
-            name === "equity" ? "Equity" : "Return",
-          ]}
-        />
-        <ReferenceLine y={initialCapital} stroke="#374151" strokeDasharray="3 3" />
-        <Area type="monotone" dataKey="equity" stroke={strokeColor} strokeWidth={2} fill={`url(#${gradId})`} dot={false} />
-      </AreaChart>
-    </ResponsiveContainer>
+    <div>
+      <ResponsiveContainer width="100%" height={280}>
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={strokeColor} stopOpacity={0.25} />
+              <stop offset="95%" stopColor={strokeColor} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+          <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
+          <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v: number) => `$${(v / 1000).toFixed(1)}k`} />
+          <Tooltip
+            contentStyle={CHART_TOOLTIP}
+            labelStyle={{ color: "#9ca3af" }}
+            formatter={(value: number, name: string) => [
+              formatCurrency(value),
+              name === "equity" ? "AI Portfolio" : name === "spy" ? "SPY Benchmark" : "Return",
+            ]}
+          />
+          <ReferenceLine y={initialCapital} stroke="#374151" strokeDasharray="3 3" />
+          <Area type="monotone" dataKey="equity" stroke={strokeColor} strokeWidth={2} fill={`url(#${gradId})`} dot={false} />
+          {hasBenchmark && (
+            <Line type="monotone" dataKey="spy" stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="6 3" dot={false} />
+          )}
+        </AreaChart>
+      </ResponsiveContainer>
+      {hasBenchmark && (
+        <div className="flex items-center gap-4 mt-2 text-[10px] text-gray-500" style={FONT_OUTFIT}>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-0.5 rounded" style={{ backgroundColor: strokeColor }} />
+            <span>AI Portfolio</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-0.5 rounded bg-gray-400" style={{ borderTop: "1px dashed #9ca3af" }} />
+            <span>SPY Benchmark</span>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -150,6 +181,40 @@ function TabPill({ label, active, onClick }: { label: string; active: boolean; o
     >
       {label}
     </button>
+  );
+}
+
+// ── Scanner Status Line ─────────────────────────────────────────────
+function ScannerStatusLine() {
+  const [status, setStatus] = useState<{ lastScan: string | null; count: number }>({ lastScan: null, count: 0 });
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const activity = await api.getHenryActivity(20);
+        const scanEvents = activity.filter((a) => a.activity_type === "scanner_run" || a.activity_type === "scan_complete" || a.message.toLowerCase().includes("scan"));
+        const lastScan = scanEvents.length > 0 ? scanEvents[0].created_at : null;
+        const results = await api.getScannerResults().catch(() => []);
+        if (mounted) setStatus({ lastScan, count: results.length });
+      } catch {}
+    };
+    load();
+    const iv = setInterval(load, 30000);
+    return () => { mounted = false; clearInterval(iv); };
+  }, []);
+
+  if (!status.lastScan && status.count === 0) return null;
+
+  const ago = status.lastScan ? formatTimeAgo(status.lastScan) : "unknown";
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 rounded-lg bg-[#1f2937]/30 border border-[#374151]/50 text-[11px]" style={FONT_MONO}>
+      <span className="w-1.5 h-1.5 rounded-full bg-ai-blue animate-pulse" />
+      <span className="text-gray-400">Last scan: <span className="text-white">{ago}</span></span>
+      <span className="text-gray-600">|</span>
+      <span className="text-gray-400">{status.count} opportunities found</span>
+    </div>
   );
 }
 
@@ -212,6 +277,7 @@ export default function AIPortfolioPage() {
   const [equityHistory, setEquityHistory] = useState<EquityPoint[]>([]);
   const [decisions, setDecisions] = useState<AIPortfolioDecision[]>([]);
   const [holdings, setHoldings] = useState<AIPortfolioHolding[]>([]);
+  const [spyData, setSpyData] = useState<{ time: string; equity: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("holdings");
   const [decisionFilter, setDecisionFilter] = useState("all");
@@ -221,16 +287,20 @@ export default function AIPortfolioPage() {
       const s = await api.getAIPortfolioStatus();
       setStatus(s);
       if (s.exists) {
-        const [comp, eq, dec, hold] = await Promise.all([
+        const [comp, eq, dec, hold, spy] = await Promise.all([
           api.getAIPortfolioComparison().catch(() => null),
           api.getAIPortfolioEquityHistory(90).catch(() => []),
           api.getAIPortfolioDecisions("all", 50).catch(() => []),
           api.getAIPortfolioHoldings().catch(() => []),
+          api.getScreenerChart("SPY", 90).catch(() => []),
         ]);
         if (comp) setComparison(comp);
         setEquityHistory(eq);
         setDecisions(dec);
         setHoldings(hold);
+        if (spy && spy.length > 0) {
+          setSpyData(spy.map((p) => ({ time: p.date, equity: p.close })));
+        }
       }
     } catch {}
   }, []);
@@ -359,6 +429,9 @@ export default function AIPortfolioPage() {
         </div>
       </div>
 
+      {/* ═══════════════════ SCANNER STATUS ═══════════════════ */}
+      <ScannerStatusLine />
+
       {/* ═══════════════════ B. COMPARISON ═══════════════════ */}
       {ai && bestReal && (
         <div className="rounded-xl border border-[#374151] bg-[#1f2937]/40 overflow-hidden">
@@ -389,7 +462,7 @@ export default function AIPortfolioPage() {
       {/* ═══════════════════ C. EQUITY CHART ═══════════════════ */}
       <div className="rounded-xl border border-[#374151] bg-[#1f2937]/30 p-5">
         <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Equity Curve</h3>
-        <EquityChart data={equityHistory} initialCapital={initialCapital} />
+        <EquityChart data={equityHistory} initialCapital={initialCapital} benchmarkData={spyData.length > 0 ? spyData : undefined} />
       </div>
 
       {/* ═══════════════════ D. TABS ═══════════════════ */}

@@ -452,7 +452,7 @@ export interface TickerAnalysis {
 // ── Monte Carlo Types ──────────────────────────────────────────────
 
 export interface MonteCarloRequest {
-  source: "live" | "backtest" | "combined";
+  source: "live" | "backtest" | "combined" | "ai_portfolio";
   strategy?: string;
   ticker?: string;
   num_simulations: number;

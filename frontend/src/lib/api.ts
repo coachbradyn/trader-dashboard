@@ -109,6 +109,10 @@ export const api = {
     }),
   deleteTrader: (slug: string) =>
     fetchApi("/settings/traders/" + slug, { method: "DELETE" }),
+  toggleTraderActive: (slug: string) =>
+    fetchApi<{ is_active: boolean }>("/traders/" + slug + "/toggle-active", { method: "PATCH" }),
+  testWebhook: (payload: Record<string, unknown>) =>
+    fetchApi<Record<string, unknown>>("/webhook", { method: "POST", body: JSON.stringify(payload) }),
 
   // Settings - Keys
   getKeys: () => fetchApi<import("./types").AllowlistedKey[]>("/settings/keys"),
@@ -396,6 +400,19 @@ export const api = {
     fetchApi<import("./types").FmpUsage>("/scanner/fmp-usage"),
   getTickerFundamentals: (ticker: string) =>
     fetchApi<import("./types").TickerFundamentals>("/ai/fundamentals/" + ticker),
+
+  // Memory
+  getMemories: (params?: { type?: string; source?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.type) sp.set("type", params.type);
+    if (params?.source) sp.set("source", params.source);
+    const qs = sp.toString();
+    return fetchApi<Array<{ id: string; type: string; ticker: string | null; strategy: string | null; content: string; importance: number; validated: boolean; source: string; created_at: string }>>("/memory" + (qs ? "?" + qs : ""));
+  },
+  updateMemory: (id: string, data: Record<string, unknown>) =>
+    fetchApi("/memory/" + id, { method: "PUT", body: JSON.stringify(data) }),
+  deleteMemory: (id: string) =>
+    fetchApi("/memory/" + id, { method: "DELETE" }),
 
   // AI Usage
   getAIUsage: (days?: number) =>

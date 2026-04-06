@@ -703,12 +703,27 @@ export default function SettingsPage() {
                     <Card><CardContent className="space-y-4">
                       <SectionTitle>API Key Status</SectionTitle>
                       <div className="flex items-center gap-4 flex-wrap">
-                        <Badge className="bg-profit/15 text-profit text-[11px]">{curTrader.is_active ? "Active" : "Inactive"}</Badge>
+                        <Badge className={`${curTrader.is_active ? "bg-profit/15 text-profit" : "bg-gray-600/15 text-gray-400"} text-[11px]`}>{curTrader.is_active ? "Active" : "Paused"}</Badge>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await api.toggleTraderActive(curTrader.trader_id);
+                              flash(curTrader.is_active ? "Strategy paused" : "Strategy activated");
+                              await fetchTraders();
+                            } catch { flash("Toggle failed", "error"); }
+                          }}
+                          className={`w-10 h-5 rounded-full transition ${curTrader.is_active ? "bg-profit" : "bg-gray-600"}`}
+                        >
+                          <div className={`w-4 h-4 rounded-full bg-white transition-transform ${curTrader.is_active ? "translate-x-5" : "translate-x-0.5"}`} />
+                        </button>
                         {curTrader.last_webhook_at && <span className="text-xs text-gray-500">Last webhook: {formatTimeAgo(curTrader.last_webhook_at)}</span>}
                         <Button variant="outline" size="sm" onClick={handleRotateKey} disabled={saving} className="ml-auto">Rotate Key</Button>
                       </div>
                       {revealedKey && <RevealedKeyBox apiKey={revealedKey} onCopy={copyClip} />}
                     </CardContent></Card>
+
+                    {/* Webhook Test */}
+                    <WebhookTestCard traderId={curTrader.trader_id} flash={flash} />
 
                     {/* Portfolio Links */}
                     {curTrader.portfolios.length > 0 && (
@@ -1398,5 +1413,49 @@ function HenryConfigTab({ flash }: { flash: (msg: string, type?: "success" | "er
         </div>
       </CardContent></Card>
     </div>
+  );
+}
+
+/* ── Webhook Test Card ───────────────────────────────────────────── */
+function WebhookTestCard({ traderId, flash }: { traderId: string; flash: (msg: string, type?: "success" | "error") => void }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; data: string } | null>(null);
+
+  const handleTest = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      const payload = {
+        trader: traderId,
+        key: "test",
+        signal: "entry",
+        ticker: "TEST",
+        dir: "long",
+        price: 100,
+        time: Date.now(),
+      };
+      const res = await api.testWebhook(payload);
+      setResult({ ok: true, data: JSON.stringify(res, null, 2) });
+      flash("Webhook test sent");
+    } catch (e) {
+      setResult({ ok: false, data: e instanceof Error ? e.message : "Test failed" });
+      flash("Webhook test failed", "error");
+    }
+    setTesting(false);
+  };
+
+  return (
+    <Card><CardContent className="space-y-3">
+      <SectionTitle>Test Webhook</SectionTitle>
+      <p className="text-xs text-gray-500">Send a test webhook payload for this strategy (ticker: TEST, signal: entry, dir: long).</p>
+      <Button variant="outline" size="sm" onClick={handleTest} disabled={testing}>
+        {testing ? "Sending..." : "Send Test Webhook"}
+      </Button>
+      {result && (
+        <div className={`p-3 rounded-lg border text-xs font-mono whitespace-pre-wrap break-all ${result.ok ? "border-profit/30 bg-profit/5 text-profit" : "border-loss/30 bg-loss/5 text-loss"}`}>
+          {result.data}
+        </div>
+      )}
+    </CardContent></Card>
   );
 }
