@@ -144,7 +144,7 @@
   }
 
   /* AI markdown rendering */
-  .ai-prose h2       { @apply text-white font-semibold text-base mt-4 mb-2 first:mt-0; }
+  .ai-prose h2       { @apply text-white font-semibold text-base mt-5 mb-2 first:mt-0 pb-1.5 border-b border-[#374151]/40; }
   .ai-prose h3       { @apply text-gray-200 font-medium text-sm mt-3 mb-1; }
   .ai-prose p        { @apply text-gray-300 text-sm leading-relaxed mb-2; }
   .ai-prose ul       { @apply space-y-1 mb-3; }

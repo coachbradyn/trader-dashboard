@@ -157,5 +157,19 @@ function inlineFormat(text: string): string {
     .replace(/✓/g, '<span class="text-profit">✓</span>')
     .replace(/✗/g, '<span class="text-loss">✗</span>')
     .replace(/⚠/g, '<span class="text-amber-400">⚠</span>')
-    .replace(/~/g, '<span class="text-gray-400">~</span>');
+    // Positive percentages: +1.23%, ▲ 1.23%
+    .replace(/([▲+])(\s?\d+\.?\d*%)/g, '<span class="text-profit">$1$2</span>')
+    // Negative percentages: -1.23%, ▼ 1.23%
+    .replace(/([▼])(\s?\d+\.?\d*%)/g, '<span class="text-loss">$1$2</span>')
+    .replace(/(-)(\d+\.?\d*%)/g, '<span class="text-loss">$1$2</span>')
+    // Bullish / Bearish labels
+    .replace(/\b(bullish|BULLISH|Bullish)\b/g, '<span class="text-profit font-semibold">$1</span>')
+    .replace(/\b(bearish|BEARISH|Bearish)\b/g, '<span class="text-loss font-semibold">$1</span>')
+    // Overbought / Oversold
+    .replace(/\b(OVERBOUGHT|overbought|Overbought)\b/g, '<span class="text-loss font-semibold">$1</span>')
+    .replace(/\b(OVERSOLD|oversold|Oversold)\b/g, '<span class="text-profit font-semibold">$1</span>')
+    // VIX regimes
+    .replace(/\b(extreme fear|EXTREME|high volatility)\b/gi, '<span class="text-loss font-semibold">$1</span>')
+    .replace(/\b(low volatility|LOW)\b/gi, '<span class="text-profit">$1</span>')
+    .replace(/\b(elevated)\b/gi, '<span class="text-amber-400">$1</span>');
 }
