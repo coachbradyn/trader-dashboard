@@ -164,6 +164,25 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
         logger.warning(f"Conflict detection failed (non-blocking): {e}")
 
 
+async def _save_failed_webhook(raw_json: dict, error_msg: str):
+    """Save a failed webhook payload to inbox for later replay."""
+    try:
+        from app.models.webhook_inbox import WebhookInbox
+        import hashlib
+        fp = f"failed:{hashlib.sha256(json.dumps(raw_json, sort_keys=True).encode()).hexdigest()[:16]}"
+        async with async_session() as fdb:
+            fdb.add(WebhookInbox(
+                fingerprint=fp,
+                payload=raw_json,
+                status="validation_error",
+                error_message=error_msg[:500],
+            ))
+            await fdb.commit()
+        logger.warning(f"Saved failed webhook for replay: {raw_json.get('ticker', '?')} — {error_msg[:100]}")
+    except Exception as e:
+        logger.error(f"Could not save failed webhook to inbox: {e}")
+
+
 @router.post("/webhook/replay/{inbox_id}")
 async def replay_webhook(inbox_id: str):
     """Replay a failed/pending webhook from the inbox."""
@@ -218,21 +237,32 @@ async def list_failed_webhooks():
 
 @router.post("/webhook")
 async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    # Auto-route: if payload has "indicator" but no "trader", it's a scanner alert
+    # Parse raw body first — we need it for auto-routing and error recovery
     raw_body = await request.body()
     try:
         raw_json = json.loads(raw_body) if raw_body else {}
     except Exception:
-        raw_json = {}
+        raise HTTPException(400, "Invalid JSON body")
 
+    # Auto-route: if payload has "indicator" but no "trader", it's a scanner alert
     if "indicator" in raw_json and "trader" not in raw_json:
-        # Forward to screener webhook handler
-        from app.schemas.screener import ScreenerWebhookPayload
-        from app.api.screener import screener_webhook
-        screener_payload = ScreenerWebhookPayload(**raw_json)
-        return await screener_webhook(screener_payload, db)
+        try:
+            from app.schemas.screener import ScreenerWebhookPayload
+            from app.api.screener import screener_webhook
+            screener_payload = ScreenerWebhookPayload(**raw_json)
+            return await screener_webhook(screener_payload, db)
+        except Exception as e:
+            # Save failed scanner webhook for replay
+            await _save_failed_webhook(raw_json, f"screener_validation: {e}")
+            raise HTTPException(422, f"Scanner webhook validation failed: {e}")
 
-    payload = WebhookPayload(**raw_json)
+    # Validate as trade webhook
+    try:
+        payload = WebhookPayload(**raw_json)
+    except Exception as e:
+        # Save failed trade webhook for replay
+        await _save_failed_webhook(raw_json, f"trade_validation: {e}")
+        raise HTTPException(422, f"Trade webhook validation failed: {e}")
     # 1. Rate-limit check (per trader) — fast, before any DB work
     _check_rate_limit(payload.trader)
 
