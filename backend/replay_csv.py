@@ -12,7 +12,8 @@ import json
 import sys
 import httpx
 
-CSV_PATH = "../TradingView_Alerts_Log_2026-04-06.csv"
+import os
+CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "TradingView_Alerts_Log_2026-04-06.csv")
 API_URL = "http://localhost:8000/api"
 
 DRY_RUN = "--dry-run" in sys.argv
@@ -35,8 +36,15 @@ def main():
                 end = desc.rfind("}")
                 if start >= 0 and end > start:
                     raw = desc[start:end + 1]
-                    # Un-escape doubled quotes from CSV
+                    # CSV double-quotes: "" → " but we need to be careful
+                    # with empty string values like ""key"":""""
                     raw = raw.replace('""', '"')
+
+                    # Fix empty key values: "key":"," → "key":"","
+                    # This happens when the original was "key":"" (empty string)
+                    import re
+                    raw = re.sub(r'"key":"(,)', r'"key":""\1', raw)
+
                     try:
                         payload = json.loads(raw)
                         failed.append({
@@ -46,8 +54,37 @@ def main():
                             "status": status.strip(),
                             "payload": payload,
                         })
-                    except json.JSONDecodeError as e:
-                        print(f"  SKIP (bad JSON): {row.get('Ticker', '?')} — {e}")
+                    except json.JSONDecodeError:
+                        # Try harder: extract just the core fields manually
+                        try:
+                            ticker_match = re.search(r'"ticker"\s*:\s*"([^"]+)"', raw)
+                            indicator_match = re.search(r'"indicator"\s*:\s*"([^"]+)"', raw)
+                            value_match = re.search(r'"value"\s*:\s*([\d.]+)', raw)
+                            signal_match = re.search(r'"signal"\s*:\s*"([^"]+)"', raw)
+                            tf_match = re.search(r'"tf"\s*:\s*"([^"]+)"', raw)
+                            time_match = re.search(r'"time"\s*:\s*(\d+)', raw)
+
+                            if ticker_match and signal_match:
+                                reconstructed = {
+                                    "key": "",
+                                    "ticker": ticker_match.group(1),
+                                    "indicator": indicator_match.group(1) if indicator_match else "UNKNOWN",
+                                    "value": float(value_match.group(1)) if value_match else None,
+                                    "signal": signal_match.group(1),
+                                    "tf": tf_match.group(1) if tf_match else None,
+                                    "time": int(time_match.group(1)) if time_match else None,
+                                }
+                                failed.append({
+                                    "alert_id": row.get("Alert ID", ""),
+                                    "ticker": row.get("Ticker", ""),
+                                    "time": row.get("Time", ""),
+                                    "status": status.strip(),
+                                    "payload": reconstructed,
+                                })
+                            else:
+                                print(f"  SKIP (unparseable): {row.get('Ticker', '?')}")
+                        except Exception:
+                            print(f"  SKIP (unparseable): {row.get('Ticker', '?')}")
 
     print(f"\nFound {len(failed)} failed webhooks to replay")
     if DRY_RUN:

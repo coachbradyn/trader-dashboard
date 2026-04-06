@@ -98,7 +98,7 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
 
     # Create alert
     alert_time = (
-        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc).replace(tzinfo=None)
         if payload.time
         else utcnow()
     )
