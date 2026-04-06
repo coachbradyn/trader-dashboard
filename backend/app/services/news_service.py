@@ -14,12 +14,29 @@ from typing import Optional
 
 import httpx
 from sqlalchemy import select, delete, func, or_
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import cast as sa_cast
 
 from app.config import get_settings
-from app.database import async_session
+from app.database import async_session, engine
 from app.models.news_cache import NewsCache
+
+# Use JSONB containment on PostgreSQL, string matching on SQLite
+_IS_POSTGRES = "postgresql" in str(engine.url)
+
+if _IS_POSTGRES:
+    from sqlalchemy.dialects.postgresql import JSONB as _JSONB
+
+
+def _ticker_filter(ticker: str):
+    """Build a dialect-appropriate filter for the JSON tickers column."""
+    ticker_upper = ticker.upper()
+    if _IS_POSTGRES:
+        return sa_cast(NewsCache.tickers, _JSONB).contains([ticker_upper])
+    else:
+        # SQLite: tickers stored as JSON text like '["NVDA", "AAPL"]'
+        # Match quoted ticker to avoid substring collisions (e.g. "A" vs "AAPL")
+        from sqlalchemy import cast, String as SAString
+        return cast(NewsCache.tickers, SAString).contains(f'"{ticker_upper}"')
 
 logger = logging.getLogger(__name__)
 
@@ -276,10 +293,7 @@ class NewsService:
                 )
 
                 if ticker:
-                    ticker_upper = ticker.upper()
-                    query = query.where(
-                        sa_cast(NewsCache.tickers, JSONB).contains([ticker_upper])
-                    )
+                    query = query.where(_ticker_filter(ticker))
 
                 result = await db.execute(query)
                 articles = result.scalars().all()
@@ -297,12 +311,7 @@ class NewsService:
                     for a in articles
                 ]
         except Exception as e:
-            # JSONB cast fails on SQLite (local dev) — return empty rather
-            # than return wrong-ticker results via a string fallback.
-            if "ProgrammingError" in type(e).__name__ or "OperationalError" in type(e).__name__:
-                logger.warning(f"get_cached_news: JSONB query failed (SQLite?): {e}")
-            else:
-                logger.error(f"get_cached_news failed: {e}")
+            logger.error(f"get_cached_news failed: {e}")
             return []
 
     async def get_ticker_headlines(self, ticker: str, limit: int = 5) -> list[dict]:
@@ -318,9 +327,7 @@ class NewsService:
             async with async_session() as db:
                 recent = await db.execute(
                     select(func.max(NewsCache.fetched_at))
-                    .where(
-                        sa_cast(NewsCache.tickers, JSONB).contains([ticker_upper])
-                    )
+                    .where(_ticker_filter(ticker_upper))
                 )
                 last_fetch = recent.scalar()
                 if last_fetch and (utcnow() - last_fetch).total_seconds() < 1800:
