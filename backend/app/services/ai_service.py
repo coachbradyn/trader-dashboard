@@ -678,26 +678,11 @@ def _format_market_intel(intel: dict) -> str:
             f"  Week ago: {vix.get('week_ago', 0)}"
         )
 
-    # ── International markets ──
-    intl = intel.get("international", [])
-    if intl:
-        intl_lines = []
-        for m in intl:
-            arrow = "▲" if m["change_pct"] >= 0 else "▼"
-            intl_lines.append(f"  {m['name']}: {m['price']} ({arrow} {m['change_pct']:+.2f}%)")
-        sections.append("INTERNATIONAL MARKETS & COMMODITIES:\n" + "\n".join(intl_lines))
-
     # ── Pre-market gaps ──
     gaps = intel.get("premarket_gaps", [])
     if gaps:
         gap_lines = [f"  {g['ticker']}: {g['gap_pct']:+.2f}% gap (prev ${g['prev_close']} → now ${g['current']})" for g in gaps[:8]]
         sections.append("PRE-MARKET GAPS (held tickers):\n" + "\n".join(gap_lines))
-
-    # ── Sector performance ──
-    sectors = intel.get("sectors", [])
-    if sectors:
-        sect_lines = [f"  {s['sector']} ({s['etf']}): {s['change_pct']:+.2f}%" for s in sectors]
-        sections.append("SECTOR PERFORMANCE (sorted best→worst):\n" + "\n".join(sect_lines))
 
     # ── Market movers ──
     movers = intel.get("movers", {})
@@ -802,111 +787,41 @@ async def morning_briefing(
     prompt = f"""Generate a comprehensive morning briefing for today's trading session.
 TODAY IS: {date_str} ({time_str})
 
-You have access to web search. USE IT to find:
-- Today's economic calendar (Fed decisions, CPI/PPI releases, jobless claims, PMI, etc.)
-- Overnight futures action and pre-market moves on major indices
-- Any breaking macro or geopolitical news from the last 12 hours
-- International market closes (Europe, Asia) and their sentiment
-- Analyst upgrades/downgrades on held tickers from today or yesterday
+Use web search once: find today's economic calendar, overnight international markets, and any breaking macro news.
 
-══════════════════════════════════════════════════════════
-MARKET DATA (from our systems — do NOT fabricate these numbers):
-══════════════════════════════════════════════════════════
-
+MARKET DATA:
 {intel_text}
 
-══════════════════════════════════════════════════════════
-PORTFOLIO DATA:
-══════════════════════════════════════════════════════════
+TECHNICALS (top holdings): {technicals_context or 'N/A'}
+POSITIONS: {positions_text}
+HOLDINGS: {holdings_text}
+BACKTEST XREF: {backtest_context or 'N/A'}
+RISK: {risk_context or 'N/A'}
+WATCHLIST: {watchlist_context or 'None'}
+YESTERDAY: {yesterday_text}
+30D STATS: {stats_text}
 
-TECHNICAL INDICATORS PER HELD TICKER:
-{technicals_context or 'Not available'}
+Write a 6-section briefing. Use markdown tables, **bold** key numbers, ✓/✗ for signals. Be concise — no filler.
 
-OPEN STRATEGY POSITIONS (carrying over):
-{positions_text}
+## 1. MARKETS & MACRO
+SPY, VIX (with regime), and pre-market gaps from data above. Add from web search: international markets (Asia/Europe closes), today's economic calendar (Fed, CPI, jobs), and any breaking macro/geopolitical news. Use a table for indices.
 
-MANUAL HOLDINGS:
-{holdings_text}
+## 2. NEWS & MOVERS
+Headlines from the data above (held tickers first, then general). Market movers (gainers/losers). Flag analyst upgrades/downgrades.
 
-BACKTEST CROSS-REFERENCE (current positions vs historical performance):
-{backtest_context or 'Not available'}
+## 3. PORTFOLIO DASHBOARD
+Table of top holdings only: Ticker | Entry | Current | P&L% | RSI | MACD | Signal. Flag overbought/oversold. One line on risk: exposure %, drawdown, concentration.
 
-PORTFOLIO RISK METRICS:
-{risk_context or 'Not available'}
+## 4. LEVELS & TARGETS
+Table: Ticker | Support | Stop | Resistance | 1wk Target. Use EMA50/200. Flag backtest danger zones (low WR past current bar count). Note upcoming earnings.
 
-WATCHLIST SIGNALS (new trade candidates):
-{watchlist_context or 'No active signals'}
+## 5. WATCHLIST
+Top 3 new candidates from watchlist signals. One sentence each.
 
-YESTERDAY'S ACTIVITY:
-{yesterday_text}
+## 6. GAME PLAN
+3-5 prioritized actions. Specific levels. What macro event could change the plan today.
 
-CUMULATIVE STRATEGY PERFORMANCE (30 days):
-{stats_text}
-
-══════════════════════════════════════════════════════════
-FORMAT INSTRUCTIONS:
-══════════════════════════════════════════════════════════
-
-Write a detailed 9-section briefing using rich markdown. Use tables where data is tabular. Use **bold** for key numbers, ✓ for bullish signals, ✗ for bearish ones.
-
-CRITICAL: You MUST use the MARKET DATA sections above. Every number from SPY, VIX, international markets, sector performance, market movers, and held ticker snapshots must appear in your briefing. Do not skip any section that has data.
-
-## 1. MARKET OVERVIEW — SPY, VIX & INDICES
-Start with SPY and VIX using the exact data above. Show a table:
-
-| Index | Price | Change | Signal |
-|-------|-------|--------|--------|
-
-Include: SPY, QQQ/Nasdaq, Dow, VIX. State the VIX regime (low/normal/elevated/high/extreme) and what it means for today's strategy conditions. If pre-market gaps exist on held tickers, list every one.
-
-## 2. INTERNATIONAL MARKETS & FOREIGN MOVERS
-Use the INTERNATIONAL MARKETS data above. Show a table of all international indices, commodities, and currencies provided. Highlight which moved >1% and explain what overnight action in Asia/Europe signals for the US open. Note dollar strength and oil/gold direction.
-
-## 3. MACRO & ECONOMIC CALENDAR
-Use web search to find today's and this week's economic events: Fed decisions, CPI/PPI, jobless claims, PMI, earnings. If a major release is today, lead with it and explain expected market impact. This section is mandatory — always search.
-
-## 4. TOP STORIES & NEWS
-Use BOTH the "NEWS — YOUR HELD TICKERS" and "NEWS — GENERAL MARKET" data from above. Display EVERY headline provided — do not omit any. Organize into:
-- **Held ticker news** (with ticker tags)
-- **Sector & macro news**
-- **Geopolitical / international**
-Flag analyst upgrades/downgrades if found via web search.
-
-## 5. SECTOR ROTATION & MARKET MOVERS
-Use the SECTOR PERFORMANCE and MARKET MOVERS data above. Show a sector table:
-
-| Sector | Change | Status |
-|--------|--------|--------|
-
-Show all sectors sorted best-to-worst. List top gainers and losers from market movers. Note which sectors your held tickers belong to and whether they're in favorable sectors.
-
-## 6. PORTFOLIO DASHBOARD
-Use a markdown table for TOP HOLDINGS (largest positions), combining HELD TICKER LIVE PRICES and TECHNICAL INDICATORS:
-
-| Ticker | Dir | Entry | Current | P&L% | RSI | MACD | Signal |
-|--------|-----|-------|---------|------|-----|------|--------|
-
-Only include the most significant positions — skip small or negligible ones. Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. One-line assessment per row. Then a summary line with total exposure, drawdown from 30d peak, and concentration risk. Flag positions >25% of equity or drawdown >10%.
-
-## 7. PRICE TARGETS & BACKTEST CROSS-REFERENCE
-Use a table for TOP HOLDINGS only:
-
-| Ticker | Support | Stop | Resistance | 1wk Target | Backtest WR | Conf |
-|--------|---------|------|------------|------------|-------------|------|
-
-Use EMA50/200 as key levels. Include the backtest cross-reference data — if a strategy historically has low WR past the current bar count, flag it with ⚠. Include earnings watch dates.
-
-## 8. WATCHLIST — BEST NEW CANDIDATES
-Stocks from WATCHLIST SIGNALS with active signals not yet held. For each: strategy, entry price, one-sentence case. Limit to top 3-5.
-
-## 9. TODAY'S GAME PLAN
-Prioritized action items. Reference specific price levels from the data. Which strategies favor today's VIX regime? Flag backtest danger zones. What macro events could change the plan? End with the single most important thing to watch today.
-
-RULES:
-- Every number from the MARKET DATA sections must appear somewhere in your output.
-- Use actual data, not placeholders. If data says "Not available", say so — do not fabricate.
-- Do NOT skip sections even if data is thin — state what's missing and use web search to fill gaps.
-- Be specific. Dollar amounts, percentages, ticker symbols. No generic advice."""
+Use actual numbers from data — do not fabricate. Skip empty sections."""
 
     from app.services.ai_provider import call_ai
     import logging as _log
@@ -918,11 +833,11 @@ RULES:
     # Route to Claude with web search for full macro awareness
     result = None
     try:
-        _logger.info("Briefing: generating via Claude with web search (6000 tokens)")
+        _logger.info("Briefing: generating via Claude with web search")
         result = await call_ai(
             system, prompt,
             function_name="signal_evaluation",
-            max_tokens=4000,
+            max_tokens=3000,
             enable_web_search=True,
         )
     except Exception as e:
@@ -932,7 +847,7 @@ RULES:
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: fallback to Claude without web search")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=4000)
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=3000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 

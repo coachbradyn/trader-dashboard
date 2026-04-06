@@ -412,22 +412,18 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         snapshots,
         movers,
         gaps,
-        sectors,
         earnings,
         vix,
         spy,
-        intl,
     ) = await asyncio.gather(
         fetch_news(held_tickers, limit=10),
         fetch_news(limit=10),
         fetch_market_snapshot(all_tickers),
         fetch_top_movers(),
         asyncio.to_thread(_fetch_premarket_gaps, held_tickers),
-        asyncio.to_thread(_fetch_sector_performance),
         asyncio.to_thread(_fetch_earnings_calendar, held_tickers),
         asyncio.to_thread(_fetch_vix_context),
         asyncio.to_thread(_fetch_spy_context),
-        asyncio.to_thread(_fetch_international_markets),
         return_exceptions=True,
     )
 
@@ -441,10 +437,8 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         "snapshots": safe(snapshots, {}),
         "movers": safe(movers, {"gainers": [], "losers": []}),
         "premarket_gaps": safe(gaps, []),
-        "sectors": safe(sectors, []),
         "earnings": safe(earnings, []),
         "vix": safe(vix, {}),
         "spy": safe(spy, {}),
-        "international": safe(intl, []),
         "gathered_at": utcnow().isoformat(),
     }
