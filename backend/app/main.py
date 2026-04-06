@@ -504,6 +504,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Save raw body for webhook validation failures — never lose a webhook
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def webhook_validation_fallback(request, exc):
+    """If a webhook fails Pydantic validation, save the raw body to inbox for replay."""
+    if request.url.path == "/api/webhook":
+        import logging as _vlog
+        _vlog.getLogger(__name__).warning(f"Webhook validation error: {exc.errors()}")
+        try:
+            body = await request.body()
+            raw = json.loads(body) if body else {}
+            from app.models.webhook_inbox import WebhookInbox
+            from app.database import async_session as _vs
+            async with _vs() as vdb:
+                vdb.add(WebhookInbox(
+                    fingerprint=f"validation_error:{hash(body)}",
+                    payload=raw,
+                    status="validation_error",
+                    error_message=str(exc.errors())[:500],
+                ))
+                await vdb.commit()
+        except Exception:
+            pass
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "saved_for_replay": True},
+        )
+    # Default 422 for non-webhook routes
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 # API key authentication (after CORS so preflight requests pass)
 if settings.dashboard_api_key:
     from app.middleware.auth import APIKeyMiddleware

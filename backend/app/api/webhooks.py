@@ -6,12 +6,13 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
+from app.database import get_db, async_session
 from app.schemas.webhook import WebhookPayload
 from app.services.trade_processor import process_webhook
 from app.services.price_service import price_service
@@ -163,8 +164,60 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
         logger.warning(f"Conflict detection failed (non-blocking): {e}")
 
 
+@router.post("/webhook/replay/{inbox_id}")
+async def replay_webhook(inbox_id: str):
+    """Replay a failed/pending webhook from the inbox."""
+    try:
+        from app.models.webhook_inbox import WebhookInbox
+        async with async_session() as db:
+            result = await db.execute(select(WebhookInbox).where(WebhookInbox.id == inbox_id))
+            entry = result.scalar_one_or_none()
+            if not entry:
+                raise HTTPException(404, "Inbox entry not found")
+            if entry.status == "processed":
+                return {"status": "already_processed", "id": inbox_id}
+
+            payload = WebhookPayload(**entry.payload)
+            trade = await process_webhook(payload, db)
+            entry.status = "processed"
+            entry.processed_at = utcnow()
+            await db.commit()
+            return {"status": "replayed", "trade_id": trade.id, "ticker": trade.ticker}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Replay failed: {e}")
+
+
+@router.get("/webhook/failed")
+async def list_failed_webhooks():
+    """List all failed/pending webhook inbox entries for manual replay."""
+    try:
+        from app.models.webhook_inbox import WebhookInbox
+        async with async_session() as db:
+            result = await db.execute(
+                select(WebhookInbox)
+                .where(WebhookInbox.status.in_(["failed", "pending", "validation_error"]))
+                .order_by(WebhookInbox.created_at.desc())
+                .limit(50)
+            )
+            entries = result.scalars().all()
+            return [
+                {
+                    "id": e.id,
+                    "status": e.status,
+                    "payload": e.payload,
+                    "error": e.error_message,
+                    "created_at": e.created_at.isoformat() + "Z" if e.created_at else None,
+                }
+                for e in entries
+            ]
+    except Exception as e:
+        return []
+
+
 @router.post("/webhook")
-async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(get_db)):
+async def receive_webhook(request: Request, payload: WebhookPayload, db: AsyncSession = Depends(get_db)):
     # 1. Rate-limit check (per trader) — fast, before any DB work
     _check_rate_limit(payload.trader)
 
