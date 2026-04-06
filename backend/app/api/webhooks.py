@@ -217,7 +217,22 @@ async def list_failed_webhooks():
 
 
 @router.post("/webhook")
-async def receive_webhook(request: Request, payload: WebhookPayload, db: AsyncSession = Depends(get_db)):
+async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    # Auto-route: if payload has "indicator" but no "trader", it's a scanner alert
+    raw_body = await request.body()
+    try:
+        raw_json = json.loads(raw_body) if raw_body else {}
+    except Exception:
+        raw_json = {}
+
+    if "indicator" in raw_json and "trader" not in raw_json:
+        # Forward to screener webhook handler
+        from app.schemas.screener import ScreenerWebhookPayload
+        from app.api.screener import screener_webhook
+        screener_payload = ScreenerWebhookPayload(**raw_json)
+        return await screener_webhook(screener_payload, db)
+
+    payload = WebhookPayload(**raw_json)
     # 1. Rate-limit check (per trader) — fast, before any DB work
     _check_rate_limit(payload.trader)
 
