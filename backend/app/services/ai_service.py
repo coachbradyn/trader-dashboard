@@ -655,89 +655,101 @@ Keep it under 300 words. Lead with the most important finding."""
 # ─── FEATURE 2: MORNING BRIEFING (ENHANCED) ────────────────────────────────
 
 def _format_market_intel(intel: dict) -> str:
-    """Convert market intel dict into a rich text block for the prompt."""
+    """Convert market intel dict into structured, labeled sections for the prompt."""
     sections = []
 
-    # SPY & VIX
+    # ── SPY detail ──
     spy = intel.get("spy", {})
-    vix = intel.get("vix", {})
-    if spy or vix:
-        market_lines = []
-        if spy:
-            market_lines.append(
-                f"  SPY: ${spy.get('price', 0)} ({spy.get('change_pct', 0):+.2f}%) | "
-                f"5d range: ${spy.get('5d_low', 0)}-${spy.get('5d_high', 0)} | "
-                f"vol: {spy.get('volume', 0):,}"
-            )
-        if vix:
-            market_lines.append(
-                f"  VIX: {vix.get('current', 0)} ({vix.get('change', 0):+.1f} from prev) | "
-                f"regime: {vix.get('regime', '?')} | 5d trend: {vix.get('5d_trend', '?')} | "
-                f"week ago: {vix.get('week_ago', 0)}"
-            )
-        sections.append("MARKET OVERVIEW:\n" + "\n".join(market_lines))
+    if spy:
+        sections.append(
+            f"S&P 500 (SPY):\n"
+            f"  Price: ${spy.get('price', 0)} | Change: {spy.get('change_pct', 0):+.2f}%\n"
+            f"  5-day range: ${spy.get('5d_low', 0)} — ${spy.get('5d_high', 0)}\n"
+            f"  Volume: {spy.get('volume', 0):,}"
+        )
 
-    # Pre-market gaps
+    # ── VIX detail ──
+    vix = intel.get("vix", {})
+    if vix:
+        sections.append(
+            f"VIX (VOLATILITY INDEX):\n"
+            f"  Current: {vix.get('current', 0)} | Change: {vix.get('change', 0):+.1f} from prev close\n"
+            f"  Regime: {vix.get('regime', '?').upper()} | 5-day trend: {vix.get('5d_trend', '?')}\n"
+            f"  Week ago: {vix.get('week_ago', 0)}"
+        )
+
+    # ── International markets ──
+    intl = intel.get("international", [])
+    if intl:
+        intl_lines = []
+        for m in intl:
+            arrow = "▲" if m["change_pct"] >= 0 else "▼"
+            intl_lines.append(f"  {m['name']}: {m['price']} ({arrow} {m['change_pct']:+.2f}%)")
+        sections.append("INTERNATIONAL MARKETS & COMMODITIES:\n" + "\n".join(intl_lines))
+
+    # ── Pre-market gaps ──
     gaps = intel.get("premarket_gaps", [])
     if gaps:
-        gap_lines = [f"  {g['ticker']}: {g['gap_pct']:+.2f}% gap (prev ${g['prev_close']} → ${g['current']})" for g in gaps[:8]]
+        gap_lines = [f"  {g['ticker']}: {g['gap_pct']:+.2f}% gap (prev ${g['prev_close']} → now ${g['current']})" for g in gaps[:8]]
         sections.append("PRE-MARKET GAPS (held tickers):\n" + "\n".join(gap_lines))
 
-    # Sector performance
+    # ── Sector performance ──
     sectors = intel.get("sectors", [])
     if sectors:
-        top3 = sectors[:3]
-        bottom3 = sectors[-3:] if len(sectors) > 3 else []
-        sect_lines = ["  LEADING: " + " | ".join(f"{s['sector']} {s['change_pct']:+.2f}%" for s in top3)]
-        if bottom3:
-            sect_lines.append("  LAGGING: " + " | ".join(f"{s['sector']} {s['change_pct']:+.2f}%" for s in bottom3))
-        sections.append("SECTOR ROTATION:\n" + "\n".join(sect_lines))
+        sect_lines = [f"  {s['sector']} ({s['etf']}): {s['change_pct']:+.2f}%" for s in sectors]
+        sections.append("SECTOR PERFORMANCE (sorted best→worst):\n" + "\n".join(sect_lines))
 
-    # Volume movers
+    # ── Market movers ──
     movers = intel.get("movers", {})
-    gainers = movers.get("gainers", [])[:3]
-    losers = movers.get("losers", [])[:3]
+    gainers = movers.get("gainers", [])[:5]
+    losers = movers.get("losers", [])[:5]
     if gainers or losers:
         mover_lines = []
         if gainers:
-            mover_lines.append("  TOP MOVERS: " + " | ".join(f"{m['symbol']} ({m.get('change_pct', 0):+.1f}%)" for m in gainers))
-        sections.append("VOLUME & MOVERS:\n" + "\n".join(mover_lines))
+            mover_lines.append("  GAINERS: " + " | ".join(
+                f"{m['symbol']} {m.get('change_pct', 0):+.1f}% (vol: {m.get('volume', 0):,})" for m in gainers
+            ))
+        if losers:
+            mover_lines.append("  LOSERS: " + " | ".join(
+                f"{m['symbol']} {m.get('change_pct', 0):+.1f}% (vol: {m.get('volume', 0):,})" for m in losers
+            ))
+        sections.append("MARKET MOVERS (most active by volume):\n" + "\n".join(mover_lines))
 
-    # Earnings calendar
+    # ── Earnings calendar ──
     earnings = intel.get("earnings", [])
     if earnings:
         earn_lines = [f"  ⚠ {e['ticker']} reports in {e['days_away']}d ({e['earnings_date']})" for e in earnings]
-        sections.append("EARNINGS WATCH (held tickers):\n" + "\n".join(earn_lines))
+        sections.append("EARNINGS WATCH (held tickers this week):\n" + "\n".join(earn_lines))
 
-    # News — portfolio-relevant
+    # ── News: portfolio-relevant ──
     news_portfolio = intel.get("news_portfolio", [])
     if news_portfolio:
-        news_lines = [f"  [{a.get('source', '?')}] {a['headline']}" for a in news_portfolio[:6]]
-        sections.append("NEWS (your tickers):\n" + "\n".join(news_lines))
+        news_lines = [f"  • [{a.get('source', '?')}] {a['headline']}" for a in news_portfolio[:8]]
+        sections.append("NEWS — YOUR HELD TICKERS:\n" + "\n".join(news_lines))
 
-    # News — general market
+    # ── News: general market ──
     news_general = intel.get("news_general", [])
     if news_general:
-        # Deduplicate against portfolio news
         portfolio_headlines = {a["headline"] for a in news_portfolio}
-        general_unique = [a for a in news_general if a["headline"] not in portfolio_headlines][:5]
+        general_unique = [a for a in news_general if a["headline"] not in portfolio_headlines][:6]
         if general_unique:
-            news_lines = [f"  [{a.get('source', '?')}] {a['headline']}" for a in general_unique]
-            sections.append("MARKET NEWS:\n" + "\n".join(news_lines))
+            news_lines = [f"  • [{a.get('source', '?')}] {a['headline']}" for a in general_unique]
+            sections.append("NEWS — GENERAL MARKET:\n" + "\n".join(news_lines))
 
-    # Position snapshots (current prices for held tickers)
+    # ── Position snapshots (live prices) ──
     snapshots = intel.get("snapshots", {})
     if snapshots:
         snap_lines = []
-        for ticker, snap in list(snapshots.items())[:15]:
+        for ticker, snap in list(snapshots.items())[:20]:
             if ticker in ("SPY", "QQQ"):
-                continue  # Already shown above
+                continue
             snap_lines.append(
                 f"  {ticker}: ${snap['price']} ({snap['change_pct']:+.2f}%) | "
+                f"O: ${snap.get('open', 0)} H: ${snap.get('high', 0)} L: ${snap.get('low', 0)} | "
                 f"vol: {snap['volume']:,}"
             )
         if snap_lines:
-            sections.append("HELD TICKER SNAPSHOTS:\n" + "\n".join(snap_lines))
+            sections.append("HELD TICKER LIVE PRICES:\n" + "\n".join(snap_lines))
 
     return "\n\n".join(sections) if sections else "Market data unavailable."
 
@@ -798,10 +810,14 @@ You have access to web search. USE IT to find:
 - Analyst upgrades/downgrades on held tickers from today or yesterday
 
 ══════════════════════════════════════════════════════════
-DATA CONTEXT (from our systems — do NOT fabricate numbers):
+MARKET DATA (from our systems — do NOT fabricate these numbers):
 ══════════════════════════════════════════════════════════
 
 {intel_text}
+
+══════════════════════════════════════════════════════════
+PORTFOLIO DATA:
+══════════════════════════════════════════════════════════
 
 TECHNICAL INDICATORS PER HELD TICKER:
 {technicals_context or 'Not available'}
@@ -831,43 +847,66 @@ CUMULATIVE STRATEGY PERFORMANCE (30 days):
 FORMAT INSTRUCTIONS:
 ══════════════════════════════════════════════════════════
 
-Write a detailed 8-section briefing using rich markdown. Use tables where data is tabular. Use **bold** for key numbers, ✓ for bullish signals, ✗ for bearish ones.
+Write a detailed 9-section briefing using rich markdown. Use tables where data is tabular. Use **bold** for key numbers, ✓ for bullish signals, ✗ for bearish ones.
 
-## 1. MACRO & ECONOMIC CALENDAR
-What macro events are scheduled today and this week? Fed, CPI, PPI, jobs, earnings — anything that moves markets. If a Fed meeting or major data release is today, lead with it and explain the expected impact. Include overnight international market action (Nikkei, DAX, FTSE) and US futures direction.
+CRITICAL: You MUST use the MARKET DATA sections above. Every number from SPY, VIX, international markets, sector performance, market movers, and held ticker snapshots must appear in your briefing. Do not skip any section that has data.
 
-## 2. TOP STORIES & NEWS
-Key headlines from the last 12 hours. Separate into: (a) headlines directly affecting held tickers, (b) sector/macro headlines, (c) international/geopolitical. Flag any analyst upgrades or downgrades on held tickers.
+## 1. MARKET OVERVIEW — SPY, VIX & INDICES
+Start with SPY and VIX using the exact data above. Show a table:
 
-## 3. PORTFOLIO DASHBOARD
-Use a markdown table for ALL held positions:
+| Index | Price | Change | Signal |
+|-------|-------|--------|--------|
 
-| Ticker | Dir | Entry | Current | P&L% | RSI | MACD | Signal |
-|--------|-----|-------|---------|------|-----|------|--------|
+Include: SPY, QQQ/Nasdaq, Dow, VIX. State the VIX regime (low/normal/elevated/high/extreme) and what it means for today's strategy conditions. If pre-market gaps exist on held tickers, list every one.
 
-For each: show the technical indicators provided above. Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. Add a one-line assessment per position below the table. Respect position archetypes: don't recommend selling accumulation or catalyst positions on price weakness.
+## 2. INTERNATIONAL MARKETS & FOREIGN MOVERS
+Use the INTERNATIONAL MARKETS data above. Show a table of all international indices, commodities, and currencies provided. Highlight which moved >1% and explain what overnight action in Asia/Europe signals for the US open. Note dollar strength and oil/gold direction.
 
-## 4. RISK DASHBOARD
-Total portfolio exposure, drawdown from 30-day peak, concentration risk (largest position as % of equity). Use the risk metrics data above. Flag any position >25% of equity or drawdown >10%.
+## 3. MACRO & ECONOMIC CALENDAR
+Use web search to find today's and this week's economic events: Fed decisions, CPI/PPI, jobless claims, PMI, earnings. If a major release is today, lead with it and explain expected market impact. This section is mandatory — always search.
 
-## 5. PRICE TARGETS (per held ticker)
-Use a table:
+## 4. TOP STORIES & NEWS
+Use BOTH the "NEWS — YOUR HELD TICKERS" and "NEWS — GENERAL MARKET" data from above. Display EVERY headline provided — do not omit any. Organize into:
+- **Held ticker news** (with ticker tags)
+- **Sector & macro news**
+- **Geopolitical / international**
+Flag analyst upgrades/downgrades if found via web search.
 
-| Ticker | Support | Stop | Resistance | 1wk Target | Confidence |
-|--------|---------|------|------------|------------|------------|
+## 5. SECTOR ROTATION & MARKET MOVERS
+Use the SECTOR PERFORMANCE and MARKET MOVERS data above. Show a sector table:
 
-Base on technical levels (EMA50/200, recent high/low), backtest data, and position archetype. Include the backtest win rate context where available — e.g. if backtest shows a strategy has 22% WR past bar 36 and we're at bar 38, flag that.
+| Sector | Change | Status |
+|--------|--------|--------|
 
-## 6. WATCHLIST — BEST NEW CANDIDATES
-Stocks on the watchlist with active signals that aren't already held. For each: what strategy triggered, at what price, and a one-sentence case for/against entry. Limit to top 3.
+Show all sectors sorted best-to-worst. List top gainers and losers from market movers. Note which sectors your held tickers belong to and whether they're in favorable sectors.
 
-## 7. YESTERDAY'S TAKEAWAY
-What worked, what didn't, patterns in exit signals. One specific data-backed lesson. Reference the cumulative stats — which strategies are outperforming?
+## 6. PORTFOLIO DASHBOARD
+Use a markdown table for ALL held positions, combining HELD TICKER LIVE PRICES and TECHNICAL INDICATORS:
 
-## 8. TODAY'S GAME PLAN
-Prioritized action items. Specific price levels to watch on held tickers. Which strategies are in favorable conditions given today's VIX regime and trend? Flag any positions that backtest data suggests are in danger zones. What would change the plan (e.g. "if CPI comes in hot, expect X").
+| Ticker | Dir | Entry | Current | P&L% | RSI | EMA50 | MACD | Signal |
+|--------|-----|-------|---------|------|-----|-------|------|--------|
 
-Be specific. Use dollar amounts and percentages. Reference actual data from the context above. No generic advice — give actionable intelligence. Every recommendation must reference a specific holding or watchlist ticker."""
+Flag overbought (RSI>70) with ✗ and oversold (RSI<30) with ✓. Below the table, add a one-line assessment per position. Show total portfolio exposure, drawdown from 30d peak, and concentration risk from the RISK METRICS. Flag positions >25% of equity or drawdown >10%.
+
+## 7. PRICE TARGETS & BACKTEST CROSS-REFERENCE
+Use a table for held tickers:
+
+| Ticker | Support | Stop | Resistance | 1wk Target | Backtest WR | Conf |
+|--------|---------|------|------------|------------|-------------|------|
+
+Use EMA50/200 as key levels. Include the backtest cross-reference data — if a strategy historically has low WR past the current bar count, flag it with ⚠. Include earnings watch dates.
+
+## 8. WATCHLIST — BEST NEW CANDIDATES
+Stocks from WATCHLIST SIGNALS with active signals not yet held. For each: strategy, entry price, one-sentence case. Limit to top 3-5.
+
+## 9. TODAY'S GAME PLAN
+Prioritized action items. Reference specific price levels from the data. Which strategies favor today's VIX regime? Flag backtest danger zones. What macro events could change the plan? End with the single most important thing to watch today.
+
+RULES:
+- Every number from the MARKET DATA sections must appear somewhere in your output.
+- Use actual data, not placeholders. If data says "Not available", say so — do not fabricate.
+- Do NOT skip sections even if data is thin — state what's missing and use web search to fill gaps.
+- Be specific. Dollar amounts, percentages, ticker symbols. No generic advice."""
 
     from app.services.ai_provider import call_ai
     import logging as _log

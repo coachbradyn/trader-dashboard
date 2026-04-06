@@ -340,6 +340,57 @@ def _fetch_spy_context() -> dict:
         return {}
 
 
+def _fetch_international_markets() -> list[dict]:
+    """Get overnight international market closes (sync, run in thread)."""
+    try:
+        import yfinance as yf
+
+        indices = {
+            "^N225": "Nikkei 225 (Japan)",
+            "^HSI": "Hang Seng (Hong Kong)",
+            "000001.SS": "Shanghai Composite",
+            "^GDAXI": "DAX (Germany)",
+            "^FTSE": "FTSE 100 (UK)",
+            "^STOXX50E": "Euro Stoxx 50",
+            "^GSPC": "S&P 500",
+            "^IXIC": "Nasdaq Composite",
+            "^DJI": "Dow Jones",
+            "DX-Y.NYB": "US Dollar Index",
+            "GC=F": "Gold Futures",
+            "CL=F": "Crude Oil WTI",
+            "^TNX": "10Y Treasury Yield",
+        }
+
+        tickers_str = " ".join(indices.keys())
+        data = yf.download(tickers_str, period="2d", interval="1d", progress=False, threads=True)
+
+        if data.empty:
+            return []
+
+        results = []
+        close = data["Close"]
+        for symbol, name in indices.items():
+            try:
+                if symbol in close.columns and len(close[symbol].dropna()) >= 2:
+                    vals = close[symbol].dropna().values
+                    prev = float(vals[-2])
+                    curr = float(vals[-1])
+                    change = (curr - prev) / prev * 100
+                    results.append({
+                        "symbol": symbol,
+                        "name": name,
+                        "price": round(curr, 2),
+                        "change_pct": round(change, 2),
+                    })
+            except Exception:
+                continue
+
+        return results
+    except Exception as e:
+        logger.error(f"International markets fetch failed: {e}")
+        return []
+
+
 # ─── MAIN AGGREGATOR ──────────────────────────────────────────────────────────
 
 async def gather_market_intel(held_tickers: list[str]) -> dict:
@@ -365,6 +416,7 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         earnings,
         vix,
         spy,
+        intl,
     ) = await asyncio.gather(
         fetch_news(held_tickers, limit=10),
         fetch_news(limit=10),
@@ -375,6 +427,7 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         asyncio.to_thread(_fetch_earnings_calendar, held_tickers),
         asyncio.to_thread(_fetch_vix_context),
         asyncio.to_thread(_fetch_spy_context),
+        asyncio.to_thread(_fetch_international_markets),
         return_exceptions=True,
     )
 
@@ -392,5 +445,6 @@ async def gather_market_intel(held_tickers: list[str]) -> dict:
         "earnings": safe(earnings, []),
         "vix": safe(vix, {}),
         "spy": safe(spy, {}),
+        "international": safe(intl, []),
         "gathered_at": utcnow().isoformat(),
     }
