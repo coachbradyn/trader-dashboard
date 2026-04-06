@@ -251,22 +251,22 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             from app.api.screener import screener_webhook
             screener_payload = ScreenerWebhookPayload(**raw_json)
             return await screener_webhook(screener_payload, db)
+        except HTTPException:
+            raise
         except Exception as e:
-            # Save failed scanner webhook for replay
-            await _save_failed_webhook(raw_json, f"screener_validation: {e}")
-            raise HTTPException(422, f"Scanner webhook validation failed: {e}")
+            await _save_failed_webhook(raw_json, f"screener_error: {e}")
+            raise HTTPException(422, f"Scanner webhook failed: {e}")
 
     # Validate as trade webhook
     try:
         payload = WebhookPayload(**raw_json)
     except Exception as e:
-        # Save failed trade webhook for replay
         await _save_failed_webhook(raw_json, f"trade_validation: {e}")
         raise HTTPException(422, f"Trade webhook validation failed: {e}")
-    # 1. Rate-limit check (per trader) — fast, before any DB work
-    _check_rate_limit(payload.trader)
 
-    # 2. Idempotency check — reject duplicate signals
+    # ── SAVE TO INBOX FIRST — before rate limiting, dedup, or processing ──
+    # This guarantees the payload is persisted no matter what happens next
+    inbox_id = None
     fp = make_webhook_fingerprint(
         trader=payload.trader,
         ticker=payload.ticker,
@@ -275,11 +275,6 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         price=payload.price,
         unix_time=payload.time or 0,
     )
-    if is_duplicate_webhook(fp):
-        return {"status": "duplicate", "trade_id": None}
-
-    # Write-ahead: persist to inbox before processing (crash-safe)
-    inbox_id = None
     try:
         from app.models.webhook_inbox import WebhookInbox
         inbox_entry = WebhookInbox(
@@ -293,17 +288,48 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception:
         pass  # Inbox table may not exist yet — continue without it
 
+    # Rate-limit check
     try:
-        # Process the trade FIRST — this is the critical path
+        _check_rate_limit(payload.trader)
+    except HTTPException:
+        if inbox_id:
+            try:
+                from app.models.webhook_inbox import WebhookInbox as _WIrl
+                r = await db.execute(select(_WIrl).where(_WIrl.id == inbox_id))
+                obj = r.scalar_one_or_none()
+                if obj:
+                    obj.status = "rate_limited"
+                    obj.error_message = "Rate limit exceeded"
+                    obj.processed_at = utcnow()
+                    await db.commit()
+            except Exception:
+                pass
+        raise
+
+    # Idempotency check
+    if is_duplicate_webhook(fp):
+        if inbox_id:
+            try:
+                from app.models.webhook_inbox import WebhookInbox as _WIdup
+                r = await db.execute(select(_WIdup).where(_WIdup.id == inbox_id))
+                obj = r.scalar_one_or_none()
+                if obj:
+                    obj.status = "duplicate"
+                    obj.processed_at = utcnow()
+                    await db.commit()
+            except Exception:
+                pass
+        return {"status": "duplicate", "trade_id": None}
+
+    try:
+        # Process the trade — critical path
         trade = await process_webhook(payload, db)
 
-        # Mark inbox entry as processed
+        # Mark inbox as processed
         if inbox_id:
             try:
                 from app.models.webhook_inbox import WebhookInbox as _WI
-                inbox_result = await db.execute(
-                    select(_WI).where(_WI.id == inbox_id)
-                )
+                inbox_result = await db.execute(select(_WI).where(_WI.id == inbox_id))
                 inbox_obj = inbox_result.scalar_one_or_none()
                 if inbox_obj:
                     inbox_obj.status = "processed"
@@ -377,17 +403,21 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             "ticker": payload.ticker,
             "direction": payload.dir,
         }
-    except ValueError as e:
+    except Exception as e:
+        # Mark inbox as failed — payload is already saved for replay
         if inbox_id:
             try:
                 from app.models.webhook_inbox import WebhookInbox as _WI2
-                inbox_result = await db.execute(select(_WI2).where(_WI2.id == inbox_id))
-                inbox_obj = inbox_result.scalar_one_or_none()
-                if inbox_obj:
-                    inbox_obj.status = "failed"
-                    inbox_obj.error_message = str(e)[:500]
-                    inbox_obj.processed_at = utcnow()
-                    await db.commit()
+                async with async_session() as err_db:
+                    inbox_result = await err_db.execute(select(_WI2).where(_WI2.id == inbox_id))
+                    inbox_obj = inbox_result.scalar_one_or_none()
+                    if inbox_obj:
+                        inbox_obj.status = "failed"
+                        inbox_obj.error_message = str(e)[:500]
+                        inbox_obj.processed_at = utcnow()
+                    await err_db.commit()
             except Exception:
                 pass
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Webhook processing failed for {payload.ticker}: {e}")
+        status = 400 if isinstance(e, ValueError) else 500
+        raise HTTPException(status_code=status, detail=str(e))
