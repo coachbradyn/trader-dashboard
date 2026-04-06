@@ -235,28 +235,29 @@ export default function TickerDetailPage() {
   const [chartDays, setChartDays] = useState(90);
 
   const fetchAll = useCallback(async () => {
+    // Phase 1: Fast DB-backed calls that populate the page skeleton
     try {
-      const [d, c, allBt, news, thesis, fund, pt] = await Promise.all([
+      const [d, c, allBt, fund] = await Promise.all([
         api.getWatchlistDetail(ticker).catch(() => null),
         api.getScreenerChart(ticker, chartDays).catch(() => []),
         api.getBacktestImports().catch(() => []),
-        api.getTickerNews(ticker).catch(() => null),
-        api.getTickerThesis(ticker).catch(() => null),
         api.getTickerFundamentals(ticker).catch(() => null),
-        api.getHenryPriceTargets(ticker).catch(() => null),
       ]);
       setDetail(d);
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
       if (fund) setFundamentals(fund);
+    } catch {}
+
+    // Phase 2: Slower external API calls — fire and forget, update UI as they arrive
+    api.getTickerNews(ticker).then((news) => { if (news) setNewsData(news); }).catch(() => {});
+    api.getTickerThesis(ticker).then((thesis) => {
+      if (thesis?.thesis) { setThesisData(thesis.thesis); setThesisCached(thesis.cached ?? false); }
+    }).catch(() => {});
+    api.getHenryPriceTargets(ticker).then((pt) => {
       if (pt && !pt.error) { setPriceTargets(pt); setPtError(null); }
       else if (pt?.error) setPtError(pt.error as string);
-      setNewsData(news);
-      if (thesis?.thesis) {
-        setThesisData(thesis.thesis);
-        setThesisCached(thesis.cached ?? false);
-      }
-    } catch {}
+    }).catch(() => {});
   }, [ticker, chartDays]);
 
   const generateThesis = async () => {
