@@ -1333,7 +1333,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         logger.info(f"Gathering market intel for {len(held_tickers)} tickers: {held_tickers}")
         try:
             import asyncio as _aio
-            market_intel = await _aio.wait_for(gather_market_intel(held_tickers), timeout=30.0)
+            market_intel = await _aio.wait_for(gather_market_intel(held_tickers), timeout=15.0)
         except Exception as mi_err:
             logger.warning(f"Market intel gathering failed (continuing without): {mi_err}")
             market_intel = None
@@ -1357,11 +1357,12 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         import asyncio as _aio2
 
         async def _fetch_technicals_per_ticker():
-            """RSI, MACD, EMA50/200 per held ticker."""
+            """RSI, MACD, EMA50/200 per held ticker — all tickers in parallel."""
             lines = []
             try:
                 from app.services.fmp_service import get_technical_indicator, compute_macd
-                for tk in held_tickers[:10]:
+
+                async def _one_ticker(tk):
                     try:
                         rsi_data, ema50_data, ema200_data, macd_data = await _aio2.gather(
                             get_technical_indicator(tk, "rsi", period=14, interval="daily"),
@@ -1389,30 +1390,44 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                             bias = "bullish" if hist > 0 else "bearish"
                             parts.append(f"MACD hist={hist:.3f} ({bias})")
                         if len(parts) > 1:
-                            lines.append(" | ".join(parts))
+                            return " | ".join(parts)
                     except Exception:
-                        continue
+                        pass
+                    return None
+
+                results = await _aio2.gather(*[_one_ticker(tk) for tk in held_tickers[:5]])
+                lines = [r for r in results if r]
             except Exception as e:
                 logger.debug(f"Technicals fetch failed: {e}")
             return "\n".join(lines) if lines else "Not available"
 
         async def _fetch_backtest_xref():
-            """Cross-reference open positions against backtest stats."""
+            """Cross-reference open positions against backtest stats (single query)."""
             lines = []
             try:
                 from app.models.backtest import BacktestImport
+                from sqlalchemy import or_
                 async with async_session() as xdb:
+                    # Build conditions for all positions at once
+                    pos_tickers = [(p.get("ticker", ""), p.get("trader", "")) for p in positions]
+                    if not pos_tickers:
+                        return "No open positions"
+                    conditions = [
+                        (BacktestImport.ticker == tk) & (BacktestImport.strategy_name == sid)
+                        for tk, sid in pos_tickers if tk and sid
+                    ]
+                    if not conditions:
+                        return "No backtest data for current positions"
+                    bt_result = await xdb.execute(
+                        select(BacktestImport).where(or_(*conditions))
+                    )
+                    bt_map = {(bt.ticker, bt.strategy_name): bt for bt in bt_result.scalars().all()}
+
                     for pos in positions:
                         tk = pos.get("ticker", "")
                         trader_id = pos.get("trader", "")
                         bars = pos.get("bars_in_trade", 0) or 0
-                        bt_result = await xdb.execute(
-                            select(BacktestImport).where(
-                                BacktestImport.ticker == tk,
-                                BacktestImport.strategy_name == trader_id,
-                            )
-                        )
-                        bt = bt_result.scalar_one_or_none()
+                        bt = bt_map.get((tk, trader_id))
                         if bt and bt.trade_count and bt.trade_count > 5:
                             lines.append(
                                 f"  {tk} ({trader_id}): bar {bars} of trade | "
@@ -1479,28 +1494,30 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             return "\n".join(lines) if lines else "Not available"
 
         async def _fetch_watchlist_signals():
-            """Active signals on watchlist tickers."""
+            """Active signals on watchlist tickers (single query)."""
             lines = []
             try:
                 from app.models.watchlist_ticker import WatchlistTicker
-                from app.models import Trade
+                from app.models import Trade, Trader
                 async with async_session() as wdb:
                     wl_result = await wdb.execute(select(WatchlistTicker))
                     wl_tickers = [w.ticker for w in wl_result.scalars().all()]
-                    # Get most recent open trade per watchlist ticker
-                    for tk in wl_tickers[:15]:
-                        if tk in held_tickers:
-                            continue  # Already in positions
-                        trade_result = await wdb.execute(
-                            select(Trade)
-                            .where(Trade.ticker == tk, Trade.status == "open")
-                            .order_by(Trade.created_at.desc())
-                            .limit(1)
-                        )
-                        trade = trade_result.scalar_one_or_none()
-                        if trade:
+                    candidates = [tk for tk in wl_tickers if tk not in held_tickers][:15]
+                    if not candidates:
+                        return "No active signals on watchlist"
+                    # Single query for all open trades on watchlist tickers
+                    trade_result = await wdb.execute(
+                        select(Trade)
+                        .join(Trader, Trade.trader_id == Trader.id)
+                        .where(Trade.ticker.in_(candidates), Trade.status == "open")
+                        .order_by(Trade.created_at.desc())
+                    )
+                    seen = set()
+                    for trade in trade_result.scalars().all():
+                        if trade.ticker not in seen:
+                            seen.add(trade.ticker)
                             lines.append(
-                                f"  {tk}: {trade.direction.upper()} signal from {trade.trader_id or '?'} "
+                                f"  {trade.ticker}: {trade.direction.upper()} signal "
                                 f"@ ${trade.entry_price:.2f} (bar {trade.bars_in_trade or 0})"
                             )
             except Exception as e:
@@ -1517,7 +1534,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                     _fetch_watchlist_signals(),
                     return_exceptions=True,
                 ),
-                timeout=25.0,
+                timeout=12.0,
             )
             # Handle exceptions from gather
             if isinstance(technicals_ctx, Exception):
