@@ -527,6 +527,9 @@ app.include_router(analytics_router.router, prefix="/api", tags=["analytics"])
 app.include_router(watchlist_router.router, prefix="/api", tags=["watchlist"])
 app.include_router(ai_portfolio_router.router, prefix="/api", tags=["ai-portfolio"])
 app.include_router(news_router.router, prefix="/api", tags=["news"])
+
+from app.api import memory as memory_router
+app.include_router(memory_router.router, prefix="/api", tags=["memory"])
 app.include_router(execution_router.router, prefix="/api", tags=["execution"])
 app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"])
 

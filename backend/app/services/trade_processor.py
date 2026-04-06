@@ -17,6 +17,9 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
     trader = result.scalar_one_or_none()
 
     if trader:
+        # Check if strategy is paused
+        if not trader.is_active:
+            raise ValueError(f"Strategy '{payload.trader}' is paused")
         # Known trader — verify API key
         if not verify_api_key(payload.key, trader.api_key_hash):
             raise ValueError("Invalid API key")

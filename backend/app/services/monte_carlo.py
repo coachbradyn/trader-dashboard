@@ -83,10 +83,31 @@ async def fetch_pnl_pool(
             ticker_set.add(tk)
             strategy_set.add(strat_name)
 
-    all_pnls = live_pnls + backtest_pnls
+    # ── AI portfolio (simulated) trades ──
+    ai_pnls: list[float] = []
+    if source in ("ai_portfolio", "combined"):
+        ai_query = (
+            select(Trade.pnl_percent, Trade.ticker, Trader.trader_id)
+            .join(Trader, Trade.trader_id == Trader.id)
+            .where(Trade.status == "closed")
+            .where(Trade.is_simulated == True)
+            .where(Trade.pnl_percent.isnot(None))
+        )
+        if strategy:
+            ai_query = ai_query.where(Trader.trader_id == strategy)
+        if ticker:
+            ai_query = ai_query.where(Trade.ticker == ticker.upper())
+
+        ai_result = await db.execute(ai_query)
+        for pnl_pct, tk, strat_id in ai_result.all():
+            ai_pnls.append(float(pnl_pct))
+            ticker_set.add(tk)
+            strategy_set.add(strat_id)
+
+    all_pnls = live_pnls + backtest_pnls + ai_pnls
     return (
         all_pnls,
-        len(live_pnls),
+        len(live_pnls) + len(ai_pnls),
         len(backtest_pnls),
         sorted(strategy_set),
         sorted(ticker_set),

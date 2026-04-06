@@ -1,5 +1,9 @@
+import csv
+import io
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -56,3 +60,44 @@ async def get_trades(
         )
         for t in trades
     ]
+
+
+@router.get("/trades/export")
+async def export_trades_csv(
+    status: str = Query("closed"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export trades as CSV for tax reporting or offline analysis."""
+    result = await db.execute(
+        select(Trade)
+        .options(selectinload(Trade.trader))
+        .where(Trade.status == status, Trade.is_simulated == False)
+        .order_by(desc(Trade.entry_time))
+    )
+    trades = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "ticker", "direction", "strategy", "entry_price", "exit_price",
+        "qty", "pnl_dollars", "pnl_percent", "entry_time", "exit_time",
+        "exit_reason", "timeframe", "bars_in_trade",
+    ])
+    for t in trades:
+        writer.writerow([
+            t.ticker, t.direction, t.trader.trader_id if t.trader else "",
+            t.entry_price, t.exit_price or "", t.qty,
+            round(t.pnl_dollars, 2) if t.pnl_dollars else "",
+            round(t.pnl_percent, 2) if t.pnl_percent else "",
+            t.entry_time.isoformat() if t.entry_time else "",
+            t.exit_time.isoformat() if t.exit_time else "",
+            t.exit_reason or "", t.timeframe or "",
+            t.bars_in_trade or "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
+    )

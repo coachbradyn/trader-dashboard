@@ -55,3 +55,18 @@ async def get_trader(trader_slug: str, db: AsyncSession = Depends(get_db)):
         created_at=trader.created_at,
         portfolios=[ps.portfolio.name for ps in trader.portfolio_strategies],
     )
+
+
+@router.patch("/traders/{trader_slug}/toggle-active")
+async def toggle_trader_active(trader_slug: str, db: AsyncSession = Depends(get_db)):
+    """Pause or resume a strategy's webhook processing."""
+    result = await db.execute(
+        select(Trader).where(Trader.trader_id == trader_slug)
+    )
+    trader = result.scalar_one_or_none()
+    if not trader:
+        raise HTTPException(404, "Trader not found")
+
+    trader.is_active = not trader.is_active
+    await db.commit()
+    return {"trader_id": trader.trader_id, "is_active": trader.is_active}
