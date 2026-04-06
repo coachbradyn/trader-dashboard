@@ -84,6 +84,22 @@ async def _ensure_schema():
                         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_henry_memory_content_hash ON henry_memory (content_hash)"))
                         logger.info("Added missing column: henry_memory.content_hash")
 
+                if "webhook_inbox" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE webhook_inbox (
+                            id VARCHAR(36) PRIMARY KEY,
+                            fingerprint VARCHAR(64) NOT NULL,
+                            payload JSON NOT NULL,
+                            status VARCHAR(20) DEFAULT 'pending',
+                            error_message TEXT,
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            processed_at TIMESTAMP
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_webhook_inbox_fingerprint ON webhook_inbox (fingerprint)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_webhook_inbox_status ON webhook_inbox (status)"))
+                    logger.info("Created missing table: webhook_inbox")
+
                 if "henry_context" not in tables:
                     connection.execute(text("""
                         CREATE TABLE henry_context (
@@ -338,6 +354,49 @@ async def _ensure_schema():
         logger.warning(f"Credential encryption migration skipped: {e}")
 
 
+async def _replay_pending_webhooks():
+    """On startup, replay any webhooks that were pending when the server crashed."""
+    import logging
+    _logger = logging.getLogger(__name__)
+    try:
+        from app.models.webhook_inbox import WebhookInbox
+        from app.schemas.webhook import WebhookPayload
+        from app.services.trade_processor import process_webhook
+        from app.database import async_session as _rs
+        from sqlalchemy import select
+        from datetime import timedelta
+
+        async with _rs() as db:
+            cutoff = utcnow() - timedelta(minutes=5)
+            result = await db.execute(
+                select(WebhookInbox).where(
+                    WebhookInbox.status == "pending",
+                    WebhookInbox.created_at >= cutoff,
+                )
+            )
+            pending = result.scalars().all()
+            if not pending:
+                return
+
+            _logger.info(f"Found {len(pending)} pending webhook(s) to replay")
+            for entry in pending:
+                try:
+                    payload = WebhookPayload(**entry.payload)
+                    async with _rs() as proc_db:
+                        await process_webhook(payload, proc_db)
+                    entry.status = "processed"
+                    entry.processed_at = utcnow()
+                    _logger.info(f"Replayed webhook {entry.id} ({entry.payload.get('ticker', '?')})")
+                except Exception as e:
+                    entry.status = "failed"
+                    entry.error_message = f"Replay failed: {str(e)[:300]}"
+                    entry.processed_at = utcnow()
+                    _logger.warning(f"Webhook replay failed for {entry.id}: {e}")
+            await db.commit()
+    except Exception as e:
+        _logger.debug(f"Webhook replay skipped: {e}")
+
+
 async def _sync_holdings_to_watchlist():
     """On startup, ensure all tickers from holdings and open trades are on the watchlist."""
     import logging
@@ -414,6 +473,11 @@ async def lifespan(app: FastAPI):
     # Sync existing holding tickers and traded tickers to watchlist
     try:
         await _sync_holdings_to_watchlist()
+    except Exception:
+        pass
+    # Replay pending webhooks from inbox (crash recovery)
+    try:
+        await _replay_pending_webhooks()
     except Exception:
         pass
     yield

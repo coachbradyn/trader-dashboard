@@ -180,9 +180,38 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
     if is_duplicate_webhook(fp):
         return {"status": "duplicate", "trade_id": None}
 
+    # Write-ahead: persist to inbox before processing (crash-safe)
+    inbox_id = None
+    try:
+        from app.models.webhook_inbox import WebhookInbox
+        inbox_entry = WebhookInbox(
+            fingerprint=fp,
+            payload=payload.model_dump(),
+            status="pending",
+        )
+        db.add(inbox_entry)
+        await db.flush()
+        inbox_id = inbox_entry.id
+    except Exception:
+        pass  # Inbox table may not exist yet — continue without it
+
     try:
         # Process the trade FIRST — this is the critical path
         trade = await process_webhook(payload, db)
+
+        # Mark inbox entry as processed
+        if inbox_id:
+            try:
+                from app.models.webhook_inbox import WebhookInbox as _WI
+                inbox_result = await db.execute(
+                    select(_WI).where(_WI.id == inbox_id)
+                )
+                inbox_obj = inbox_result.scalar_one_or_none()
+                if inbox_obj:
+                    inbox_obj.status = "processed"
+                    inbox_obj.processed_at = utcnow()
+            except Exception:
+                pass
 
         # Register ticker for price tracking
         price_service.add_ticker(payload.ticker)
@@ -251,4 +280,16 @@ async def receive_webhook(payload: WebhookPayload, db: AsyncSession = Depends(ge
             "direction": payload.dir,
         }
     except ValueError as e:
+        if inbox_id:
+            try:
+                from app.models.webhook_inbox import WebhookInbox as _WI2
+                inbox_result = await db.execute(select(_WI2).where(_WI2.id == inbox_id))
+                inbox_obj = inbox_result.scalar_one_or_none()
+                if inbox_obj:
+                    inbox_obj.status = "failed"
+                    inbox_obj.error_message = str(e)[:500]
+                    inbox_obj.processed_at = utcnow()
+                    await db.commit()
+            except Exception:
+                pass
         raise HTTPException(status_code=400, detail=str(e))
