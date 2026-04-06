@@ -1944,7 +1944,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
         system = await _build_system_prompt(ticker=ticker, enable_web_search=True)
         prompt = f"""Provide a structured price target analysis for {ticker}.
 
-Current price: ${current_price:.2f if current_price else 'Unknown'}
+Current price: {f'${current_price:.2f}' if current_price else 'Unknown'}
 
 PRICE HISTORY (30 days):
   {price_history_ctx}
