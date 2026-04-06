@@ -1706,83 +1706,274 @@ Answer based on your actual activity and decisions. Be specific about which trad
     # ─── HENRY'S PRICE TARGETS ──────────────────────────────────────
 
     @app.get("/api/ai/price-targets/{ticker}")
-    async def get_henry_price_targets(ticker: str):
-        """Generate Henry's price targets (short/medium/long term) for a ticker."""
+    async def get_henry_price_targets(ticker: str, force: bool = False):
+        """Generate Henry's price targets with enriched technical/strategy context."""
+        import asyncio
+        import json
+        import logging
+        _pt_log = logging.getLogger(__name__)
+
         ticker = ticker.upper().strip()
 
-        # Check cache first (valid for 12h)
-        try:
-            from app.models.henry_cache import HenryCache
-            async with async_session() as db:
-                cached = await db.execute(
-                    select(HenryCache).where(
-                        HenryCache.cache_key == f"price_targets:{ticker}",
-                        HenryCache.generated_at >= utcnow() - timedelta(hours=12),
+        # Check cache first (valid for 4h) — skip on force refresh
+        if not force:
+            try:
+                from app.models.henry_cache import HenryCache
+                async with async_session() as db:
+                    cached = await db.execute(
+                        select(HenryCache).where(
+                            HenryCache.cache_key == f"price_targets:{ticker}",
+                            HenryCache.generated_at >= utcnow() - timedelta(hours=4),
+                        )
                     )
-                )
-                hit = cached.scalar_one_or_none()
-                if hit and hit.content:
-                    return hit.content
-        except Exception:
-            pass
+                    hit = cached.scalar_one_or_none()
+                    if hit and hit.content:
+                        return hit.content
+            except Exception:
+                pass
 
-        # Gather context for Henry
-        fund_context = ""
-        try:
-            from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt, get_quote
-            fund = await get_fundamentals(ticker)
-            if fund:
-                fund_context = format_fundamentals_for_prompt(fund)
-            quote = await get_quote(ticker)
-            current_price = None
-            if quote and isinstance(quote, list) and len(quote) > 0:
-                current_price = quote[0].get("price")
-        except Exception:
-            current_price = None
+        # ── Gather all context blocks in parallel ──────────────────────
 
-        # Get Henry's context notes for this ticker
-        research_context = ""
-        try:
-            async with async_session() as db:
-                from app.models import HenryContext
-                ctx_result = await db.execute(
-                    select(HenryContext).where(
-                        HenryContext.ticker == ticker,
-                        (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > utcnow()),
-                    ).order_by(HenryContext.created_at.desc()).limit(5)
+        async def _fetch_fundamentals_and_price():
+            """Block 0 — Fundamentals + current price (existing)."""
+            _fund = ""
+            _price = None
+            try:
+                from app.services.fmp_service import get_fundamentals, format_fundamentals_for_prompt, get_quote
+                fund = await get_fundamentals(ticker)
+                if fund:
+                    _fund = format_fundamentals_for_prompt(fund)
+                quote = await get_quote(ticker)
+                if quote and isinstance(quote, list) and len(quote) > 0:
+                    _price = quote[0].get("price")
+            except Exception:
+                pass
+            return _fund, _price
+
+        async def _fetch_price_history():
+            """Block 1 — 30-day price history + volatility stats."""
+            try:
+                from app.services.fmp_service import get_historical_daily
+                data = await get_historical_daily(ticker, days=30)
+                if not data or not isinstance(data, list) or len(data) < 5:
+                    return "Not available"
+                # FMP returns newest-first
+                candles = list(reversed(data[:30]))
+                highs = [c.get("high", 0) for c in candles if c.get("high")]
+                lows = [c.get("low", 0) for c in candles if c.get("low")]
+                volumes = [c.get("volume", 0) for c in candles if c.get("volume")]
+                closes = [c.get("close", 0) for c in candles if c.get("close")]
+
+                high_30d = max(highs) if highs else 0
+                low_30d = min(lows) if lows else 0
+
+                vol_5d = sum(volumes[-5:]) / min(5, len(volumes[-5:])) if volumes else 0
+                vol_20d = sum(volumes[-20:]) / min(20, len(volumes[-20:])) if volumes else 0
+
+                # ATR approx: avg of last 14 high-low ranges
+                ranges = [h - l for h, l in zip(highs[-14:], lows[-14:])]
+                atr = sum(ranges) / len(ranges) if ranges else 0
+
+                chg_5d = ((closes[-1] - closes[-6]) / closes[-6] * 100) if len(closes) >= 6 else None
+                chg_20d = ((closes[-1] - closes[-21]) / closes[-21] * 100) if len(closes) >= 21 else None
+
+                lines = [
+                    f"30-day range: ${low_30d:.2f} (support proxy) — ${high_30d:.2f} (resistance proxy)",
+                    f"ATR(14): ${atr:.2f}",
+                    f"5-day avg volume: {vol_5d:,.0f} | 20-day avg volume: {vol_20d:,.0f}",
+                ]
+                if chg_5d is not None:
+                    lines.append(f"5-day change: {chg_5d:+.1f}%")
+                if chg_20d is not None:
+                    lines.append(f"20-day change: {chg_20d:+.1f}%")
+                return "\n  ".join(lines)
+            except Exception as e:
+                _pt_log.debug(f"Price history context failed for {ticker}: {e}")
+                return "Not available"
+
+        async def _fetch_technicals():
+            """Block 2 — RSI, EMA50, EMA200, MACD."""
+            try:
+                from app.services.fmp_service import get_technical_indicator, compute_macd
+                rsi_task = get_technical_indicator(ticker, "rsi", period=14, interval="daily")
+                ema50_task = get_technical_indicator(ticker, "ema", period=50, interval="daily")
+                ema200_task = get_technical_indicator(ticker, "ema", period=200, interval="daily")
+                macd_task = compute_macd(ticker, "daily")
+
+                rsi_data, ema50_data, ema200_data, macd_data = await asyncio.gather(
+                    rsi_task, ema50_task, ema200_task, macd_task
                 )
-                for c in ctx_result.scalars().all():
-                    research_context += f"  [{c.context_type}] {c.content}\n"
-        except Exception:
-            pass
+
+                parts = []
+                rsi_val = None
+                if rsi_data and isinstance(rsi_data, list) and len(rsi_data) > 0:
+                    rsi_val = rsi_data[0].get("rsi") or rsi_data[0].get("value")
+                    if rsi_val is not None:
+                        parts.append(f"RSI(14): {rsi_val:.1f}")
+
+                ema50_val = None
+                if ema50_data and isinstance(ema50_data, list) and len(ema50_data) > 0:
+                    ema50_val = ema50_data[0].get("ema") or ema50_data[0].get("value")
+                    if ema50_val is not None:
+                        parts.append(f"EMA50: ${ema50_val:.2f}")
+
+                ema200_val = None
+                if ema200_data and isinstance(ema200_data, list) and len(ema200_data) > 0:
+                    ema200_val = ema200_data[0].get("ema") or ema200_data[0].get("value")
+                    if ema200_val is not None:
+                        parts.append(f"EMA200: ${ema200_val:.2f}")
+
+                if macd_data and macd_data.get("macd") is not None:
+                    m = macd_data
+                    bias = "bullish" if (m.get("histogram") or 0) > 0 else "bearish"
+                    parts.append(
+                        f"MACD: {m['macd']:.3f} | Signal: {m.get('signal', 0):.3f} | "
+                        f"Histogram: {m.get('histogram', 0):.3f} ({bias})"
+                    )
+
+                return " | ".join(parts) if parts else "Not available"
+            except Exception as e:
+                _pt_log.debug(f"Technicals context failed for {ticker}: {e}")
+                return "Not available"
+
+        async def _fetch_strategy_history():
+            """Block 3 — Backtest + live trade history on this ticker."""
+            try:
+                from app.models.backtest_import import BacktestImport
+                from app.models import Trade, Trader
+                lines = []
+                async with async_session() as db:
+                    # Backtest performance
+                    bt_result = await db.execute(
+                        select(BacktestImport).where(BacktestImport.ticker == ticker)
+                    )
+                    for bt in bt_result.scalars().all():
+                        lines.append(
+                            f"  Backtest {bt.strategy_name}: {bt.trade_count} trades, "
+                            f"WR {bt.win_rate:.1f}%, PF {bt.profit_factor:.2f}, "
+                            f"avg gain {bt.avg_gain_pct:.1f}%, avg loss {bt.avg_loss_pct:.1f}%"
+                            + (f", MAE {bt.max_adverse_excursion_pct:.1f}%" if bt.max_adverse_excursion_pct else "")
+                        )
+
+                    # Live trades last 90 days grouped by strategy
+                    from sqlalchemy import func
+                    live_result = await db.execute(
+                        select(
+                            Trader.trader_id,
+                            func.count(Trade.id).label("cnt"),
+                            func.avg(Trade.pnl_percent).label("avg_pnl"),
+                            func.sum(Trade.pnl_dollars).label("total_pnl"),
+                        )
+                        .join(Trader, Trade.trader_id == Trader.id)
+                        .where(
+                            Trade.ticker == ticker,
+                            Trade.status == "closed",
+                            Trade.created_at >= utcnow() - timedelta(days=90),
+                        )
+                        .group_by(Trader.trader_id)
+                    )
+                    for row in live_result.all():
+                        lines.append(
+                            f"  Live {row.trader_id}: {row.cnt} trades (90d), "
+                            f"avg PnL {row.avg_pnl:.1f}%, total ${row.total_pnl:.2f}"
+                        )
+
+                return "\n".join(lines) if lines else "No strategy history"
+            except Exception as e:
+                _pt_log.debug(f"Strategy history context failed for {ticker}: {e}")
+                return "No strategy history"
+
+        async def _fetch_exposure():
+            """Block 4 — Current open positions on this ticker."""
+            try:
+                from app.models import Trade
+                from app.models.portfolio_holding import PortfolioHolding
+                lines = []
+                async with async_session() as db:
+                    # Open trades
+                    trades_result = await db.execute(
+                        select(Trade).where(Trade.ticker == ticker, Trade.status == "open")
+                    )
+                    for t in trades_result.scalars().all():
+                        lines.append(f"  Open trade: {t.direction} @ ${t.entry_price:.2f}, qty {t.qty}")
+
+                    # Holdings
+                    holdings_result = await db.execute(
+                        select(PortfolioHolding).where(PortfolioHolding.ticker == ticker)
+                    )
+                    for h in holdings_result.scalars().all():
+                        lines.append(f"  Holding: {h.direction} {h.qty:.4f} shares @ ${h.entry_price:.2f}")
+
+                return "\n".join(lines) if lines else "No current exposure"
+            except Exception as e:
+                _pt_log.debug(f"Exposure context failed for {ticker}: {e}")
+                return "No current exposure"
+
+        async def _fetch_research_notes():
+            """Existing Henry context notes."""
+            ctx = ""
+            try:
+                async with async_session() as db:
+                    from app.models import HenryContext
+                    ctx_result = await db.execute(
+                        select(HenryContext).where(
+                            HenryContext.ticker == ticker,
+                            (HenryContext.expires_at.is_(None)) | (HenryContext.expires_at > utcnow()),
+                        ).order_by(HenryContext.created_at.desc()).limit(5)
+                    )
+                    for c in ctx_result.scalars().all():
+                        ctx += f"  [{c.context_type}] {c.content}\n"
+            except Exception:
+                pass
+            return ctx
+
+        # Run all context fetchers in parallel
+        (fund_context, current_price), price_history_ctx, technicals_ctx, \
+            strategy_ctx, exposure_ctx, research_context = await asyncio.gather(
+                _fetch_fundamentals_and_price(),
+                _fetch_price_history(),
+                _fetch_technicals(),
+                _fetch_strategy_history(),
+                _fetch_exposure(),
+                _fetch_research_notes(),
+            )
+
+        # ── Build enriched prompt ──────────────────────────────────────
 
         from app.services.ai_provider import call_ai
         system = await _build_system_prompt(ticker=ticker, enable_web_search=True)
-        prompt = f"""Generate price targets for {ticker}.
+        prompt = f"""Provide a structured price target analysis for {ticker}.
 
-CURRENT PRICE: ${current_price:.2f if current_price else 'Unknown'}
+Current price: ${current_price:.2f if current_price else 'Unknown'}
+
+PRICE HISTORY (30 days):
+  {price_history_ctx}
+
+TECHNICAL INDICATORS:
+  {technicals_ctx}
 
 FUNDAMENTALS:
   {fund_context or 'Not available'}
 
-YOUR RESEARCH NOTES:
+STRATEGY PERFORMANCE ON {ticker}:
+{strategy_ctx}
+
+CURRENT EXPOSURE:
+{exposure_ctx}
+
+YOUR PRIOR RESEARCH NOTES:
 {research_context or '  None'}
 
-Provide three price targets based on technical levels, fundamentals, analyst consensus, and your own analysis:
+Use web search to find: recent analyst upgrades/downgrades, upcoming earnings date and EPS estimates, any material news in the last 7 days, and current implied volatility or options activity if notable.
 
-1. SHORT TERM (1 week): Where could this stock be in 7 days? Consider current momentum, support/resistance, and upcoming catalysts.
-2. MEDIUM TERM (1 month): Where could it be in 30 days? Factor in earnings, sector trends, and technical patterns.
-3. LONG TERM (6 months): Where could it be in 6 months? Consider the fundamental story, growth trajectory, and macro environment.
+Generate a full price target analysis with THREE SCENARIOS — bear, base, and bull — each with a 6-week price target. Then also give short (1 week) and medium (1 month) targets under the base scenario.
 
-For each target, provide: the target price, a brief reason (1 sentence), and your confidence level (low/medium/high).
-
-Respond in EXACTLY this JSON format (no markdown, no backticks):
-{{"current_price": {current_price or 0}, "short_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "1 week"}}, "medium_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "1 month"}}, "long_term": {{"target": 0.00, "reason": "...", "confidence": "medium", "timeframe": "6 months"}}}}"""
+Respond in EXACTLY this JSON (no markdown, no backticks):
+{{"current_price": {current_price or 0}, "generated_at": "{utcnow().isoformat()}Z", "technical_bias": "bullish", "key_levels": {{"support": 0.00, "resistance": 0.00, "stop_suggested": 0.00}}, "short_term": {{"target": 0.00, "timeframe": "1 week", "reason": "2 sentences max", "confidence": "low"}}, "medium_term": {{"target": 0.00, "timeframe": "1 month", "reason": "2 sentences max", "confidence": "medium"}}, "scenarios": {{"bear": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}, "base": {{"target": 0.00, "trigger": "most likely path", "probability": "high"}}, "bull": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}}}, "catalysts": ["string", "string"], "risk_reward": 0.0, "reasoning": "3-4 sentence overall thesis integrating technicals, fundamentals, and strategy history"}}"""
 
         try:
-            raw = await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, enable_web_search=True)
+            raw = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=1200, enable_web_search=True)
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
-            import json
             targets = json.loads(clean)
 
             # Cache the result

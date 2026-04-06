@@ -553,82 +553,215 @@ export default function TickerDetailPage() {
 
       {/* ═══ PRICE TARGETS ═══ */}
       <Card>
-        <CardContent className="p-5">
-          <div className="flex items-center justify-between mb-4">
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>Price Targets</h2>
-            {!priceTargets && !ptLoading && (
-              <Button variant="outline" size="sm" onClick={async () => {
-                setPtLoading(true);
-                try {
-                  const pt = await api.getHenryPriceTargets(ticker);
-                  if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
-                } catch {}
-                setPtLoading(false);
-              }} className="text-[10px] h-7 text-ai-blue border-ai-blue/30">
-                Generate Targets
-              </Button>
-            )}
-            {ptLoading && <span className="text-[10px] text-ai-blue/60 font-mono animate-pulse">Analyzing...</span>}
+            <div className="flex items-center gap-2">
+              {priceTargets?.generated_at && (
+                <span className="text-[9px] text-gray-600 font-mono">
+                  Generated {formatTimeAgo(priceTargets.generated_at as string)}
+                </span>
+              )}
+              {priceTargets && !ptLoading && (
+                <button onClick={async () => {
+                  setPtLoading(true);
+                  try {
+                    const pt = await api.getHenryPriceTargets(ticker, true);
+                    if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
+                  } catch {}
+                  setPtLoading(false);
+                }} className="text-ai-blue/70 hover:text-ai-blue transition" title="Refresh targets">
+                  <svg className={`w-3.5 h-3.5 ${ptLoading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              )}
+              {!priceTargets && !ptLoading && (
+                <Button variant="outline" size="sm" onClick={async () => {
+                  setPtLoading(true);
+                  try {
+                    const pt = await api.getHenryPriceTargets(ticker);
+                    if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
+                  } catch {}
+                  setPtLoading(false);
+                }} className="text-[10px] h-7 text-ai-blue border-ai-blue/30">
+                  Generate Targets
+                </Button>
+              )}
+              {ptLoading && <span className="text-[10px] text-ai-blue/60 font-mono animate-pulse">Analyzing...</span>}
+            </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {/* Analyst targets (from FMP) */}
-            {fundamentals?.analyst_target_consensus != null && (
-              <div className="p-4 rounded-lg bg-surface-light/10 border border-border/20">
-                <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Analyst Consensus</div>
-                <div className="text-2xl font-bold font-mono text-white">${fundamentals.analyst_target_consensus.toFixed(2)}</div>
-                {fundamentals.analyst_target_low != null && fundamentals.analyst_target_high != null && (
-                  <div className="text-[10px] font-mono text-gray-500 mt-1">
-                    Range: ${fundamentals.analyst_target_low.toFixed(2)} — ${fundamentals.analyst_target_high.toFixed(2)}
-                  </div>
-                )}
-                {fundamentals.analyst_count && <div className="text-[9px] text-gray-600 mt-1">{fundamentals.analyst_count} analysts</div>}
-                {lastPrice != null && fundamentals.analyst_target_consensus != null && (
-                  <div className={`text-xs font-mono mt-2 ${fundamentals.analyst_target_consensus > lastPrice ? "text-profit" : "text-loss"}`}>
-                    {fundamentals.analyst_target_consensus > lastPrice ? "▲" : "▼"} {Math.abs(((fundamentals.analyst_target_consensus - lastPrice) / lastPrice) * 100).toFixed(1)}% {fundamentals.analyst_target_consensus > lastPrice ? "upside" : "downside"}
-                  </div>
-                )}
-              </div>
-            )}
-            {/* Henry's targets */}
-            {priceTargets ? (
+
+          {priceTargets ? (() => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const pt = priceTargets as Record<string, any>;
+            const kl = pt.key_levels;
+            const scenarios = pt.scenarios;
+            const biasColor = pt.technical_bias === "bullish" ? "bg-profit" : pt.technical_bias === "bearish" ? "bg-loss" : "bg-gray-500";
+
+            return (
               <>
-                {[
-                  { key: "short_term", label: "1 Week", color: "text-amber-400", border: "border-amber-500/20" },
-                  { key: "medium_term", label: "1 Month", color: "text-ai-blue", border: "border-ai-blue/20" },
-                  { key: "long_term", label: "6 Months", color: "text-ai-purple", border: "border-ai-purple/20" },
-                ].map(({ key, label, color, border }) => {
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  const target = (priceTargets as Record<string, any>)[key];
-                  if (!target?.target) return null;
-                  const changePct = lastPrice ? ((target.target - lastPrice) / lastPrice) * 100 : null;
-                  return (
-                    <div key={key} className={`p-4 rounded-lg bg-surface-light/10 border ${border}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>{label}</span>
-                        <span className="w-2 h-2 rounded-full bg-ai-blue animate-pulse" title="Henry's estimate" />
-                      </div>
-                      <div className={`text-2xl font-bold font-mono ${color}`}>${target.target.toFixed(2)}</div>
-                      {changePct != null && (
-                        <div className={`text-xs font-mono mt-1 ${changePct >= 0 ? "text-profit" : "text-loss"}`}>
-                          {changePct >= 0 ? "▲" : "▼"} {Math.abs(changePct).toFixed(1)}%
+                {/* ROW 1 — Key Levels */}
+                {kl && (kl.support || kl.resistance || kl.stop_suggested) && (
+                  <div className="flex flex-wrap gap-2">
+                    {kl.support != null && (
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-mono bg-teal-500/10 text-teal-400 border border-teal-500/20">
+                        Support ${Number(kl.support).toFixed(2)}
+                      </span>
+                    )}
+                    {kl.stop_suggested != null && (
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        Stop ${Number(kl.stop_suggested).toFixed(2)}
+                      </span>
+                    )}
+                    {kl.resistance != null && (
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-mono bg-red-500/10 text-red-400 border border-red-500/20">
+                        Resistance ${Number(kl.resistance).toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* ROW 2 — Short term + Medium term */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {[
+                    { key: "short_term", label: "1 Week", color: "text-amber-400", border: "border-amber-500/20" },
+                    { key: "medium_term", label: "1 Month", color: "text-ai-blue", border: "border-ai-blue/20" },
+                  ].map(({ key, label, color, border }) => {
+                    const target = pt[key];
+                    if (!target?.target) return null;
+                    const changePct = lastPrice ? ((target.target - lastPrice) / lastPrice) * 100 : null;
+                    return (
+                      <div key={key} className={`p-4 rounded-lg bg-surface-light/10 border ${border}`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[9px] text-gray-500 uppercase tracking-wider" style={FONT_OUTFIT}>{label}</span>
+                          <span className={`w-2 h-2 rounded-full ${biasColor}`} title={`Bias: ${pt.technical_bias || "neutral"}`} />
+                          {pt.risk_reward != null && (
+                            <span className="ml-auto text-[9px] font-mono text-gray-500">R/R: {Number(pt.risk_reward).toFixed(1)}x</span>
+                          )}
                         </div>
+                        <div className={`text-2xl font-bold font-mono ${color}`}>${Number(target.target).toFixed(2)}</div>
+                        {changePct != null && (
+                          <div className={`text-xs font-mono mt-1 ${changePct >= 0 ? "text-profit" : "text-loss"}`}>
+                            {changePct >= 0 ? "▲" : "▼"} {Math.abs(changePct).toFixed(1)}%
+                          </div>
+                        )}
+                        <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">{target.reason}</p>
+                        <Badge className={`text-[8px] mt-1 ${
+                          target.confidence === "high" ? "bg-profit/10 text-profit" :
+                          target.confidence === "low" ? "bg-loss/10 text-loss" :
+                          "bg-amber-500/10 text-amber-400"
+                        }`}>{target.confidence} confidence</Badge>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ROW 3 — Bear / Base / Bull scenarios */}
+                {scenarios && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {([
+                      { key: "bear", label: "BEAR", color: "text-loss", border: "border-loss/20", bg: "bg-loss/5" },
+                      { key: "base", label: "BASE", color: "text-gray-300", border: "border-gray-600/30", bg: "bg-gray-600/5" },
+                      { key: "bull", label: "BULL", color: "text-profit", border: "border-profit/20", bg: "bg-profit/5" },
+                    ] as const).map(({ key, label, color, border, bg }) => {
+                      const s = scenarios[key];
+                      if (!s?.target) return null;
+                      const changePct = lastPrice ? ((s.target - lastPrice) / lastPrice) * 100 : null;
+                      return (
+                        <div key={key} className={`p-3 rounded-lg ${bg} border ${border}`}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`text-[9px] font-bold uppercase tracking-wider ${color}`} style={FONT_OUTFIT}>{label}</span>
+                            {s.probability && (
+                              <Badge variant="outline" className="text-[8px] border-border/30">{s.probability}</Badge>
+                            )}
+                          </div>
+                          <div className={`text-xl font-bold font-mono ${color}`}>${Number(s.target).toFixed(2)}</div>
+                          {changePct != null && (
+                            <div className={`text-[10px] font-mono ${changePct >= 0 ? "text-profit" : "text-loss"}`}>
+                              {changePct >= 0 ? "+" : ""}{changePct.toFixed(1)}%
+                            </div>
+                          )}
+                          {s.trigger && (
+                            <p className="text-[9px] text-gray-500 mt-1.5 italic leading-snug line-clamp-2">{s.trigger}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* ROW 4 — Catalysts */}
+                {pt.catalysts && Array.isArray(pt.catalysts) && pt.catalysts.length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-1.5" style={FONT_OUTFIT}>Key Catalysts</div>
+                    <ul className="space-y-0.5">
+                      {(pt.catalysts as string[]).map((c: string, i: number) => (
+                        <li key={i} className="text-[10px] text-gray-400 flex items-start gap-1.5">
+                          <span className="text-ai-blue mt-0.5">•</span>
+                          <span>{c}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* ROW 5 — Henry's reasoning */}
+                {pt.reasoning && (
+                  <p className="text-[11px] text-gray-500 italic leading-relaxed border-t border-border/20 pt-3">
+                    {pt.reasoning}
+                  </p>
+                )}
+
+                {/* ROW 6 — Analyst Consensus (moved to bottom) */}
+                {fundamentals?.analyst_target_consensus != null && (
+                  <div className="p-4 rounded-lg bg-surface-light/10 border border-border/20">
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Analyst Consensus</div>
+                    <div className="flex items-baseline gap-3">
+                      <span className="text-2xl font-bold font-mono text-white">${fundamentals.analyst_target_consensus.toFixed(2)}</span>
+                      {fundamentals.analyst_target_low != null && fundamentals.analyst_target_high != null && (
+                        <span className="text-[10px] font-mono text-gray-500">
+                          Range: ${fundamentals.analyst_target_low.toFixed(2)} — ${fundamentals.analyst_target_high.toFixed(2)}
+                        </span>
                       )}
-                      <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">{target.reason}</p>
-                      <Badge className={`text-[8px] mt-1 ${
-                        target.confidence === "high" ? "bg-profit/10 text-profit" :
-                        target.confidence === "low" ? "bg-loss/10 text-loss" :
-                        "bg-amber-500/10 text-amber-400"
-                      }`}>{target.confidence} confidence</Badge>
+                      {fundamentals.analyst_count && <span className="text-[9px] text-gray-600">{fundamentals.analyst_count} analysts</span>}
                     </div>
-                  );
-                })}
+                    {lastPrice != null && (
+                      <div className={`text-xs font-mono mt-1 ${fundamentals.analyst_target_consensus > lastPrice ? "text-profit" : "text-loss"}`}>
+                        {fundamentals.analyst_target_consensus > lastPrice ? "▲" : "▼"} {Math.abs(((fundamentals.analyst_target_consensus - lastPrice) / lastPrice) * 100).toFixed(1)}% {fundamentals.analyst_target_consensus > lastPrice ? "upside" : "downside"}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
-            ) : !ptLoading && !fundamentals?.analyst_target_consensus ? (
-              <div className="col-span-3 text-center py-6 text-gray-500 text-xs">
-                Click &quot;Generate Targets&quot; for Henry&apos;s 1-week, 1-month, and 6-month price predictions
-              </div>
-            ) : null}
-          </div>
+            );
+          })() : (
+            <>
+              {/* No targets yet — show analyst consensus if available, plus generate button prompt */}
+              {fundamentals?.analyst_target_consensus != null && (
+                <div className="p-4 rounded-lg bg-surface-light/10 border border-border/20">
+                  <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Analyst Consensus</div>
+                  <div className="text-2xl font-bold font-mono text-white">${fundamentals.analyst_target_consensus.toFixed(2)}</div>
+                  {fundamentals.analyst_target_low != null && fundamentals.analyst_target_high != null && (
+                    <div className="text-[10px] font-mono text-gray-500 mt-1">
+                      Range: ${fundamentals.analyst_target_low.toFixed(2)} — ${fundamentals.analyst_target_high.toFixed(2)}
+                    </div>
+                  )}
+                  {fundamentals.analyst_count && <div className="text-[9px] text-gray-600 mt-1">{fundamentals.analyst_count} analysts</div>}
+                  {lastPrice != null && (
+                    <div className={`text-xs font-mono mt-2 ${fundamentals.analyst_target_consensus > lastPrice ? "text-profit" : "text-loss"}`}>
+                      {fundamentals.analyst_target_consensus > lastPrice ? "▲" : "▼"} {Math.abs(((fundamentals.analyst_target_consensus - lastPrice) / lastPrice) * 100).toFixed(1)}% {fundamentals.analyst_target_consensus > lastPrice ? "upside" : "downside"}
+                    </div>
+                  )}
+                </div>
+              )}
+              {!ptLoading && !fundamentals?.analyst_target_consensus && (
+                <div className="text-center py-6 text-gray-500 text-xs">
+                  Click &quot;Generate Targets&quot; for Henry&apos;s scenario-based price analysis
+                </div>
+              )}
+            </>
+          )}
         </CardContent>
       </Card>
 
