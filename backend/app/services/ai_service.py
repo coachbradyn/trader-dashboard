@@ -1972,9 +1972,16 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
 {{"current_price": {current_price or 0}, "generated_at": "{utcnow().isoformat()}Z", "technical_bias": "bullish", "key_levels": {{"support": 0.00, "resistance": 0.00, "stop_suggested": 0.00}}, "short_term": {{"target": 0.00, "timeframe": "1 week", "reason": "2 sentences max", "confidence": "low"}}, "medium_term": {{"target": 0.00, "timeframe": "1 month", "reason": "2 sentences max", "confidence": "medium"}}, "scenarios": {{"bear": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}, "base": {{"target": 0.00, "trigger": "most likely path", "probability": "high"}}, "bull": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}}}, "catalysts": ["string", "string"], "risk_reward": 0.0, "reasoning": "3-4 sentence overall thesis integrating technicals, fundamentals, and strategy history"}}"""
 
         try:
-            raw = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=1200, enable_web_search=True)
+            raw = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2048, enable_web_search=True)
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
-            targets = json.loads(clean)
+
+            # Extract JSON object even if Claude wraps it in prose
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', clean)
+            if not json_match:
+                _pt_log.warning(f"Price targets: no JSON found in response for {ticker}. Raw (first 300): {clean[:300]}")
+                return {"error": "AI response did not contain valid JSON", "current_price": current_price}
+            targets = json.loads(json_match.group())
 
             # Cache the result
             try:
@@ -1997,5 +2004,9 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
                 pass
 
             return targets
+        except json.JSONDecodeError as e:
+            _pt_log.error(f"Price targets JSON parse failed for {ticker}: {e}. Raw (first 500): {clean[:500]}")
+            return {"error": f"Failed to parse AI response: {e}", "current_price": current_price}
         except Exception as e:
+            _pt_log.error(f"Price targets generation failed for {ticker}: {e}")
             return {"error": str(e), "current_price": current_price}

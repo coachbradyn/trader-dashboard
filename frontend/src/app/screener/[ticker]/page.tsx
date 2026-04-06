@@ -229,6 +229,7 @@ export default function TickerDetailPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [priceTargets, setPriceTargets] = useState<Record<string, any> | null>(null);
   const [ptLoading, setPtLoading] = useState(false);
+  const [ptError, setPtError] = useState<string | null>(null);
 
   // Chart range state
   const [chartDays, setChartDays] = useState(90);
@@ -248,7 +249,8 @@ export default function TickerDetailPage() {
       setChartData(c);
       setBacktests(allBt.filter((b) => b.ticker === ticker));
       if (fund) setFundamentals(fund);
-      if (pt && !pt.error) setPriceTargets(pt);
+      if (pt && !pt.error) { setPriceTargets(pt); setPtError(null); }
+      else if (pt?.error) setPtError(pt.error as string);
       setNewsData(news);
       if (thesis?.thesis) {
         setThesisData(thesis.thesis);
@@ -564,11 +566,12 @@ export default function TickerDetailPage() {
               )}
               {priceTargets && !ptLoading && (
                 <button onClick={async () => {
-                  setPtLoading(true);
+                  setPtLoading(true); setPtError(null);
                   try {
                     const pt = await api.getHenryPriceTargets(ticker, true);
-                    if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
-                  } catch {}
+                    if (pt && !(pt as Record<string, unknown>).error) { setPriceTargets(pt); setPtError(null); }
+                    else if (pt?.error) setPtError(pt.error as string);
+                  } catch (e) { setPtError("Request failed"); }
                   setPtLoading(false);
                 }} className="text-ai-blue/70 hover:text-ai-blue transition" title="Refresh targets">
                   <svg className={`w-3.5 h-3.5 ${ptLoading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -578,11 +581,12 @@ export default function TickerDetailPage() {
               )}
               {!priceTargets && !ptLoading && (
                 <Button variant="outline" size="sm" onClick={async () => {
-                  setPtLoading(true);
+                  setPtLoading(true); setPtError(null);
                   try {
                     const pt = await api.getHenryPriceTargets(ticker);
-                    if (pt && !(pt as Record<string, unknown>).error) setPriceTargets(pt);
-                  } catch {}
+                    if (pt && !(pt as Record<string, unknown>).error) { setPriceTargets(pt); setPtError(null); }
+                    else if (pt?.error) setPtError(pt.error as string);
+                  } catch (e) { setPtError("Request failed"); }
                   setPtLoading(false);
                 }} className="text-[10px] h-7 text-ai-blue border-ai-blue/30">
                   Generate Targets
@@ -591,6 +595,12 @@ export default function TickerDetailPage() {
               {ptLoading && <span className="text-[10px] text-ai-blue/60 font-mono animate-pulse">Analyzing...</span>}
             </div>
           </div>
+
+          {ptError && !ptLoading && (
+            <div className="text-[10px] text-loss bg-loss/5 border border-loss/20 rounded-lg px-3 py-2">
+              Target generation failed: {ptError}
+            </div>
+          )}
 
           {priceTargets ? (() => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
