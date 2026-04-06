@@ -54,7 +54,7 @@ async def list_portfolios(db: AsyncSession = Depends(get_db)):
             execution_mode=p.execution_mode or "local",
             max_order_amount=p.max_order_amount,
             has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
-            alpaca_key_preview=(p.alpaca_api_key[:4] + "...") if p.alpaca_api_key and len(p.alpaca_api_key) >= 4 else None,
+            alpaca_key_preview=(p.alpaca_api_key_decrypted[:4] + "...") if p.alpaca_api_key_decrypted and len(p.alpaca_api_key_decrypted) >= 4 else None,
             ai_evaluation_enabled=getattr(p, "ai_evaluation_enabled", False) or False,
             created_at=p.created_at,
             strategies=strats,
@@ -115,9 +115,11 @@ async def update_portfolio(portfolio_id: str, body: PortfolioFullUpdate, db: Asy
         if body.portfolio.execution_mode is not None:
             portfolio.execution_mode = body.portfolio.execution_mode
         if body.portfolio.alpaca_api_key is not None:
-            portfolio.alpaca_api_key = body.portfolio.alpaca_api_key
+            from app.utils.crypto import encrypt_value
+            portfolio.alpaca_api_key = encrypt_value(body.portfolio.alpaca_api_key)
         if body.portfolio.alpaca_secret_key is not None:
-            portfolio.alpaca_secret_key = body.portfolio.alpaca_secret_key
+            from app.utils.crypto import encrypt_value
+            portfolio.alpaca_secret_key = encrypt_value(body.portfolio.alpaca_secret_key)
         if body.portfolio.max_order_amount is not None:
             portfolio.max_order_amount = body.portfolio.max_order_amount
         if hasattr(body.portfolio, "ai_evaluation_enabled") and body.portfolio.ai_evaluation_enabled is not None:

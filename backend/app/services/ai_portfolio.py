@@ -684,11 +684,8 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                     pt = PortfolioTrade(portfolio_id=port.id, trade_id=trade.id)
                     db.add(pt)
 
-                    # Override qty on the trade for this portfolio's sizing
-                    # Note: this changes the trade qty globally — for multi-portfolio
-                    # we'd need per-portfolio qty, but for now this works
-                    if qty < trade.qty:
-                        trade.qty = qty
+                    # Portfolio-specific sizing is tracked via port.cash deduction
+                    # and PortfolioTrade link — do NOT mutate shared trade.qty
 
                     port.cash -= qty * trade.entry_price
                     logger.info(f"AI eval ({port.name}): BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence})")
@@ -715,8 +712,6 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                                 qty = round(alloc_amount / trade.entry_price, 4)
                                 pt = PortfolioTrade(portfolio_id=port.id, trade_id=trade.id)
                                 db.add(pt)
-                                if qty < trade.qty:
-                                    trade.qty = qty
                                 port.cash -= qty * trade.entry_price
                                 action_record.status = "approved"
                                 action_record.reject_reason = None

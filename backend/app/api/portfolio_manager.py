@@ -1641,9 +1641,11 @@ async def confirm_import_trades(
         except (ValueError, TypeError):
             entry_date = utcnow()
 
+        direction = trade.get("direction", "long")
+
         if action == "buy":
             if ticker not in positions:
-                positions[ticker] = {"qty": 0.0, "total_cost": 0.0, "first_date": entry_date, "buys": []}
+                positions[ticker] = {"qty": 0.0, "total_cost": 0.0, "first_date": entry_date, "buys": [], "direction": direction}
             pos = positions[ticker]
             pos["total_cost"] += price * qty
             pos["qty"] += qty
@@ -1665,7 +1667,7 @@ async def confirm_import_trades(
                     id=str(uuid_mod.uuid4()),
                     trader_id=import_trader.id,
                     ticker=ticker,
-                    direction="long",
+                    direction=trade.get("direction", "long"),
                     entry_price=round(avg_entry, 4),
                     qty=round(sell_qty, 6),
                     entry_time=pos["first_date"],
@@ -1702,7 +1704,7 @@ async def confirm_import_trades(
             holding = PortfolioHolding(
                 portfolio_id=portfolio_id,
                 ticker=ticker,
-                direction="long",
+                direction=pos.get("direction", "long"),
                 entry_price=round(avg_price, 4),
                 qty=round(pos["qty"], 6),
                 entry_date=pos["first_date"],

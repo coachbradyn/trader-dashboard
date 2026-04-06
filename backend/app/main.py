@@ -304,8 +304,38 @@ async def _ensure_schema():
                     logger.info("Created missing table: ai_usage")
 
             await conn.run_sync(_check_and_fix)
+
     except Exception as e:
         logger.warning(f"Schema check failed (non-blocking): {e}")
+
+    # One-time migration: encrypt plaintext Alpaca credentials in-place
+    try:
+        from app.utils.crypto import encrypt_value, is_encrypted, _fernet
+        if _fernet:  # Only migrate if encryption key is configured
+            from app.database import async_session as _migrate_session
+            from app.models import Portfolio
+            from sqlalchemy import select
+            async with _migrate_session() as mdb:
+                result = await mdb.execute(
+                    select(Portfolio).where(Portfolio.alpaca_api_key.isnot(None))
+                )
+                portfolios = result.scalars().all()
+                migrated = 0
+                for p in portfolios:
+                    changed = False
+                    if p.alpaca_api_key and not is_encrypted(p.alpaca_api_key):
+                        p.alpaca_api_key = encrypt_value(p.alpaca_api_key)
+                        changed = True
+                    if p.alpaca_secret_key and not is_encrypted(p.alpaca_secret_key):
+                        p.alpaca_secret_key = encrypt_value(p.alpaca_secret_key)
+                        changed = True
+                    if changed:
+                        migrated += 1
+                if migrated:
+                    await mdb.commit()
+                    logger.info(f"Encrypted Alpaca credentials for {migrated} portfolio(s)")
+    except Exception as e:
+        logger.warning(f"Credential encryption migration skipped: {e}")
 
 
 async def _sync_holdings_to_watchlist():

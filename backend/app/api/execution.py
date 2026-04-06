@@ -66,8 +66,8 @@ async def test_connection(body: TestConnectionRequest, db: AsyncSession = Depend
 
     is_paper = portfolio.execution_mode == "paper"
     result = await alpaca_service.test_connection(
-        api_key=portfolio.alpaca_api_key,
-        secret_key=portfolio.alpaca_secret_key,
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
         paper=is_paper,
     )
     return result
@@ -116,8 +116,8 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
                 )
 
     order_result = await alpaca_service.submit_order(
-        api_key=portfolio.alpaca_api_key,
-        secret_key=portfolio.alpaca_secret_key,
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
         paper=is_paper,
         ticker=body.ticker,
         qty=body.qty,
@@ -149,28 +149,35 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
             if fill_result.get("status") in ("filled", "partially_filled"):
                 break
 
-    # On fill, update holdings
+    # On fill or partial fill, update holdings
     holding_updated = False
     background_polling = False
-    if fill_result and fill_result.get("status") == "filled":
+    recorded_fill_qty = 0.0
+    if fill_result and fill_result.get("status") in ("filled", "partially_filled"):
         fill_price = fill_result.get("filled_price")
-        fill_qty = fill_result.get("filled_qty", body.qty)
-        await _update_holding_local(
-            db, portfolio, body.ticker, fill_qty, body.side, fill_price,
-        )
-        holding_updated = True
-    elif order_id and (not fill_result or fill_result.get("status") not in ("filled",)):
+        fill_qty = fill_result.get("filled_qty", body.qty if fill_result.get("status") == "filled" else 0)
+        if fill_qty and fill_qty > 0:
+            await _update_holding_local(
+                db, portfolio, body.ticker, fill_qty, body.side, fill_price,
+            )
+            holding_updated = True
+            recorded_fill_qty = fill_qty
+
+    if order_id and (not fill_result or fill_result.get("status") not in ("filled",)):
         # Phase 2 (background): continue polling every 2s for up to 60s
         background_polling = True
         _portfolio_id = portfolio.id
-        _api_key = portfolio.alpaca_api_key
-        _secret_key = portfolio.alpaca_secret_key
+        _api_key = portfolio.alpaca_api_key_decrypted
+        _secret_key = portfolio.alpaca_secret_key_decrypted
         _ticker = body.ticker
         _qty = body.qty
         _side = body.side
 
+        _prev_filled = recorded_fill_qty  # qty already recorded in Phase 1
+
         async def _poll_for_delayed_fill():
             from app.services.henry_activity import log_activity
+            cumulative_filled = _prev_filled
             try:
                 for _ in range(30):  # 30 × 2s = 60s
                     await asyncio.sleep(2)
@@ -180,24 +187,28 @@ async def submit_order(body: OrderRequest, db: AsyncSession = Depends(get_db)):
                         paper=is_paper,
                         order_id=order_id,
                     )
-                    if status.get("status") == "filled":
+                    if status.get("status") in ("filled", "partially_filled"):
                         fill_price = status.get("filled_price")
-                        fill_qty = status.get("filled_qty", _qty)
-                        async with async_session() as bg_db:
-                            bg_port_result = await bg_db.execute(
-                                select(Portfolio).where(Portfolio.id == _portfolio_id)
-                            )
-                            bg_port = bg_port_result.scalar_one_or_none()
-                            if bg_port:
-                                await _update_holding_local(
-                                    bg_db, bg_port, _ticker, fill_qty, _side, fill_price,
+                        fill_qty = status.get("filled_qty", _qty if status.get("status") == "filled" else 0)
+                        delta = fill_qty - cumulative_filled if fill_qty else 0
+                        if delta > 0:
+                            async with async_session() as bg_db:
+                                bg_port_result = await bg_db.execute(
+                                    select(Portfolio).where(Portfolio.id == _portfolio_id)
                                 )
-                        await log_activity(
-                            f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f}",
-                            "trade_execute", ticker=_ticker,
-                        )
-                        logger.info(f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f} (order {order_id})")
-                        return
+                                bg_port = bg_port_result.scalar_one_or_none()
+                                if bg_port:
+                                    await _update_holding_local(
+                                        bg_db, bg_port, _ticker, delta, _side, fill_price,
+                                    )
+                            cumulative_filled = fill_qty
+                            await log_activity(
+                                f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f}",
+                                "trade_execute", ticker=_ticker,
+                            )
+                            logger.info(f"Delayed fill confirmed: {_side} {_ticker} x{fill_qty} @ ${fill_price:.2f} (order {order_id})")
+                        if status.get("status") == "filled":
+                            return
                     if status.get("status") in ("canceled", "expired", "rejected"):
                         await log_activity(
                             f"Order {order_id} for {_ticker} was {status.get('status')}",
@@ -235,8 +246,8 @@ async def get_order_status(order_id: str, portfolio_id: str, db: AsyncSession = 
 
     is_paper = portfolio.execution_mode == "paper"
     return await alpaca_service.get_order_status(
-        api_key=portfolio.alpaca_api_key,
-        secret_key=portfolio.alpaca_secret_key,
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
         paper=is_paper,
         order_id=order_id,
     )
@@ -251,8 +262,8 @@ async def get_alpaca_positions(portfolio_id: str, db: AsyncSession = Depends(get
 
     is_paper = portfolio.execution_mode == "paper"
     positions = await alpaca_service.get_positions(
-        api_key=portfolio.alpaca_api_key,
-        secret_key=portfolio.alpaca_secret_key,
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
         paper=is_paper,
     )
     return positions
@@ -267,8 +278,8 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
 
     is_paper = portfolio.execution_mode == "paper"
     alpaca_positions = await alpaca_service.get_positions(
-        api_key=portfolio.alpaca_api_key,
-        secret_key=portfolio.alpaca_secret_key,
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
         paper=is_paper,
     )
 
@@ -321,8 +332,23 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
     return {"status": "synced", "synced": synced, "created": created, "closed": closed, "alpaca_positions": len(alpaca_positions)}
 
 
+import os
+from fastapi import Header
+
+
+def _verify_kill_switch_token(authorization: str = Header(None)):
+    """Require a bearer token for kill-switch operations."""
+    token = os.environ.get("KILL_SWITCH_TOKEN") or os.environ.get("DASHBOARD_API_KEY")
+    if not token:
+        return  # No token configured — allow (backwards-compatible)
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(403, "Kill switch requires Authorization: Bearer <token>")
+    if authorization.split(" ", 1)[1] != token:
+        raise HTTPException(403, "Invalid kill switch token")
+
+
 @router.get("/kill-switch")
-async def kill_switch_status(db: AsyncSession = Depends(get_db)):
+async def kill_switch_status(db: AsyncSession = Depends(get_db), _auth=Depends(_verify_kill_switch_token)):
     """Check kill switch status — how many portfolios are in live/paper mode."""
     result = await db.execute(
         select(func.count(Portfolio.id)).where(Portfolio.execution_mode.in_(["paper", "live"]))
@@ -332,7 +358,7 @@ async def kill_switch_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/kill-switch")
-async def kill_switch(body: dict = None, db: AsyncSession = Depends(get_db)):
+async def kill_switch(body: dict = None, db: AsyncSession = Depends(get_db), _auth=Depends(_verify_kill_switch_token)):
     """Immediately set ALL portfolios to execution_mode='local'. Requires confirm=true."""
     if not body or not body.get("confirm"):
         raise HTTPException(400, "Kill switch requires confirm=true in request body")

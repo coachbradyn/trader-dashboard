@@ -29,6 +29,16 @@ class Portfolio(Base):
     max_order_amount: Mapped[float | None] = mapped_column(Float, default=1000.0)
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
+    @property
+    def alpaca_api_key_decrypted(self) -> str | None:
+        from app.utils.crypto import decrypt_value
+        return decrypt_value(self.alpaca_api_key)
+
+    @property
+    def alpaca_secret_key_decrypted(self) -> str | None:
+        from app.utils.crypto import decrypt_value
+        return decrypt_value(self.alpaca_secret_key)
+
     strategies: Mapped[list["PortfolioStrategy"]] = relationship(back_populates="portfolio")
     portfolio_trades: Mapped[list["PortfolioTrade"]] = relationship(back_populates="portfolio")
     snapshots: Mapped[list["PortfolioSnapshot"]] = relationship(back_populates="portfolio")

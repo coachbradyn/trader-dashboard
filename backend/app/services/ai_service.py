@@ -1085,14 +1085,36 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 # ─── FASTAPI ROUTES ─────────────────────────────────────────────────────────
 # Add these to your existing FastAPI app
 
+# ─── AI ENDPOINT RATE LIMITING ────────────────────────────────────────
+import time as _time
+from collections import defaultdict as _defaultdict
+
+MAX_AI_CALLS_PER_MINUTE = 10
+_ai_rate_timestamps: list[float] = []
+
+
+def _check_ai_rate_limit() -> None:
+    """Global rate limit for AI endpoints. Raises HTTPException 429 on breach."""
+    from fastapi import HTTPException
+    now = _time.monotonic()
+    cutoff = now - 60
+    _ai_rate_timestamps[:] = [ts for ts in _ai_rate_timestamps if ts > cutoff]
+    if len(_ai_rate_timestamps) >= MAX_AI_CALLS_PER_MINUTE:
+        raise HTTPException(
+            status_code=429,
+            detail=f"AI rate limit exceeded: max {MAX_AI_CALLS_PER_MINUTE} calls/min",
+        )
+    _ai_rate_timestamps.append(now)
+
+
 def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=None):
     """
     Register AI endpoints on your existing FastAPI app.
-    
+
     Usage in your main.py:
         from ai_service import register_ai_routes
         register_ai_routes(app, get_trades, get_positions, get_market_data)
-    
+
     Args:
         app: Your FastAPI app instance
         get_trades_fn: async fn(days_back: int) -> list[dict]
@@ -1156,6 +1178,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     @app.post("/api/ai/briefing/refresh")
     async def ai_briefing_refresh():
         """Force-regenerate today's briefing (manual refresh button)."""
+        _check_ai_rate_limit()
         import logging
         logger = logging.getLogger(__name__)
         try:
@@ -1310,6 +1333,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
     
     @app.post("/api/ai/query")
     async def ai_query(req: QueryRequest):
+        _check_ai_rate_limit()
         try:
             from sqlalchemy import select as sa_select
             from app.database import async_session

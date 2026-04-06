@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const SITE_PASSWORD = "BuiltDifferent";
+const SITE_PASSWORD = process.env.SITE_PASSWORD || "";
 const COOKIE_NAME = "henry-auth";
 
 export function middleware(request: NextRequest) {

@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
-const SITE_PASSWORD = "BuiltDifferent";
+const SITE_PASSWORD = process.env.SITE_PASSWORD || "";
 const COOKIE_NAME = "henry-auth";
 
 export async function POST(request: Request) {
   const { password } = await request.json();
+
+  if (!SITE_PASSWORD) {
+    return NextResponse.json({ success: false, error: "SITE_PASSWORD env var not configured" }, { status: 503 });
+  }
 
   if (password === SITE_PASSWORD) {
     const response = NextResponse.json({ success: true });

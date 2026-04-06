@@ -420,8 +420,8 @@ async def _reconcile_alpaca_positions():
             try:
                 is_paper = portfolio.execution_mode == "paper"
                 alpaca_positions = await alpaca_service.get_positions(
-                    api_key=portfolio.alpaca_api_key,
-                    secret_key=portfolio.alpaca_secret_key,
+                    api_key=portfolio.alpaca_api_key_decrypted,
+                    secret_key=portfolio.alpaca_secret_key_decrypted,
                     paper=is_paper,
                 )
 
