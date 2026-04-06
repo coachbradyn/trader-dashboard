@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  ResponsiveContainer, AreaChart, Area,
+  ResponsiveContainer, AreaChart, Area, Line,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
 } from "recharts";
 import type {
@@ -90,7 +90,7 @@ function ComparisonRow({
 }
 
 // ── Equity Curve Chart (Recharts) ───────────────────────────────────
-function EquityChart({ data, initialCapital }: { data: EquityPoint[]; initialCapital: number }) {
+function EquityChart({ data, initialCapital, benchmarkData }: { data: EquityPoint[]; initialCapital: number; benchmarkData?: { time: string; equity: number }[] }) {
   if (!data || data.length < 2) {
     return (
       <div className="h-64 flex items-center justify-center text-gray-600 text-sm" style={FONT_OUTFIT}>

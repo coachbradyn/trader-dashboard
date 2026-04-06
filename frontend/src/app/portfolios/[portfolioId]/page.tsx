@@ -39,6 +39,41 @@ function useFonts() {
 
 const CHART_TOOLTIP = { background: "#1f2937", border: "1px solid #374151", borderRadius: 8 };
 
+// ── Alpaca Sync Button ─────────────────────────────────────────────
+
+function AlpacaSyncButton({ portfolioId }: { portfolioId: string }) {
+  const [syncing, setSyncing] = useState(false);
+  const [result, setResult] = useState<{ status: string; synced: number; created: number } | null>(null);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setResult(null);
+    try {
+      const res = await api.syncAlpacaPositions(portfolioId);
+      setResult(res);
+    } catch {}
+    setSyncing(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        onClick={handleSync}
+        disabled={syncing}
+        className="text-[9px] px-2.5 py-1 rounded border bg-[#1f2937] border-ai-blue/30 text-ai-blue hover:bg-ai-blue/10 transition disabled:opacity-50"
+        style={FONT_OUTFIT}
+      >
+        {syncing ? "Syncing..." : "Sync with Alpaca"}
+      </button>
+      {result && (
+        <span className="text-[8px] text-gray-500 font-mono">
+          {result.synced} synced, {result.created} created
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Stat Card ───────────────────────────────────────────────────────
 
 function StatCard({ label, value, color = "text-white", sub, tip }: { label: string; value: string; color?: string; sub?: string; tip?: string }) {
@@ -1771,6 +1806,9 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
             </div>
           </div>
           <div className="flex flex-col gap-1 shrink-0">
+            {(portfolio.execution_mode === "paper" || portfolio.execution_mode === "live") && (
+              <AlpacaSyncButton portfolioId={portfolioId} />
+            )}
             <button onClick={() => { setCashMode(cashMode === "deposit" ? null : "deposit"); setCashAmount(""); }}
               className={`text-[9px] px-2.5 py-1 rounded border transition ${cashMode === "deposit" ? "bg-profit/20 border-profit text-profit" : "bg-[#1f2937] border-[#374151] text-gray-400 hover:text-profit"}`}
               style={FONT_OUTFIT}>
