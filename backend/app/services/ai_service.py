@@ -745,14 +745,11 @@ async def morning_briefing(
     market_intel: dict = None,
     cumulative_stats: dict = None,
     holdings_context: str = None,
-    technicals_context: str = None,
-    backtest_context: str = None,
-    risk_context: str = None,
-    watchlist_context: str = None,
+    **_kwargs,  # absorb legacy params without breaking callers
 ) -> str:
     """
-    Generate enhanced morning briefing with full market + technical + risk intelligence.
-    Routes to Claude with web search for macro/economic calendar awareness.
+    Generate Henry's morning briefing — fast, opinionated, personality-driven.
+    Stripped to essentials: news, SPY/VIX, portfolio glance, game plan.
     """
     positions_text = _format_positions_for_prompt(open_positions)
     yesterday_text = _format_trades_for_prompt(yesterdays_trades)
@@ -784,44 +781,39 @@ async def morning_briefing(
         date_str = utcnow().strftime("%A, %B %d, %Y")
         time_str = utcnow().strftime("%I:%M %p UTC")
 
-    prompt = f"""Generate a comprehensive morning briefing for today's trading session.
+    prompt = f"""You are Henry — a sharp, slightly irreverent trading AI with strong opinions. You talk like a seasoned trader who's seen it all. You're direct, witty, and occasionally sarcastic, but you always back it up with data. Think Jim Cramer's energy with actual discipline.
+
 TODAY IS: {date_str} ({time_str})
 
-Use web search once: find today's economic calendar, overnight international markets, and any breaking macro news.
+Use web search to grab: today's top market headlines, economic calendar, and overnight international action. One quick search.
 
 MARKET DATA:
 {intel_text}
 
-TECHNICALS (top holdings): {technicals_context or 'N/A'}
 POSITIONS: {positions_text}
 HOLDINGS: {holdings_text}
-BACKTEST XREF: {backtest_context or 'N/A'}
-RISK: {risk_context or 'N/A'}
-WATCHLIST: {watchlist_context or 'None'}
 YESTERDAY: {yesterday_text}
 30D STATS: {stats_text}
 
-Write a 6-section briefing. Use markdown tables, **bold** key numbers, ✓/✗ for signals. Be concise — no filler.
+Write Henry's morning briefing in 4 sections. Keep it punchy — under 500 words total. Use **bold** for key numbers, ✓/✗ for signals, and bring personality.
 
-## 1. MARKETS & MACRO
-SPY, VIX (with regime), and pre-market gaps from data above. Add from web search: international markets (Asia/Europe closes), today's economic calendar (Fed, CPI, jobs), and any breaking macro/geopolitical news. Use a table for indices.
+## Good Morning, Trader
 
-## 2. NEWS & MOVERS
-Headlines from the data above (held tickers first, then general). Market movers (gainers/losers). Flag analyst upgrades/downgrades.
+Open with the vibe check: is today a "send it" day or a "sit on hands" day? Lead with SPY and VIX from the data — state the regime. One sentence on overnight action (from web search). If there's a major macro event today (Fed, CPI, jobs), lead with it and what it means. Then 3-5 bullet points of headlines that actually matter — skip the noise.
 
-## 3. PORTFOLIO DASHBOARD
-Table of top holdings only: Ticker | Entry | Current | P&L% | RSI | MACD | Signal. Flag overbought/oversold. One line on risk: exposure %, drawdown, concentration.
+## Portfolio Glance
 
-## 4. LEVELS & TARGETS
-Table: Ticker | Support | Stop | Resistance | 1wk Target. Use EMA50/200. Flag backtest danger zones (low WR past current bar count). Note upcoming earnings.
+Quick status — don't list every ticker. Big picture: how many positions, overall P&L direction, any red flags. Call out the best and worst performers by name. If something needs attention (stop getting close, earnings tomorrow, oversized position), say it with conviction. One sentence max per callout.
 
-## 5. WATCHLIST
-Top 3 new candidates from watchlist signals. One sentence each.
+## What Worked / What Didn't
 
-## 6. GAME PLAN
-3-5 prioritized actions. Specific levels. What macro event could change the plan today.
+If there was trading activity yesterday, give your honest take. What was smart, what was dumb, what was luck. Reference the 30-day stats if they tell a story. If nothing happened yesterday, skip this section entirely — don't fill space.
 
-Use actual numbers from data — do not fabricate. Skip empty sections."""
+## The Play
+
+3-4 specific actions for today. Not "watch support" — give the level. Not "be cautious" — say what and why. If you'd sit tight, own that call. End with your single boldest take for the day.
+
+RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is missing, say so. No corporate speak. No filler. Just talk."""
 
     from app.services.ai_provider import call_ai
     import logging as _log
@@ -830,14 +822,13 @@ Use actual numbers from data — do not fabricate. Skip empty sections."""
 
     system = await _build_system_prompt(scope="briefing", enable_web_search=True)
 
-    # Route to Claude with web search for full macro awareness
     result = None
     try:
         _logger.info("Briefing: generating via Claude with web search")
         result = await call_ai(
             system, prompt,
             function_name="signal_evaluation",
-            max_tokens=3000,
+            max_tokens=2000,
             enable_web_search=True,
         )
     except Exception as e:
@@ -846,49 +837,30 @@ Use actual numbers from data — do not fabricate. Skip empty sections."""
     # Fallback: Claude without web search
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
-            _logger.info("Briefing: fallback to Claude without web search")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=3000)
+            _logger.info("Briefing: fallback without web search")
+            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
-    # Fallback: simplified prompt
+    # Fallback: bare minimum
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
-            _logger.info("Briefing: attempt 3 (simplified prompt)")
-            simple_prompt = f"""Generate a brief morning trading update.
-TODAY IS: {date_str} ({time_str})
-
-OPEN POSITIONS:
-{positions_text}
-
-MANUAL HOLDINGS:
-{holdings_text}
-
-TECHNICAL INDICATORS:
-{technicals_context or 'Not available'}
-
-YESTERDAY:
-{yesterday_text}
-
-Give a 4-section briefing:
-1. **Portfolio Status** — table with each holding: ticker, P&L, RSI, key level
-2. **Risk Check** — exposure, drawdown, any red flags
-3. **Yesterday's Takeaway** — what happened, one lesson
-4. **Today's Plan** — what to watch, any actions
-
-Keep it under 400 words. Use markdown tables. Be specific with numbers."""
-            simple_system = BASE_SYSTEM_PROMPT
-            result = await call_ai(simple_system, simple_prompt, function_name="signal_evaluation", max_tokens=3000)
+            simple = f"""You're Henry, a sharp trading AI. 200-word morning update.
+TODAY: {date_str} ({time_str})
+POSITIONS: {positions_text}
+HOLDINGS: {holdings_text}
+Market vibe (SPY/VIX), portfolio status (big picture), today's play (2-3 actions).
+Be direct, have opinions, use real numbers. Have personality."""
+            result = await call_ai(BASE_SYSTEM_PROMPT, simple, function_name="signal_evaluation", max_tokens=1000)
         except Exception as e:
             _logger.error(f"Briefing attempt 3 failed: {e}")
-            result = "Briefing generation failed after 3 attempts. Check that your AI API keys (ANTHROPIC_API_KEY or GEMINI_API_KEY) are configured and working."
+            result = "Henry's having a rough morning. Check that your AI API keys are configured."
 
-    if result and not result.startswith("Briefing generation failed"):
+    if result and not result.startswith("Henry's having"):
         asyncio.create_task(extract_and_save_memories(result, source="briefing"))
         asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
 
     return result
-
 
 # ─── FEATURE 3: NATURAL LANGUAGE QUERY ───────────────────────────────────────
 
@@ -1307,212 +1279,13 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         for s in cumulative.values():
             s["win_rate"] = (s["wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
 
-        # ── NEW: Gather enriched context in parallel ──────────────────
-        import asyncio as _aio2
-
-        async def _fetch_technicals_per_ticker():
-            """RSI, MACD, EMA50/200 per held ticker — all tickers in parallel."""
-            lines = []
-            try:
-                from app.services.fmp_service import get_technical_indicator, compute_macd
-
-                async def _one_ticker(tk):
-                    try:
-                        rsi_data, ema50_data, ema200_data, macd_data = await _aio2.gather(
-                            get_technical_indicator(tk, "rsi", period=14, interval="daily"),
-                            get_technical_indicator(tk, "ema", period=50, interval="daily"),
-                            get_technical_indicator(tk, "ema", period=200, interval="daily"),
-                            compute_macd(tk, timeframe="daily"),
-                            return_exceptions=True,
-                        )
-                        parts = [f"  {tk}:"]
-                        if isinstance(rsi_data, list) and rsi_data:
-                            rsi_val = rsi_data[0].get("rsi", rsi_data[0].get("value"))
-                            if rsi_val is not None:
-                                label = "OVERBOUGHT" if rsi_val > 70 else ("OVERSOLD" if rsi_val < 30 else "")
-                                parts.append(f"RSI={rsi_val:.1f}{' ' + label if label else ''}")
-                        if isinstance(ema50_data, list) and ema50_data:
-                            ema50 = ema50_data[0].get("ema", ema50_data[0].get("value"))
-                            if ema50 is not None:
-                                parts.append(f"EMA50=${ema50:.2f}")
-                        if isinstance(ema200_data, list) and ema200_data:
-                            ema200 = ema200_data[0].get("ema", ema200_data[0].get("value"))
-                            if ema200 is not None:
-                                parts.append(f"EMA200=${ema200:.2f}")
-                        if isinstance(macd_data, dict) and macd_data.get("macd") is not None:
-                            hist = macd_data.get("histogram", 0) or 0
-                            bias = "bullish" if hist > 0 else "bearish"
-                            parts.append(f"MACD hist={hist:.3f} ({bias})")
-                        if len(parts) > 1:
-                            return " | ".join(parts)
-                    except Exception:
-                        pass
-                    return None
-
-                results = await _aio2.gather(*[_one_ticker(tk) for tk in held_tickers[:5]])
-                lines = [r for r in results if r]
-            except Exception as e:
-                logger.debug(f"Technicals fetch failed: {e}")
-            return "\n".join(lines) if lines else "Not available"
-
-        async def _fetch_backtest_xref():
-            """Cross-reference open positions against backtest stats (single query)."""
-            lines = []
-            try:
-                from app.models.backtest import BacktestImport
-                from sqlalchemy import or_
-                async with async_session() as xdb:
-                    # Build conditions for all positions at once
-                    pos_tickers = [(p.get("ticker", ""), p.get("trader", "")) for p in positions]
-                    if not pos_tickers:
-                        return "No open positions"
-                    conditions = [
-                        (BacktestImport.ticker == tk) & (BacktestImport.strategy_name == sid)
-                        for tk, sid in pos_tickers if tk and sid
-                    ]
-                    if not conditions:
-                        return "No backtest data for current positions"
-                    bt_result = await xdb.execute(
-                        select(BacktestImport).where(or_(*conditions))
-                    )
-                    bt_map = {(bt.ticker, bt.strategy_name): bt for bt in bt_result.scalars().all()}
-
-                    for pos in positions:
-                        tk = pos.get("ticker", "")
-                        trader_id = pos.get("trader", "")
-                        bars = pos.get("bars_in_trade", 0) or 0
-                        bt = bt_map.get((tk, trader_id))
-                        if bt and bt.trade_count and bt.trade_count > 5:
-                            lines.append(
-                                f"  {tk} ({trader_id}): bar {bars} of trade | "
-                                f"backtest WR={bt.win_rate:.0f}% PF={bt.profit_factor:.2f} "
-                                f"avg_gain={bt.avg_gain_pct:.1f}% avg_loss={bt.avg_loss_pct:.1f}% "
-                                f"over {bt.trade_count} trades"
-                            )
-            except Exception as e:
-                logger.debug(f"Backtest xref failed: {e}")
-            return "\n".join(lines) if lines else "No backtest data for current positions"
-
-        async def _fetch_risk_metrics():
-            """Portfolio risk: drawdown from peak, concentration, total exposure."""
-            lines = []
-            try:
-                from app.models.portfolio_snapshot import PortfolioSnapshot
-                async with async_session() as rdb:
-                    # Get portfolios with holdings
-                    port_result = await rdb.execute(
-                        select(Portfolio).where(Portfolio.is_active == True)
-                    )
-                    for port in port_result.scalars().all():
-                        # Current equity from latest snapshot
-                        snap_result = await rdb.execute(
-                            select(PortfolioSnapshot)
-                            .where(PortfolioSnapshot.portfolio_id == port.id)
-                            .order_by(PortfolioSnapshot.timestamp.desc())
-                            .limit(30)
-                        )
-                        snaps = snap_result.scalars().all()
-                        if snaps:
-                            current_eq = snaps[0].total_equity
-                            peak_eq = max(s.total_equity for s in snaps)
-                            dd_pct = ((current_eq - peak_eq) / peak_eq * 100) if peak_eq > 0 else 0
-
-                            # Concentration: % of total equity in top holding
-                            hold_result = await rdb.execute(
-                                select(PortfolioHolding).where(
-                                    PortfolioHolding.portfolio_id == port.id,
-                                    PortfolioHolding.is_active == True,
-                                )
-                            )
-                            active_h = hold_result.scalars().all()
-                            if active_h and current_eq > 0:
-                                holding_values = []
-                                for h in active_h:
-                                    price = price_service.get_price(h.ticker) or h.entry_price
-                                    holding_values.append((h.ticker, h.qty * price))
-                                total_invested = sum(v for _, v in holding_values)
-                                holding_values.sort(key=lambda x: x[1], reverse=True)
-                                top_name, top_val = holding_values[0]
-                                conc_pct = (top_val / current_eq * 100) if current_eq > 0 else 0
-                                exposure_pct = (total_invested / current_eq * 100) if current_eq > 0 else 0
-
-                                lines.append(
-                                    f"  {port.name}: equity ${current_eq:,.0f} | "
-                                    f"drawdown {dd_pct:.1f}% from 30d peak | "
-                                    f"exposure {exposure_pct:.0f}% | "
-                                    f"top position: {top_name} ({conc_pct:.0f}% of equity) | "
-                                    f"{len(active_h)} positions"
-                                )
-            except Exception as e:
-                logger.debug(f"Risk metrics failed: {e}")
-            return "\n".join(lines) if lines else "Not available"
-
-        async def _fetch_watchlist_signals():
-            """Active signals on watchlist tickers (single query)."""
-            lines = []
-            try:
-                from app.models.watchlist_ticker import WatchlistTicker
-                from app.models import Trade, Trader
-                async with async_session() as wdb:
-                    wl_result = await wdb.execute(select(WatchlistTicker))
-                    wl_tickers = [w.ticker for w in wl_result.scalars().all()]
-                    candidates = [tk for tk in wl_tickers if tk not in held_tickers][:15]
-                    if not candidates:
-                        return "No active signals on watchlist"
-                    # Single query for all open trades on watchlist tickers
-                    trade_result = await wdb.execute(
-                        select(Trade)
-                        .join(Trader, Trade.trader_id == Trader.id)
-                        .where(Trade.ticker.in_(candidates), Trade.status == "open")
-                        .order_by(Trade.created_at.desc())
-                    )
-                    seen = set()
-                    for trade in trade_result.scalars().all():
-                        if trade.ticker not in seen:
-                            seen.add(trade.ticker)
-                            lines.append(
-                                f"  {trade.ticker}: {trade.direction.upper()} signal "
-                                f"@ ${trade.entry_price:.2f} (bar {trade.bars_in_trade or 0})"
-                            )
-            except Exception as e:
-                logger.debug(f"Watchlist signals failed: {e}")
-            return "\n".join(lines) if lines else "No active signals on watchlist"
-
-        # Run all enrichment in parallel with timeout
-        try:
-            technicals_ctx, backtest_ctx, risk_ctx, watchlist_ctx = await _aio2.wait_for(
-                _aio2.gather(
-                    _fetch_technicals_per_ticker(),
-                    _fetch_backtest_xref(),
-                    _fetch_risk_metrics(),
-                    _fetch_watchlist_signals(),
-                    return_exceptions=True,
-                ),
-                timeout=12.0,
-            )
-            # Handle exceptions from gather
-            if isinstance(technicals_ctx, Exception):
-                technicals_ctx = "Not available"
-            if isinstance(backtest_ctx, Exception):
-                backtest_ctx = "Not available"
-            if isinstance(risk_ctx, Exception):
-                risk_ctx = "Not available"
-            if isinstance(watchlist_ctx, Exception):
-                watchlist_ctx = "Not available"
-        except Exception:
-            technicals_ctx = backtest_ctx = risk_ctx = watchlist_ctx = "Not available"
-
-        # Generate briefing with full context (now async — includes strategy descriptions + memory)
+        # Generate briefing — simple, fast, personality-driven
         result = await morning_briefing(
             positions,
             yesterdays_trades,
             market_intel=market_intel,
             cumulative_stats=cumulative,
             holdings_context=holdings_context,
-            technicals_context=technicals_ctx,
-            backtest_context=backtest_ctx,
-            risk_context=risk_ctx,
-            watchlist_context=watchlist_ctx,
         )
 
         # Cache in database
