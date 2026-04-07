@@ -124,10 +124,13 @@ async def _get_strategy_positions(ticker: str, db: AsyncSession) -> list[dict]:
     positions = []
     for t in open_trades:
         current_price = price_service.get_price(t.ticker) or t.entry_price
-        if t.direction == "long":
-            pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+        if t.entry_price and t.entry_price > 0:
+            if t.direction == "long":
+                pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+            else:
+                pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
         else:
-            pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
+            pnl_pct = 0.0
 
         positions.append({
             "strategy_name": t.trader.display_name,
@@ -307,10 +310,13 @@ async def _get_watchlist_impl(db: AsyncSession):
     positions_by_ticker: dict[str, list[dict]] = defaultdict(list)
     for t in positions_result.unique().scalars().all():
         current_price = price_service.get_price(t.ticker) or t.entry_price
-        if t.direction == "long":
-            pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+        if t.entry_price and t.entry_price > 0:
+            if t.direction == "long":
+                pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+            else:
+                pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
         else:
-            pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
+            pnl_pct = 0.0
         positions_by_ticker[t.ticker].append({
             "strategy_name": t.trader.display_name,
             "strategy_id": t.trader.trader_id,
