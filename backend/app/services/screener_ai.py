@@ -57,24 +57,37 @@ async def analyze_screener_signals(
     if not alerts:
         return {"picks": [], "market_context": {"sector_heat": "No data", "catalysts": "No data", "noise_ratio": "No alerts"}}
 
-    # Format alerts for prompt
-    alert_lines = []
-    for a in alerts[:100]:  # Limit to 100 most recent
-        alert_lines.append(
-            f"  {a.get('ticker','?')} | {a.get('indicator','?')} = {a.get('value',0):.2f} | "
-            f"signal={a.get('signal','?')} | tf={a.get('timeframe','?')} | {a.get('created_at','?')}"
-        )
-    alerts_text = "\n".join(alert_lines)
+    # Pre-compute signal consensus per ticker (replace AI counting with code)
+    consensus = {}
+    for a in alerts:
+        tk = a.get("ticker", "?")
+        sig = a.get("signal", "neutral")
+        if tk not in consensus:
+            consensus[tk] = {"bullish": 0, "bearish": 0, "neutral": 0, "indicators": set()}
+        consensus[tk][sig] = consensus[tk].get(sig, 0) + 1
+        consensus[tk]["indicators"].add(a.get("indicator", "?"))
 
-    # Format ticker aggregations
+    # Format pre-computed consensus (saves AI from counting)
     agg_lines = []
-    for t in ticker_aggregations[:20]:  # Top 20 by alert count
+    for tk, c in sorted(consensus.items(), key=lambda x: sum(v for k, v in x[1].items() if k != "indicators"), reverse=True)[:15]:
+        total = c["bullish"] + c["bearish"] + c["neutral"]
+        bias = "BULLISH" if c["bullish"] > c["bearish"] * 1.5 else ("BEARISH" if c["bearish"] > c["bullish"] * 1.5 else "MIXED")
         agg_lines.append(
-            f"  {t.get('ticker','?')}: {t.get('alert_count',0)} alerts | "
-            f"indicators: {', '.join(t.get('indicators',[]))} | "
-            f"latest: {t.get('latest_signal','?')}"
+            f"  {tk}: {total} alerts | {bias} ({c['bullish']}B/{c['bearish']}b/{c['neutral']}n) | "
+            f"{', '.join(sorted(c['indicators']))}"
         )
     agg_text = "\n".join(agg_lines)
+
+    # Only include alerts for top tickers (not all 100)
+    top_tickers_set = {line.split(":")[0].strip() for line in agg_lines}
+    alert_lines = []
+    for a in alerts:
+        if a.get("ticker", "?") in top_tickers_set:
+            alert_lines.append(
+                f"  {a.get('ticker','?')} | {a.get('indicator','?')} = {a.get('value',0):.2f} | "
+                f"signal={a.get('signal','?')} | tf={a.get('timeframe','?')}"
+            )
+    alerts_text = "\n".join(alert_lines[:30])
 
     # Format chart data for top tickers
     chart_text = "Not available."
@@ -149,7 +162,7 @@ Rules:
 
     try:
         from app.services.ai_provider import call_ai
-        raw = await call_ai(SCREENER_SYSTEM_PROMPT, prompt, function_name="screener_analysis", max_tokens=2000)
+        raw = await call_ai(SCREENER_SYSTEM_PROMPT, prompt, function_name="screener_analysis", max_tokens=1200)
 
         # Parse JSON response
         clean = raw.strip().replace("```json", "").replace("```", "").strip()

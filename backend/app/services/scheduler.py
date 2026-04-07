@@ -166,15 +166,26 @@ async def _generate_nightly_summary():
             latest_analysis = result.scalar_one_or_none()
             picks_data = latest_analysis.picks if latest_analysis else None
 
-            content = await generate_market_summary(
-                "nightly",
-                {
-                    "closed_today": [{"ticker": t.ticker, "pnl": t.pnl_dollars} for t in closed_today],
-                    "day_pnl": f"${day_pnl:.2f}",
-                },
-                {"tickers": list(ticker_map.values()), "alert_count": len(alerts), "top_tickers": top_tickers},
-                picks_data=picks_data,
-            )
+            # Template-based nightly summary — no AI call needed
+            lines = [f"## Nightly Recap\n"]
+            lines.append(f"**Closed trades today:** {len(closed_today)} | **Day P&L:** ${day_pnl:.2f}\n")
+            if closed_today:
+                winners = [t for t in closed_today if (t.pnl_dollars or 0) > 0]
+                losers = [t for t in closed_today if (t.pnl_dollars or 0) <= 0]
+                lines.append(f"Winners: {len(winners)} | Losers: {len(losers)}\n")
+                for t in sorted(closed_today, key=lambda x: x.pnl_dollars or 0, reverse=True)[:5]:
+                    emoji = "✓" if (t.pnl_dollars or 0) > 0 else "✗"
+                    lines.append(f"- {emoji} **{t.ticker}** ${t.pnl_dollars or 0:.2f} ({t.exit_reason or 'closed'})")
+            lines.append(f"\n**Scanner alerts today:** {len(alerts)}")
+            if top_tickers:
+                lines.append("\n**Most active tickers:**")
+                for t in top_tickers[:5]:
+                    lines.append(f"- **{t['ticker']}** — {t['alert_count']} alerts ({', '.join(t['indicators'][:3])})")
+            if picks_data:
+                lines.append("\n**Morning picks scorecard:**")
+                for p in (picks_data if isinstance(picks_data, list) else [])[:4]:
+                    lines.append(f"- {p.get('ticker', '?')} ({p.get('direction', '?')}) — conf {p.get('confidence', '?')}/10")
+            content = "\n".join(lines)
 
             summary = MarketSummary(
                 summary_type="nightly",

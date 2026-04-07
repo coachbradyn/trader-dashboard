@@ -56,14 +56,14 @@ _ai_semaphore = asyncio.Semaphore(3)
 _background_tasks: set[asyncio.Task] = set()
 
 
-async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
+async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession) -> bool:
     """
     When a new entry signal arrives, check if any other strategy has an
     opposing open position on the same ticker. If so, call the AI conflict
-    resolver and store the result.
+    resolver and store the result. Returns True if a conflict was found and resolved.
     """
     if payload.signal != "entry":
-        return
+        return False
 
     try:
         # Find opposing open trades on the same ticker from different traders
@@ -80,7 +80,7 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
         opposing_trades = result.scalars().all()
 
         if not opposing_trades:
-            return
+            return False
 
         # Filter to trades from different strategies
         opposing_from_others = [
@@ -89,7 +89,7 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
         ]
 
         if not opposing_from_others:
-            return
+            return False
 
         # Build conflicting signals list
         conflicting_signals = [
@@ -158,10 +158,11 @@ async def _check_for_conflicts(payload: WebhookPayload, db: AsyncSession):
             signals=conflicting_signals,
         )
         db.add(conflict)
-        # Will be committed by the caller
+        return True  # Conflict found and resolved — caller can skip duplicate AI eval
 
     except Exception as e:
         logger.warning(f"Conflict detection failed (non-blocking): {e}")
+        return False
 
 
 async def _save_failed_webhook(raw_json: dict, error_msg: str):
@@ -344,11 +345,12 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         async def _bg_tasks():
             """Run all non-critical tasks after responding to TradingView."""
             try:
-                # Conflict detection (involves AI call — can be slow)
+                # Conflict detection — returns True if conflict was found and resolved
+                conflict_resolved = False
                 try:
                     from app.database import async_session as _as
                     async with _as() as bg_db:
-                        await _check_for_conflicts(payload, bg_db)
+                        conflict_resolved = await _check_for_conflicts(payload, bg_db)
                         await bg_db.commit()
                 except Exception as e:
                     logger.debug(f"Conflict detection failed: {e}")
@@ -370,23 +372,26 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 except Exception:
                     pass
 
-                # Route to AI portfolio evaluation (under semaphore)
-                try:
-                    from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
-                    from app.database import async_session as _as3
-                    async with _as3() as trader_db:
-                        trader_result = await trader_db.execute(
-                            select(Trader).where(Trader.trader_id == payload.trader)
-                        )
-                        trader_obj = trader_result.scalar_one_or_none()
-                    if trader_obj:
-                        async with _ai_semaphore:
-                            if payload.signal == "entry":
-                                await evaluate_signal_for_ai_portfolio(trade, trader_obj, payload.model_dump())
-                            elif payload.signal == "exit":
-                                await process_exit_for_ai_portfolio(trade, trader_obj)
-                except Exception as e:
-                    logger.warning(f"AI portfolio routing failed: {e}")
+                # Route to AI portfolio evaluation — SKIP if conflict resolver already ran Claude
+                if not conflict_resolved:
+                    try:
+                        from app.services.ai_portfolio import evaluate_signal_for_ai_portfolio, process_exit_for_ai_portfolio
+                        from app.database import async_session as _as3
+                        async with _as3() as trader_db:
+                            trader_result = await trader_db.execute(
+                                select(Trader).where(Trader.trader_id == payload.trader)
+                            )
+                            trader_obj = trader_result.scalar_one_or_none()
+                        if trader_obj:
+                            async with _ai_semaphore:
+                                if payload.signal == "entry":
+                                    await evaluate_signal_for_ai_portfolio(trade, trader_obj, payload.model_dump())
+                                elif payload.signal == "exit":
+                                    await process_exit_for_ai_portfolio(trade, trader_obj)
+                    except Exception as e:
+                        logger.warning(f"AI portfolio routing failed: {e}")
+                else:
+                    logger.info(f"Skipping AI portfolio eval for {payload.ticker} — conflict resolver already decided")
 
             except Exception as e:
                 logger.error(f"Webhook background tasks failed: {e}")

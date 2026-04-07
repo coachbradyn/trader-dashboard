@@ -472,52 +472,37 @@ async def _extract_and_save_context(
     portfolio_id: str = None,
     expires_days: int = 14,
 ) -> None:
-    """
-    After Henry generates analysis, ask AI to extract key conclusions
-    and save them as HenryContext entries. Mirrors extract_and_save_memories().
-    """
-    try:
-        from app.services.ai_provider import call_ai
-        system = "Extract 1-2 key one-sentence conclusions from this trading analysis. Return a JSON array of objects with keys: content (1 sentence), ticker (null or ticker symbol), strategy (null or strategy slug), confidence (1-10 or null)."
-        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=400)
-
-        raw = raw.strip().replace("```json", "").replace("```", "").strip()
-        items = json.loads(raw)
-
-        if isinstance(items, list):
-            for item in items[:2]:
-                await save_context(
-                    content=item.get("content", ""),
-                    context_type=context_type,
-                    ticker=item.get("ticker") or ticker,
-                    strategy=item.get("strategy") or strategy,
-                    portfolio_id=portfolio_id,
-                    confidence=item.get("confidence"),
-                    expires_days=expires_days,
-                )
-    except Exception:
-        pass  # Non-blocking
+    """DEPRECATED — merged into extract_and_save_memories. Kept as no-op for callers."""
+    pass
 
 
 async def extract_and_save_memories(analysis_text: str, source: str = "briefing") -> None:
     """
-    After Henry generates analysis, ask AI to extract key observations
-    worth remembering for future analysis.
+    Single AI call to extract key observations AND context conclusions from analysis.
+    Previously this was two separate calls — now merged to save tokens.
     """
     try:
         from app.services.ai_provider import call_ai
-        system = "Extract 1-3 key observations from this trading analysis that would be useful to remember for future decisions. Return a JSON array of objects with keys: content (1 sentence), memory_type (observation|lesson|strategy_note), strategy_id (null or strategy slug), ticker (null or ticker symbol), importance (1-10)."
-        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=500)
+        system = (
+            "Extract 1-3 key findings from this trading analysis. Return a JSON array of objects with keys: "
+            "content (1 sentence), memory_type (observation|lesson|strategy_note), "
+            "ticker (null or ticker symbol), strategy_id (null or strategy slug), "
+            "importance (1-10, only include if >= 6). Skip generic observations."
+        )
+        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=400)
 
         raw = raw.strip().replace("```json", "").replace("```", "").strip()
         memories = json.loads(raw)
 
         if isinstance(memories, list):
-            for m in memories[:3]:  # Cap at 3 memories per analysis
+            for m in memories[:3]:
                 try:
                     importance = max(1, min(10, int(m.get("importance", 5))))
                 except (ValueError, TypeError):
                     importance = 5
+                if importance < 6:
+                    continue  # Skip low-importance memories
+                # Save to HenryMemory
                 await save_memory(
                     content=m.get("content", ""),
                     memory_type=m.get("memory_type", "observation"),
@@ -525,6 +510,15 @@ async def extract_and_save_memories(analysis_text: str, source: str = "briefing"
                     ticker=m.get("ticker"),
                     importance=importance,
                     source=source,
+                )
+                # Also save to HenryContext (merged from _extract_and_save_context)
+                await save_context(
+                    content=m.get("content", ""),
+                    context_type=m.get("memory_type", "observation"),
+                    ticker=m.get("ticker"),
+                    strategy=m.get("strategy_id"),
+                    confidence=importance,
+                    expires_days=14,
                 )
     except Exception:
         pass  # Non-blocking
@@ -858,7 +852,6 @@ Be direct, have opinions, use real numbers. Have personality."""
 
     if result and not result.startswith("Henry's having"):
         asyncio.create_task(extract_and_save_memories(result, source="briefing"))
-        asyncio.create_task(_extract_and_save_context(result, context_type="observation", expires_days=14))
 
     return result
 
@@ -929,9 +922,7 @@ async def query_trades(
 QUESTION: {question}
 
 SUMMARY STATS:
-  Total closed trades: {total_trades}
-  Win rate: {win_rate:.1f}% ({wins}/{total_trades})
-  Net P&L: {total_pnl:.2f}%
+  Total closed trades: {total_trades} | Win rate: {win_rate:.1f}% | Net P&L: {total_pnl:.2f}%
 
 BY STRATEGY:
 {strat_summary}
@@ -939,23 +930,14 @@ BY STRATEGY:
 TOP TICKERS:
 {ticker_summary}
 
-CURRENT STRATEGY POSITIONS:
-{positions_text}
+POSITIONS: {positions_text}
+HOLDINGS: {holdings_text}
 
-MANUAL PORTFOLIO HOLDINGS:
-{holdings_text}
-
-FULL TRADE LOG:
-{trades_text}
-
-Consider BOTH strategy positions AND manual holdings when answering portfolio questions.
-Answer concisely. If the data doesn't contain enough info to answer, say so.
-If the question involves a comparison, use a small table.
-Keep it under 200 words unless the question requires more detail."""
+Answer concisely (<200 words). Use tables for comparisons. If data is insufficient, say so."""
 
     from app.services.ai_provider import call_ai
     system = await _build_system_prompt(enable_web_search=True)
-    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=1000, question_text=question, enable_web_search=True)
+    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, question_text=question, enable_web_search=True)
 
 
 # ─── FEATURE 4: STRATEGY CONFLICT RESOLUTION ────────────────────────────────

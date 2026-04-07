@@ -84,6 +84,9 @@ async def extract_and_save_research(
                     expires_days = 1
                 if expires_days > 60:
                     expires_days = 60
+                # Gate: only save near-term catalysts (<14 days) to reduce noise
+                if expires_days > 14:
+                    continue
 
                 await save_research(
                     content=content,

@@ -353,78 +353,67 @@ async def evaluate_signal_for_ai_portfolio(
             peak = snap_result.scalar() or portfolio.initial_capital
             current_dd = ((peak - equity) / peak * 100) if peak > 0 else 0
 
-            prompt = f"""You are Henry, managing an AI paper portfolio AUTONOMOUSLY. You make your own trading decisions — you do NOT need user approval. Your goal is to MAXIMIZE RISK-ADJUSTED RETURNS — grow equity while protecting against drawdowns.
+            # Pre-compute hard SKIPs — no AI needed
+            has_stop = trade.stop_price is not None and trade.stop_price > 0
+            adx_val = trade.entry_adx or 0
+            sig_val = trade.entry_signal_strength or 0
+            at_max_positions = len(open_positions) >= max_positions
+            near_max_dd = current_dd >= (max_dd * 0.85)
 
-When you decide BUY, the trade executes immediately. When you decide SKIP, the signal is rejected. You are fully autonomous.
-
-DECISION FRAMEWORK:
-1. ONLY take trades where the expected reward clearly exceeds the risk (aim for {rr_ratio}:1+ reward/risk)
-2. {"Use the stop loss from the signal — if none provided, SKIP (no stop = unmanageable risk)" if require_stop else "Stop loss preferred but not required — size down if no stop provided"}
-3. SKIP if ADX < {min_adx} (no trend) unless signal strength is exceptionally high (>80)
-4. SKIP if this ticker already has an open position in the same direction (no pyramiding by default)
-5. SKIP if portfolio would exceed {max_positions} open positions
-6. SKIP if portfolio concentration in this ticker would exceed {max_pct_per_trade}%
-7. SKIP if current drawdown ({current_dd:.1f}%) is near max allowed ({max_dd:.1f}%) — preserve capital
-8. Prefer strategies with proven backtest data (higher WR, higher PF = higher confidence)
-9. If backtest data shows this strategy loses money on this ticker, SKIP regardless of signal
-10. Factor in your own hit rate — if you've been wrong lately, size down (lower confidence)
-
-INCOMING SIGNAL:
-  Strategy: {trader.trader_id} ({trader.display_name})
-  Direction: {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f}
-  Signal strength: {trade.entry_signal_strength or 'N/A'}
-  ADX: {trade.entry_adx or 'N/A'}, ATR: ${trade.entry_atr or 0:.2f}
-  Stop: ${trade.stop_price:.2f if trade.stop_price else 'NONE'}
-  Timeframe: {trade.timeframe or 'N/A'}
-
-AI PORTFOLIO STATE:
-  Equity: ${equity:.2f} (initial: ${portfolio.initial_capital:.2f}, return: {((equity / portfolio.initial_capital) - 1) * 100:+.2f}%)
-  Cash: ${portfolio.cash:.2f} ({portfolio.cash / equity * 100:.0f}% cash)
-  Open positions: {len(open_positions)} / {max_positions} max
-  Drawdown from peak: {current_dd:.1f}% (max allowed: {max_dd:.1f}%)
-
-CURRENT HOLDINGS:
-{holdings_text}
-
-CONCENTRATION:
-{conc_text}
-
-BACKTEST DATA ({trade.ticker}):
-{bt_text}
-
-PRIOR NOTES ({trade.ticker}):
-{ctx_text}
-
-YOUR TRACK RECORD: {hit_rate_text}
-
-Respond in EXACTLY this JSON format (no markdown, no backticks):
-{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "2-3 sentences explaining your decision with specific numbers"}}"""
-
-            # Check cache — skip Claude if we recently evaluated same signal for AI portfolio
-            from app.services.henry_cache import get_cached, set_cached, _make_hash
-            ai_cache_key = f"ai_signal:{trader.trader_id}:{trade.ticker}:{trade.direction}"
-            ai_sig_hash = _make_hash({"price": trade.entry_price, "sig": trade.entry_signal_strength, "adx": trade.entry_adx})
-
-            cached_result = await get_cached(db, ai_cache_key, max_age_hours=1, data_hash=ai_sig_hash)
-            if cached_result:
-                result = cached_result
+            # Hard SKIP conditions — save the Claude call entirely
+            if require_stop and not has_stop:
+                result = {"action": "SKIP", "confidence": 0, "reasoning": f"No stop loss provided (required by config)"}
+                logger.info(f"AI portfolio SKIP {trade.ticker}: no stop (hard rule)")
+            elif at_max_positions:
+                result = {"action": "SKIP", "confidence": 0, "reasoning": f"Portfolio full ({len(open_positions)}/{max_positions} positions)"}
+                logger.info(f"AI portfolio SKIP {trade.ticker}: max positions reached")
+            elif near_max_dd:
+                result = {"action": "SKIP", "confidence": 0, "reasoning": f"Drawdown {current_dd:.1f}% near max {max_dd:.1f}% — preserving capital"}
+                logger.info(f"AI portfolio SKIP {trade.ticker}: near max drawdown")
+            elif adx_val > 0 and adx_val < min_adx and sig_val < 80:
+                result = {"action": "SKIP", "confidence": 0, "reasoning": f"ADX {adx_val:.0f} < {min_adx} minimum (weak trend)"}
+                logger.info(f"AI portfolio SKIP {trade.ticker}: ADX too low")
             else:
-                from app.services.ai_service import _call_claude_async
-                raw = await _call_claude_async(
-                    prompt, max_tokens=400,
-                    ticker=trade.ticker, strategy=trader.trader_id, scope="signal",
-                    function_name="ai_portfolio_decision"
-                )
+                # Need AI judgment — build compact prompt
+                prompt = f"""Henry's autonomous portfolio. BUY or SKIP? JSON only.
 
-                try:
-                    clean = raw.strip().replace("```json", "").replace("```", "").strip()
-                    result = json.loads(clean)
-                except json.JSONDecodeError:
-                    logger.warning(f"AI portfolio: failed to parse response for {trade.ticker}")
-                    result = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
+SIGNAL: {trader.trader_id} | {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f} | sig={sig_val:.0f} ADX={adx_val:.0f} | stop=${trade.stop_price:.2f if has_stop else 'NONE'} | tf={trade.timeframe or '?'}
+PORTFOLIO: ${equity:.0f} equity | ${portfolio.cash:.0f} cash ({portfolio.cash / equity * 100:.0f}%) | {len(open_positions)}/{max_positions} positions | DD={current_dd:.1f}%/{max_dd:.0f}%
+HOLDINGS: {holdings_text[:300]}
+BACKTEST: {bt_text[:200]}
+TRACK RECORD: {hit_rate_text[:100]}
+{f'NOTES: {ctx_text[:150]}' if ctx_text.strip() else ''}
 
-                # Cache it
-                await set_cached(db, ai_cache_key, "signal_eval", result, ticker=trade.ticker, strategy=trader.trader_id, data_hash=ai_sig_hash)
+Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
+{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "1-2 sentences"}}"""
+
+                # Check cache — skip Claude if we recently evaluated same signal
+                from app.services.henry_cache import get_cached, set_cached, _make_hash
+                ai_cache_key = f"ai_signal:{trader.trader_id}:{trade.ticker}:{trade.direction}"
+                ai_sig_hash = _make_hash({"price": trade.entry_price, "sig": trade.entry_signal_strength, "adx": trade.entry_adx, "cash": int(portfolio.cash)})
+
+                cached_result = await get_cached(db, ai_cache_key, max_age_hours=1, data_hash=ai_sig_hash)
+                if cached_result:
+                    result = cached_result
+                else:
+                    from app.services.ai_service import _call_claude_async
+                    raw = await _call_claude_async(
+                        prompt, max_tokens=300,
+                        ticker=trade.ticker, strategy=trader.trader_id, scope="signal",
+                        function_name="ai_portfolio_decision"
+                    )
+
+                    try:
+                        clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                        import re as _re
+                        json_match = _re.search(r'\{[\s\S]*\}', clean)
+                        result = json.loads(json_match.group()) if json_match else {"action": "SKIP", "confidence": 0, "reasoning": "No JSON"}
+                    except json.JSONDecodeError:
+                        logger.warning(f"AI portfolio: failed to parse response for {trade.ticker}")
+                        result = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
+
+                    # Cache it
+                    await set_cached(db, ai_cache_key, "signal_eval", result, ticker=trade.ticker, strategy=trader.trader_id, data_hash=ai_sig_hash)
 
             action = result.get("action", "SKIP").upper()
             confidence = result.get("confidence", 0)
