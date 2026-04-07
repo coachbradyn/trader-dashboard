@@ -202,6 +202,9 @@ function BriefingTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [history, setHistory] = useState<{ id: string; briefing: string; generated_at: string }[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedPast, setSelectedPast] = useState<{ briefing: string; generated_at: string } | null>(null);
 
   const fetchBriefing = useCallback(async (isRefresh = false) => {
     try {
@@ -220,7 +223,12 @@ function BriefingTab() {
 
   useEffect(() => {
     fetchBriefing();
+    api.getBriefingHistory(14).then(setHistory).catch(() => {});
   }, [fetchBriefing]);
+
+  // Which briefing to show — selected past one or today's
+  const displayBriefing = selectedPast?.briefing || data?.briefing;
+  const displayTime = selectedPast?.generated_at || data?.generated_at;
 
   return (
     <div>
@@ -228,53 +236,101 @@ function BriefingTab() {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-bold text-white" style={FONT_OUTFIT}>
-            Today&apos;s Briefing
+            {selectedPast ? "Past Briefing" : "Today\u0027s Briefing"}
           </h2>
-          {data && (
+          {!selectedPast && data && (
             <Badge className="text-[10px] bg-ai-blue/15 text-ai-blue border-ai-blue/20">
               {data.open_positions} position{data.open_positions !== 1 ? "s" : ""}
             </Badge>
           )}
-          {data?.cached && (
+          {!selectedPast && data?.cached && (
             <Badge className="text-[10px] bg-gray-700/30 text-gray-500 border-gray-600/30">
               cached
             </Badge>
           )}
         </div>
         <div className="flex items-center gap-3">
-          {data?.generated_at && (
+          {displayTime && (
             <span className="text-[10px] text-gray-600 font-mono hidden sm:inline">
-              {formatTimeAgo(data.generated_at)}
+              {formatTimeAgo(displayTime)}
             </span>
           )}
-          <Button
-            size="sm"
-            onClick={() => fetchBriefing(true)}
-            disabled={refreshing}
-            className="text-xs h-8 bg-ai-blue/10 text-ai-blue border border-ai-blue/20 hover:bg-ai-blue/20"
-          >
-            <svg
-              className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
+          {selectedPast && (
+            <Button
+              size="sm"
+              onClick={() => setSelectedPast(null)}
+              className="text-xs h-8 bg-gray-700/20 text-gray-400 border border-gray-600/30 hover:bg-gray-700/40"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-              />
-            </svg>
-            {refreshing ? "Refreshing..." : "Refresh"}
-          </Button>
+              Back to Today
+            </Button>
+          )}
+          {/* History dropdown */}
+          <div className="relative">
+            <Button
+              size="sm"
+              onClick={() => setHistoryOpen(!historyOpen)}
+              className="text-xs h-8 bg-gray-700/20 text-gray-400 border border-gray-600/30 hover:bg-gray-700/40"
+            >
+              <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              History
+            </Button>
+            {historyOpen && history.length > 0 && (
+              <div className="absolute right-0 top-full mt-1 w-64 max-h-72 overflow-y-auto z-50 rounded-lg border border-[#374151] bg-[#111827] shadow-2xl">
+                {history.map((h) => {
+                  const d = new Date(h.generated_at);
+                  return (
+                    <button
+                      key={h.id}
+                      onClick={() => { setSelectedPast({ briefing: h.briefing, generated_at: h.generated_at }); setHistoryOpen(false); }}
+                      className="w-full text-left px-3 py-2.5 hover:bg-[#1f2937] border-b border-[#374151]/30 last:border-0 transition"
+                    >
+                      <div className="text-xs text-white font-medium">
+                        {d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                      </div>
+                      <div className="text-[10px] text-gray-500 font-mono">
+                        {d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                      </div>
+                      <div className="text-[10px] text-gray-600 mt-0.5 truncate">
+                        {h.briefing.slice(0, 80).replace(/[#*]/g, "")}...
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {!selectedPast && (
+            <Button
+              size="sm"
+              onClick={() => fetchBriefing(true)}
+              disabled={refreshing}
+              className="text-xs h-8 bg-ai-blue/10 text-ai-blue border border-ai-blue/20 hover:bg-ai-blue/20"
+            >
+              <svg
+                className={`w-3.5 h-3.5 mr-1.5 ${refreshing ? "animate-spin" : ""}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Content Card */}
       <Card className="border-border/50 bg-[#1f2937]/40">
         <CardContent className="p-6">
-          {loading && (
+          {loading && !selectedPast && (
             <div className="space-y-3">
               {[1, 2, 3, 4, 5].map((i) => (
                 <Skeleton key={i} className="h-4 rounded" style={{ width: `${60 + Math.random() * 35}%` }} />
@@ -282,7 +338,7 @@ function BriefingTab() {
             </div>
           )}
 
-          {error && (
+          {error && !selectedPast && (
             <div className="flex items-center gap-2 py-4 px-4 rounded-lg border border-loss/30 bg-loss/5">
               <svg
                 className="w-4 h-4 text-loss flex-shrink-0"
@@ -307,10 +363,10 @@ function BriefingTab() {
             </div>
           )}
 
-          {data && !loading && (
+          {displayBriefing && !loading && (
             <div
               className="ai-prose"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(data.briefing) }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(displayBriefing) }}
             />
           )}
         </CardContent>

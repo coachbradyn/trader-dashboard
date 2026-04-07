@@ -1152,6 +1152,33 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             logger.error(f"Briefing failed: {e}", exc_info=True)
             return {"briefing": f"Briefing temporarily unavailable: {type(e).__name__}. Try again in a moment.", "open_positions": 0}
 
+    @app.get("/api/ai/briefing/history")
+    async def ai_briefing_history(limit: int = 14):
+        """Return past briefings for the dropdown."""
+        from sqlalchemy import select
+        from app.database import async_session
+        from app.models.market_summary import MarketSummary
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(MarketSummary)
+                    .where(MarketSummary.summary_type == "daily_briefing")
+                    .order_by(MarketSummary.generated_at.desc())
+                    .limit(limit)
+                )
+                rows = result.scalars().all()
+                return [
+                    {
+                        "id": r.id,
+                        "briefing": r.content,
+                        "generated_at": r.generated_at.isoformat() + "Z" if r.generated_at else None,
+                        "tickers": r.tickers_analyzed,
+                    }
+                    for r in rows
+                ]
+        except Exception:
+            return []
+
     @app.post("/api/ai/briefing/refresh")
     async def ai_briefing_refresh():
         """Force-regenerate today's briefing (manual refresh button)."""

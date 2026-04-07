@@ -56,6 +56,8 @@ export const api = {
   // AI Analysis
   getBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing"),
   refreshBriefing: () => fetchApi<import("./types").BriefingResponse>("/ai/briefing/refresh", { method: "POST" }),
+  getBriefingHistory: (limit = 14) =>
+    fetchApi<{ id: string; briefing: string; generated_at: string; tickers: string[] | null }[]>(`/ai/briefing/history?limit=${limit}`),
   postReview: (daysBack: number) =>
     fetchApi<import("./types").ReviewResponse>("/ai/review", {
       method: "POST",
