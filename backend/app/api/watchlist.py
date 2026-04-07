@@ -253,8 +253,8 @@ async def _get_watchlist_impl(db: AsyncSession):
 
     ticker_list = [wt.ticker for wt in wt_rows]
 
-    # ── Query 2: Latest signal per (ticker, indicator) via window fn ───
-    # ROW_NUMBER partitioned by (ticker, indicator) ordered by created_at desc
+    # ── Query 2: Latest signal per (ticker, indicator) — last 7 days only ──
+    signal_cutoff = utcnow() - timedelta(days=7)
     row_num = func.row_number().over(
         partition_by=[IndicatorAlert.ticker, IndicatorAlert.indicator],
         order_by=IndicatorAlert.created_at.desc(),
@@ -269,7 +269,10 @@ async def _get_watchlist_impl(db: AsyncSession):
             IndicatorAlert.created_at,
             row_num,
         )
-        .where(IndicatorAlert.ticker.in_(ticker_list))
+        .where(
+            IndicatorAlert.ticker.in_(ticker_list),
+            IndicatorAlert.created_at >= signal_cutoff,
+        )
         .subquery()
     )
     signals_result = await db.execute(
@@ -284,12 +287,15 @@ async def _get_watchlist_impl(db: AsyncSession):
     )
     signals_by_ticker: dict[str, list[dict]] = defaultdict(list)
     for row in signals_result.all():
+        ca = row[5]
+        if ca and hasattr(ca, 'tzinfo') and ca.tzinfo is not None:
+            ca = ca.replace(tzinfo=None)
         signals_by_ticker[row[0]].append({
             "indicator": row[1],
             "value": row[2],
             "signal": row[3],
             "timeframe": row[4],
-            "created_at": (row[5].isoformat() + "Z") if row[5] else None,
+            "created_at": (ca.isoformat() + "Z") if ca else None,
         })
 
     # ── Query 3: Open trades with joined trader (positions) ────────────
@@ -367,7 +373,7 @@ async def _get_watchlist_impl(db: AsyncSession):
     signal_events_by_ticker: dict[str, list[dict]] = defaultdict(list)
     for row in events_result.all():
         signal_events_by_ticker[row[0]].append({
-            "date": row[1].strftime("%Y-%m-%d"),
+            "date": row[1].strftime("%Y-%m-%d") if row[1] else None,
             "signal": row[2],
         })
 
@@ -428,7 +434,11 @@ async def _get_watchlist_impl(db: AsyncSession):
         if summary_obj:
             current_alert_count = alert_counts.get(tk, 0)
             new_alerts_since = current_alert_count - summary_obj.alert_count_at_generation
-            age_hours = (now - summary_obj.generated_at).total_seconds() / 3600
+            # Safely compute age — handle tz-aware generated_at from older records
+            gen_at = summary_obj.generated_at
+            if gen_at and gen_at.tzinfo is not None:
+                gen_at = gen_at.replace(tzinfo=None)
+            age_hours = (now - gen_at).total_seconds() / 3600 if gen_at else 999
             trades_since_count = trades_since_by_ticker.get(tk, 0)
             is_stale = (
                 new_alerts_since > 2
@@ -443,16 +453,24 @@ async def _get_watchlist_impl(db: AsyncSession):
 
         last_alert_at = last_alert_by_ticker.get(tk)
 
+        # Safe datetime formatting — strip tzinfo if present
+        def _safe_iso(dt):
+            if dt is None:
+                return None
+            if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            return dt.isoformat() + "Z"
+
         items.append({
             "id": wt.id,
             "ticker": tk,
             "notes": wt.notes,
-            "created_at": (wt.created_at.isoformat() + "Z") if wt.created_at else None,
+            "created_at": _safe_iso(wt.created_at),
             "latest_signals": signals,
             "strategy_positions": positions,
             "consensus": consensus,
             "cached_summary": cached_summary,
-            "last_alert_at": (last_alert_at.isoformat() + "Z") if last_alert_at else None,
+            "last_alert_at": _safe_iso(last_alert_at),
             "signal_events": signal_events_by_ticker.get(tk, []),
             "trade_events": trade_events_by_ticker.get(tk, []),
         })
