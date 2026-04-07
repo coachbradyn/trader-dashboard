@@ -347,10 +347,18 @@ async def _run_auto_research():
 
 
 async def _run_scanner():
-    """Run the FMP-powered stock scanner."""
+    """Run the FMP-powered stock scanner with watchlist priority."""
     logger.info("Running FMP scanner...")
     try:
-        from app.services.scanner_service import run_scanner
+        from app.services.scanner_service import run_scanner, run_watchlist_scan
+        # Phase 1: Scan watchlist tickers first (fast, targeted)
+        try:
+            wl_opps = await run_watchlist_scan()
+            if wl_opps:
+                logger.info(f"Watchlist scan: {len(wl_opps)} opportunities")
+        except Exception as e:
+            logger.warning(f"Watchlist scan failed (continuing with full scan): {e}")
+        # Phase 2: Full universe scan
         opportunities = await run_scanner()
         logger.info(f"Scanner complete: {len(opportunities)} opportunities found")
     except Exception as e:
@@ -703,25 +711,27 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # FMP Scanner: pre-market (8:30 AM), midday (12:00 PM), after close (4:30 PM) M-F
-    scheduler.add_job(
-        _run_scanner,
-        CronTrigger(hour=8, minute=30, timezone=ET, day_of_week="mon-fri"),
-        id="scanner_premarket",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _run_scanner,
-        CronTrigger(hour=12, minute=0, timezone=ET, day_of_week="mon-fri"),
-        id="scanner_midday",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        _run_scanner,
-        CronTrigger(hour=16, minute=30, timezone=ET, day_of_week="mon-fri"),
-        id="scanner_afterclose",
-        replace_existing=True,
-    )
+    # FMP Scanner: 6 runs M-F covering key market windows
+    # 8:30 AM — pre-market: position for open
+    # 9:30 AM — open: catch gap breakouts at market open
+    # 10:00 AM — post-open: first 30min settled, catch momentum
+    # 12:00 PM — midday: mid-session opportunities
+    # 2:00 PM — afternoon: catch dead-cat bounces + late setups
+    # 4:30 PM — after-close: plan for next day
+    for scan_id, hour, minute in [
+        ("scanner_premarket", 8, 30),
+        ("scanner_open", 9, 30),
+        ("scanner_postopen", 10, 0),
+        ("scanner_midday", 12, 0),
+        ("scanner_afternoon", 14, 0),
+        ("scanner_afterclose", 16, 30),
+    ]:
+        scheduler.add_job(
+            _run_scanner,
+            CronTrigger(hour=hour, minute=minute, timezone=ET, day_of_week="mon-fri"),
+            id=scan_id,
+            replace_existing=True,
+        )
 
     # Intraday monitor: every 5 minutes during market hours (9:30 AM - 4:00 PM ET, M-F)
     scheduler.add_job(

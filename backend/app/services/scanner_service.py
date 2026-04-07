@@ -143,11 +143,11 @@ DEFAULT_PROFILES = [
         "description": "Large cap stocks in established uptrends with room to run",
         "enabled": True,
         "market_conditions": {
-            "vix_max": 22,       # Only in low-vol environments
-            "trend": "bullish",  # bullish | bearish | any
-            "time_slots": ["morning", "midday"],  # morning | midday | afternoon
+            "vix_max": 22,
+            "trend": "bullish",
+            "time_slots": ["morning", "midday"],
         },
-        "criteria": None,  # Filled from get_preset_criteria("momentum")
+        "criteria": None,
     },
     {
         "id": "oversold_bounce",
@@ -155,11 +155,11 @@ DEFAULT_PROFILES = [
         "description": "Pullback buying opportunities in confirmed uptrends",
         "enabled": True,
         "market_conditions": {
-            "vix_min": 18,       # Better in elevated vol (more oversold stocks)
+            "vix_min": 18,
             "trend": "any",
             "time_slots": ["midday", "afternoon"],
         },
-        "criteria": None,  # Filled from get_preset_criteria("oversold_bounce")
+        "criteria": None,
     },
     {
         "id": "breakout",
@@ -171,7 +171,7 @@ DEFAULT_PROFILES = [
             "trend": "any",
             "time_slots": ["morning"],
         },
-        "criteria": None,  # Filled from get_preset_criteria("breakout")
+        "criteria": None,
     },
     {
         "id": "value_catalyst",
@@ -182,7 +182,30 @@ DEFAULT_PROFILES = [
             "trend": "any",
             "time_slots": ["afternoon"],
         },
-        "criteria": None,  # Filled from get_preset_criteria("value_catalyst")
+        "criteria": None,
+    },
+    {
+        "id": "gap_breakout",
+        "name": "Gap Breakout",
+        "description": "Stocks gapping up >2% at open with volume — catch the continuation",
+        "enabled": True,
+        "market_conditions": {
+            "vix_max": 30,
+            "trend": "any",
+            "time_slots": ["morning"],
+        },
+        "criteria": None,
+    },
+    {
+        "id": "dead_cat_bounce",
+        "name": "Dead Cat Bounce / Recovery",
+        "description": "Stocks down >15% in 30 days showing early recovery signals — positive LMA crossover + volume surge",
+        "enabled": True,
+        "market_conditions": {
+            "trend": "any",
+            "time_slots": ["morning", "midday", "afternoon"],
+        },
+        "criteria": None,
     },
 ]
 
@@ -525,6 +548,63 @@ def get_preset_criteria(preset_name: str) -> dict:
             "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
             "active_preset": "value_catalyst",
         },
+        "gap_breakout": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 1000000000,  # >1B — liquid enough for gaps
+                "volumeMoreThan": 750000,
+                "limit": 80,
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "ema", "period": 9},
+                    "label": "Price above EMA 9 (short-term momentum)",
+                },
+                {
+                    "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 20, "compare_indicator": None,
+                    "label": "ADX > 20 (directional move)",
+                },
+            ],
+            "volume_filter": {"enabled": True, "surge_multiplier": 2.0, "avg_period": 20},
+            "active_preset": "gap_breakout",
+            # Gap detection: run_scanner checks daily change_pct > 2%
+            "gap_filter": {"enabled": True, "min_gap_pct": 2.0},
+        },
+        "dead_cat_bounce": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 500000000,  # >500M — avoid penny stocks
+                "volumeMoreThan": 500000,
+                "limit": 80,
+            },
+            "technical_rules": [
+                {
+                    # EMA 9 crossing above EMA 21 = positive LMA signal
+                    "enabled": True, "indicator": "ema", "period": 9, "timeframe": "daily",
+                    "condition": "crosses_above", "value": 0,
+                    "compare_indicator": {"indicator": "ema", "period": 21},
+                    "label": "EMA 9 crosses above EMA 21 (positive LMA)",
+                },
+                {
+                    # RSI recovering from oversold — between 30-50
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 30, "compare_indicator": None,
+                    "label": "RSI > 30 (leaving oversold)",
+                },
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "below", "value": 55, "compare_indicator": None,
+                    "label": "RSI < 55 (not yet overbought — room to run)",
+                },
+            ],
+            "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
+            "active_preset": "dead_cat_bounce",
+            # Drawdown filter: stock must be down >15% from 30-day high
+            "drawdown_filter": {"enabled": True, "min_drawdown_pct": 15, "lookback_days": 30},
+        },
     }
     preset = presets.get(preset_name)
     if not preset:
@@ -764,6 +844,125 @@ async def _evaluate_technical_rules(
     return list(candidates.values())
 
 
+async def run_watchlist_scan() -> list[dict]:
+    """
+    Priority scan: evaluate watchlist tickers against all enabled profiles.
+    Runs BEFORE the full universe scan to catch opportunities on tickers
+    the user is already watching. Uses the same technical rule pipeline
+    but skips the FMP screener step — goes straight to rule evaluation.
+    """
+    from app.services.fmp_service import (
+        get_technical_snapshot, get_fundamentals, get_api_usage, get_volume_surge, get_quote,
+    )
+
+    usage = get_api_usage()
+    if usage["throttled"]:
+        logger.warning("Watchlist scan skipped: FMP API throttled")
+        return []
+
+    # Get watchlist tickers
+    try:
+        from app.models.watchlist_ticker import WatchlistTicker
+        async with async_session() as db:
+            result = await db.execute(select(WatchlistTicker))
+            wl_tickers = [w.ticker for w in result.scalars().all()]
+    except Exception:
+        wl_tickers = []
+
+    if not wl_tickers:
+        return []
+
+    logger.info(f"Watchlist scan: evaluating {len(wl_tickers)} tickers")
+
+    # Build candidates from watchlist
+    candidates = []
+    for ticker in wl_tickers[:25]:
+        try:
+            quote = await get_quote(ticker)
+            price = None
+            change_pct = None
+            if quote and isinstance(quote, list) and quote:
+                price = quote[0].get("price")
+                change_pct = quote[0].get("changesPercentage")
+            candidates.append({
+                "ticker": ticker,
+                "source": "watchlist",
+                "indicators": {"price": price, "change_pct": change_pct},
+                "rules_passed": [],
+            })
+        except Exception:
+            candidates.append({
+                "ticker": ticker,
+                "source": "watchlist",
+                "indicators": {},
+                "rules_passed": [],
+            })
+
+    # Evaluate each profile's technical rules against watchlist tickers
+    profiles = await select_profiles_for_now()
+    all_opportunities = []
+
+    # Build a fake screener_map from quotes for _evaluate_technical_rules
+    screener_map = {}
+    for cand in candidates:
+        screener_map[cand["ticker"]] = cand.get("indicators", {})
+
+    ticker_list = [c["ticker"] for c in candidates]
+
+    for profile in profiles:
+        preset_name = profile.get("id", "")
+        try:
+            criteria = profile.get("criteria") or get_preset_criteria(preset_name)
+        except Exception:
+            continue
+
+        rules = criteria.get("technical_rules", [])
+        enabled_rules = [r for r in rules if r.get("enabled")]
+        if not enabled_rules:
+            continue
+
+        # Run technical rules using the existing pipeline
+        try:
+            profile_survivors = await _evaluate_technical_rules(
+                ticker_list, rules, screener_map
+            )
+        except Exception as e:
+            logger.debug(f"Watchlist scan profile {preset_name} failed: {e}")
+            continue
+
+        # Volume filter
+        vol_filter = criteria.get("volume_filter", {})
+        if vol_filter.get("enabled") and profile_survivors:
+            surge_mult = vol_filter.get("surge_multiplier", 1.5)
+            vol_passed = []
+            for cand in profile_survivors:
+                try:
+                    vol_data = await get_volume_surge(cand["ticker"], vol_filter.get("avg_period", 20))
+                    ratio = vol_data.get("surge_ratio")
+                    if ratio is not None and ratio >= surge_mult:
+                        cand["indicators"]["volume_surge"] = vol_data
+                        vol_passed.append(cand)
+                except Exception:
+                    vol_passed.append(cand)
+            profile_survivors = vol_passed
+
+        for cand in profile_survivors:
+            cand["matched_profile"] = profile.get("name", preset_name)
+
+        all_opportunities.extend(profile_survivors)
+
+    # Deduplicate by ticker (keep first match)
+    seen = set()
+    unique = []
+    for opp in all_opportunities:
+        if opp["ticker"] not in seen:
+            seen.add(opp["ticker"])
+            unique.append(opp)
+
+    logger.info(f"Watchlist scan: {len(unique)} opportunities from {len(wl_tickers)} tickers")
+    return unique
+
+
 async def run_scanner(profile_criteria: dict | None = None, profile_name: str | None = None, skip_actions: bool = False) -> list[dict]:
     """
     Full scanner pipeline. Optionally accepts criteria from a specific profile.
@@ -867,6 +1066,56 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
                 vol_survivors.append(cand)  # keep on failure
         survivors = vol_survivors
         logger.info(f"Scanner: {len(survivors)} stocks survived volume filter")
+
+    # 4b. Gap filter (for gap_breakout profile)
+    gap_filter = criteria.get("gap_filter", {})
+    if gap_filter.get("enabled"):
+        min_gap = gap_filter.get("min_gap_pct", 2.0)
+        gap_survivors = []
+        for cand in survivors:
+            ticker = cand["ticker"]
+            try:
+                from app.services.fmp_service import get_historical_daily
+                hist = await get_historical_daily(ticker, days=2)
+                if hist and isinstance(hist, list) and len(hist) >= 2:
+                    today_open = hist[0].get("open", 0)
+                    prev_close = hist[1].get("close", 0)
+                    if prev_close > 0:
+                        gap_pct = (today_open - prev_close) / prev_close * 100
+                        cand["indicators"]["gap_pct"] = round(gap_pct, 2)
+                        if gap_pct >= min_gap:
+                            gap_survivors.append(cand)
+                            continue
+                # No gap data — skip
+            except Exception:
+                pass
+        survivors = gap_survivors
+        logger.info(f"Scanner: {len(survivors)} stocks survived gap filter (>{min_gap}%)")
+
+    # 4c. Drawdown filter (for dead_cat_bounce profile)
+    dd_filter = criteria.get("drawdown_filter", {})
+    if dd_filter.get("enabled"):
+        min_dd = dd_filter.get("min_drawdown_pct", 15)
+        lookback = dd_filter.get("lookback_days", 30)
+        dd_survivors = []
+        for cand in survivors:
+            ticker = cand["ticker"]
+            try:
+                from app.services.fmp_service import get_historical_daily
+                hist = await get_historical_daily(ticker, days=lookback)
+                if hist and isinstance(hist, list) and len(hist) >= 5:
+                    high_30d = max(d.get("high", 0) for d in hist)
+                    current = hist[0].get("close", 0)
+                    if high_30d > 0 and current > 0:
+                        drawdown = (high_30d - current) / high_30d * 100
+                        cand["indicators"]["drawdown_30d_pct"] = round(drawdown, 2)
+                        if drawdown >= min_dd:
+                            dd_survivors.append(cand)
+                            continue
+            except Exception:
+                pass
+        survivors = dd_survivors
+        logger.info(f"Scanner: {len(survivors)} stocks survived drawdown filter (>{min_dd}% from 30d high)")
 
     if not survivors:
         return []
