@@ -271,7 +271,7 @@ def _parse_strategy_alert_text(text: str) -> dict | None:
 
 @router.post("/webhook/replay/{inbox_id}")
 async def replay_webhook(inbox_id: str):
-    """Replay a failed/pending webhook from the inbox."""
+    """Replay a failed/pending webhook from the inbox. Auto-routes screener vs trade."""
     try:
         from app.models.webhook_inbox import WebhookInbox
         async with async_session() as db:
@@ -282,12 +282,25 @@ async def replay_webhook(inbox_id: str):
             if entry.status == "processed":
                 return {"status": "already_processed", "id": inbox_id}
 
-            payload = WebhookPayload(**entry.payload)
-            trade = await process_webhook(payload, db)
-            entry.status = "processed"
-            entry.processed_at = utcnow()
-            await db.commit()
-            return {"status": "replayed", "trade_id": trade.id, "ticker": trade.ticker}
+            payload_data = entry.payload
+
+            # Auto-route: screener vs trade
+            if "indicator" in payload_data and "trader" not in payload_data:
+                from app.schemas.screener import ScreenerWebhookPayload
+                from app.api.screener import screener_webhook
+                screener_payload = ScreenerWebhookPayload(**payload_data)
+                resp = await screener_webhook(screener_payload, db)
+                entry.status = "processed"
+                entry.processed_at = utcnow()
+                await db.commit()
+                return {"status": "replayed", "ticker": payload_data.get("ticker"), "type": "screener"}
+            else:
+                payload = WebhookPayload(**payload_data)
+                trade = await process_webhook(payload, db)
+                entry.status = "processed"
+                entry.processed_at = utcnow()
+                await db.commit()
+                return {"status": "replayed", "trade_id": trade.id, "ticker": trade.ticker}
     except HTTPException:
         raise
     except Exception as e:
