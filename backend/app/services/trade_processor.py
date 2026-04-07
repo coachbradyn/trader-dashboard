@@ -138,11 +138,21 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         else utcnow()
     )
 
+    # If price is 0 (e.g. from strategy alert text), look up current price
+    entry_price = payload.price
+    if not entry_price or entry_price <= 0:
+        try:
+            current = price_service.get_price(payload.ticker)
+            if current and current > 0:
+                entry_price = current
+        except Exception:
+            pass
+
     trade = Trade(
         trader_id=trader.id,
         ticker=payload.ticker,
         direction=payload.dir,
-        entry_price=payload.price,
+        entry_price=entry_price,
         qty=payload.qty,
         entry_signal_strength=payload.sig,
         entry_adx=payload.adx,

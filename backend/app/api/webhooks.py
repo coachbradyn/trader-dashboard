@@ -184,6 +184,91 @@ async def _save_failed_webhook(raw_json: dict, error_msg: str):
         logger.error(f"Could not save failed webhook to inbox: {e}")
 
 
+def _parse_strategy_alert_text(text: str) -> dict | None:
+    """
+    Parse TradingView strategy alert text into a webhook-compatible dict.
+
+    Expected format:
+      "Strategy Name (p1, p2, ..., API_KEY, TRADER_ID): order buy @ 10 filled on AAPL. New strategy position is 10"
+
+    Also handles:
+      "... order sell @ 5 filled on TSLA. New strategy position is 0"
+      (position_size 0 after sell = exit signal)
+    """
+    import re
+
+    if not text or "order" not in text.lower():
+        return None
+
+    try:
+        # Extract the parenthesized params — last two are key and trader_id
+        # Use rfind('): ') to handle nested parens like "ATR Stops (Classic)"
+        colon_paren = text.rfind("):")
+        open_paren = text.find("(")
+        if colon_paren < 0 or open_paren < 0 or open_paren >= colon_paren:
+            return None
+        params = [p.strip() for p in text[open_paren + 1:colon_paren].split(",")]
+        if len(params) < 2:
+            return None
+        trader_id = params[-1]
+        api_key = params[-2]
+
+        # Extract order action: "order buy" or "order sell"
+        action_match = re.search(r'order\s+(buy|sell)\b', text, re.IGNORECASE)
+        if not action_match:
+            return None
+        action = action_match.group(1).lower()  # "buy" or "sell"
+
+        # Extract ticker: "filled on AAPL." — strip trailing punctuation
+        ticker_match = re.search(r'filled on\s+([A-Z0-9]+)', text, re.IGNORECASE)
+        if not ticker_match:
+            return None
+        ticker = ticker_match.group(1).upper()
+
+        # Extract contracts/qty: "@ 10 filled" (the number after @)
+        qty_match = re.search(r'@\s+([\d.]+)\s+filled', text)
+        qty = float(qty_match.group(1)) if qty_match else 0.0
+
+        # Extract strategy position size: "strategy position is 10"
+        pos_match = re.search(r'position\s+(?:size\s+)?is\s+([-\d.]+)', text, re.IGNORECASE)
+        position_size = float(pos_match.group(1)) if pos_match else None
+
+        # Determine signal: if sell and position goes to 0, it's an exit
+        # If buy, it's an entry. If sell but position > 0, it's a partial exit (still entry logic)
+        if action == "sell" and position_size is not None and position_size == 0:
+            signal = "exit"
+        elif action == "sell":
+            signal = "exit"
+        else:
+            signal = "entry"
+
+        # Determine direction from position
+        if position_size is not None and position_size < 0:
+            direction = "short"
+        else:
+            direction = "long"
+
+        # Try to extract price from the alert — "@ PRICE" sometimes has the price
+        # In strategy alerts, the number after @ is contracts, not price
+        # Price isn't in the standard format, so we'll use 0 and let the backend fill it
+        price = 0.0
+
+        logger.info(f"Parsed strategy alert: {signal} {direction} {ticker} qty={qty} trader={trader_id}")
+
+        return {
+            "key": api_key,
+            "trader": trader_id,
+            "signal": signal,
+            "dir": direction,
+            "ticker": ticker,
+            "price": price,
+            "qty": qty,
+        }
+    except Exception as e:
+        logger.debug(f"Strategy alert parse failed: {e}")
+        return None
+
+
 @router.post("/webhook/replay/{inbox_id}")
 async def replay_webhook(inbox_id: str):
     """Replay a failed/pending webhook from the inbox."""
@@ -238,12 +323,25 @@ async def list_failed_webhooks():
 
 @router.post("/webhook")
 async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    # Parse raw body first — we need it for auto-routing and error recovery
+    # Parse raw body — handle both JSON and TradingView strategy alert text
     raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8", errors="replace").strip() if raw_body else ""
+
+    raw_json = None
+
+    # Try JSON first
     try:
-        raw_json = json.loads(raw_body) if raw_body else {}
-    except Exception:
-        raise HTTPException(400, "Invalid JSON body")
+        raw_json = json.loads(raw_text) if raw_text else {}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # If not JSON, try to parse TradingView strategy alert text format:
+    # "Strategy Name (param1, param2, ..., API_KEY, TRADER_ID): order buy @ 10 filled on TICKER. New strategy position is 10"
+    if raw_json is None:
+        raw_json = _parse_strategy_alert_text(raw_text)
+        if raw_json is None:
+            await _save_failed_webhook({"raw_text": raw_text[:500]}, "Unparseable: not JSON and not recognized strategy alert format")
+            raise HTTPException(400, "Could not parse webhook body as JSON or strategy alert text")
 
     # Auto-route: if payload has "indicator" but no "trader", it's a scanner alert
     if "indicator" in raw_json and "trader" not in raw_json:
