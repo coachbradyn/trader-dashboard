@@ -85,7 +85,14 @@ class WebhookPayload(BaseModel):
     @classmethod
     def normalize_signal(cls, v):
         if isinstance(v, str):
-            return v.strip().lower()
+            v = v.strip().lower()
+            # Map common TradingView signal synonyms
+            entry_words = {"entry", "buy", "long", "open", "enter"}
+            exit_words = {"exit", "sell", "close", "short", "cover"}
+            if v in entry_words:
+                return "entry"
+            if v in exit_words:
+                return "exit"
         return v
 
     @field_validator("dir", mode="before")

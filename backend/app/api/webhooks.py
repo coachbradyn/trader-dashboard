@@ -423,6 +423,6 @@ async def receive_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     await err_db.commit()
             except Exception:
                 pass
-        logger.error(f"Webhook processing failed for {payload.ticker}: {e}")
+        logger.error(f"Webhook processing failed for {payload.ticker} ({payload.signal}/{payload.dir}): {e}")
         status = 400 if isinstance(e, ValueError) else 500
         raise HTTPException(status_code=status, detail=str(e))
