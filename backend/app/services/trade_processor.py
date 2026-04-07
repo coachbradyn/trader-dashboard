@@ -133,7 +133,7 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
 
 async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSession) -> Trade:
     entry_time = (
-        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc).replace(tzinfo=None)
         if payload.time
         else utcnow()
     )
@@ -224,7 +224,7 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
         raise ValueError(f"No open {payload.dir} trade found for {payload.ticker}")
 
     exit_time = (
-        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc)
+        datetime.fromtimestamp(payload.time / 1000, tz=timezone.utc).replace(tzinfo=None)
         if payload.time
         else utcnow()
     )
