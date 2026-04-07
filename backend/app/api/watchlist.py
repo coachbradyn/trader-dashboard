@@ -227,11 +227,17 @@ async def _get_cached_summary(ticker: str, db: AsyncSession) -> dict | None:
 
 @router.get("")
 async def get_watchlist(db: AsyncSession = Depends(get_db)):
-    """Get all active watchlist tickers with their latest signal state.
+    """Get all active watchlist tickers with their latest signal state."""
+    try:
+        return await _get_watchlist_impl(db)
+    except Exception as e:
+        import logging, traceback
+        logging.getLogger(__name__).error(f"GET /watchlist failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(500, detail=f"Watchlist query failed: {type(e).__name__}: {str(e)[:300]}")
 
-    Uses batched queries (8 total, independent of ticker count) instead of
-    per-ticker loops to avoid N+1 query patterns.
-    """
+
+async def _get_watchlist_impl(db: AsyncSession):
+    """Implementation moved here so the route handler can catch and log errors."""
     from app.services.price_service import price_service
     from collections import defaultdict
 
