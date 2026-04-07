@@ -143,7 +143,6 @@ DEFAULT_PROFILES = [
         "description": "Large cap stocks in established uptrends with room to run",
         "enabled": True,
         "market_conditions": {
-            "vix_max": 22,
             "trend": "bullish",
             "time_slots": ["morning", "midday"],
         },
@@ -155,9 +154,8 @@ DEFAULT_PROFILES = [
         "description": "Pullback buying opportunities in confirmed uptrends",
         "enabled": True,
         "market_conditions": {
-            "vix_min": 18,
             "trend": "any",
-            "time_slots": ["midday", "afternoon"],
+            "time_slots": ["morning", "midday", "afternoon"],
         },
         "criteria": None,
     },
@@ -167,9 +165,8 @@ DEFAULT_PROFILES = [
         "description": "Stocks starting new trends with volume confirmation",
         "enabled": True,
         "market_conditions": {
-            "vix_max": 25,
             "trend": "any",
-            "time_slots": ["morning"],
+            "time_slots": ["morning", "midday"],
         },
         "criteria": None,
     },
@@ -190,7 +187,6 @@ DEFAULT_PROFILES = [
         "description": "Stocks gapping up >2% at open with volume — catch the continuation",
         "enabled": True,
         "market_conditions": {
-            "vix_max": 30,
             "trend": "any",
             "time_slots": ["morning"],
         },
