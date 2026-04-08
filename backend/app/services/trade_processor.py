@@ -74,6 +74,64 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
                 trade, trader, payload.model_dump(), portfolio
             ))
 
+    # Auto-execute on Alpaca for live/paper portfolios
+    import asyncio as _aio
+    try:
+        linked_result = await db.execute(
+            select(PortfolioStrategy)
+            .where(PortfolioStrategy.trader_id == trader.id)
+            .options(selectinload(PortfolioStrategy.portfolio))
+        )
+        for link in linked_result.scalars().all():
+            port = link.portfolio
+            if port.execution_mode not in ("paper", "live"):
+                continue
+            if not port.alpaca_api_key:
+                continue
+
+            side = "buy" if payload.signal == "entry" else "sell"
+
+            # For entries: size based on available cash and max_order_amount
+            if payload.signal == "entry":
+                max_amt = port.max_order_amount or 1000.0
+                available = min(port.cash, max_amt)
+                price = trade.entry_price or payload.price
+                if available <= 0 or not price or price <= 0:
+                    continue
+                qty = round(available / price, 4)
+                if qty <= 0:
+                    continue
+            else:
+                # For exits: sell the qty from the matched trade
+                qty = trade.qty if trade.qty and trade.qty > 0 else payload.qty
+
+            if qty <= 0:
+                continue
+
+            async def _alpaca_order(p=port, t=payload.ticker, q=qty, s=side):
+                try:
+                    from app.services.alpaca_service import alpaca_service
+                    is_paper = p.execution_mode == "paper"
+                    result = await alpaca_service.submit_order(
+                        api_key=p.alpaca_api_key_decrypted,
+                        secret_key=p.alpaca_secret_key_decrypted,
+                        paper=is_paper,
+                        ticker=t,
+                        qty=q,
+                        side=s,
+                    )
+                    import logging
+                    logging.getLogger(__name__).info(
+                        f"Alpaca auto-{s}: {t} x{q} on {p.name} ({p.execution_mode}) — {result.get('order_status', '?')}"
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"Alpaca auto-order failed for {t} on {p.name}: {e}")
+
+            _aio.create_task(_alpaca_order())
+    except Exception:
+        pass  # Non-blocking — don't break the webhook response
+
     # Auto-add traded ticker to watchlist (non-blocking)
     try:
         from app.models.watchlist_ticker import WatchlistTicker
