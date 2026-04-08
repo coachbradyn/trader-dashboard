@@ -196,6 +196,8 @@ async def get_positions(portfolio_id: str, db: AsyncSession = Depends(get_db)):
     positions = []
     for t in open_trades:
         current_price = price_service.get_price(t.ticker)
+        if current_price is None:
+            price_service.add_ticker(t.ticker)
         unrealized = None
         unrealized_pct = None
 

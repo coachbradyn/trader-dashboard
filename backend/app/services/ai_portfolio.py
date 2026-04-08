@@ -487,6 +487,9 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
                     db.add(sim_trade)
                     await db.flush()
 
+                    # Track ticker price for P&L display
+                    price_service.add_ticker(trade.ticker)
+
                     # Link to AI portfolio
                     pt = PortfolioTrade(portfolio_id=portfolio.id, trade_id=sim_trade.id)
                     db.add(pt)
