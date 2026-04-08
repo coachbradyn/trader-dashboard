@@ -69,95 +69,120 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
 
     await db.commit()
 
-    # Route to Henry for AI-evaluation-enabled portfolios (background)
-    if ai_eval_portfolios and payload.signal == "entry":
-        from app.services.ai_portfolio import evaluate_signal_for_portfolio
-        for portfolio in ai_eval_portfolios:
-            asyncio.create_task(evaluate_signal_for_portfolio(
-                trade, trader, payload.model_dump(), portfolio
-            ))
+    # ── Everything below runs in background — return trade to caller immediately ──
+    # Capture values needed by background tasks before returning
+    _trade_id = trade.id
+    _trade_ticker = trade.ticker
+    _trade_direction = trade.direction
+    _trade_entry_price = trade.entry_price
+    _trade_qty = trade.qty
+    _trade_exit_price = getattr(trade, "exit_price", None)
+    _trade_pnl_pct = getattr(trade, "pnl_percent", None) or 0.0
+    _trade_bars = getattr(trade, "bars_in_trade", None)
+    _trade_exit_reason = getattr(trade, "exit_reason", None)
+    _trader_id = trader.id
+    _payload_signal = payload.signal
+    _payload_dir = payload.dir
+    _payload_qty = payload.qty
+    _payload_price = payload.price
+    _payload_dict = payload.model_dump()
 
-    # Auto-execute on Alpaca for live/paper non-AI portfolios
-    try:
-        linked_result = await db.execute(
-            select(PortfolioStrategy)
-            .where(PortfolioStrategy.trader_id == trader.id)
-            .options(selectinload(PortfolioStrategy.portfolio))
-        )
-        for link in linked_result.scalars().all():
-            port = link.portfolio
-            # Skip portfolios that aren't wired to Alpaca
-            if port.execution_mode not in ("paper", "live"):
-                continue
-            if not port.alpaca_api_key:
-                continue
-            # Skip AI-managed portfolios — Henry decides via evaluate_signal_for_portfolio
-            if port.is_ai_managed or getattr(port, "ai_evaluation_enabled", False):
-                continue
+    async def _post_commit_tasks():
+        """All non-critical work after the trade is committed."""
+        from app.database import async_session as _async_session
 
-            if payload.signal == "entry":
-                asyncio.create_task(_execute_on_alpaca(
-                    port, trade.ticker, trade.qty, "buy", trade.entry_price,
+        # 1. Route to Henry for AI-evaluation-enabled portfolios
+        if ai_eval_portfolios and _payload_signal == "entry":
+            from app.services.ai_portfolio import evaluate_signal_for_portfolio
+            for portfolio in ai_eval_portfolios:
+                asyncio.create_task(evaluate_signal_for_portfolio(
+                    trade, trader, _payload_dict, portfolio
                 ))
-            elif payload.signal == "exit":
-                sell_qty = trade.qty if trade.qty and trade.qty > 0 else payload.qty
-                asyncio.create_task(_execute_on_alpaca(
-                    port, trade.ticker, sell_qty, "sell", payload.price,
-                ))
-    except Exception as e:
-        logger.warning(f"Alpaca auto-execute routing failed: {e}")
 
-    # Auto-add traded ticker to watchlist (non-blocking)
-    try:
-        from app.models.watchlist_ticker import WatchlistTicker
-        wl_result = await db.execute(
-            select(WatchlistTicker).where(WatchlistTicker.ticker == payload.ticker.upper())
-        )
-        wl_existing = wl_result.scalar_one_or_none()
-        if wl_existing:
-            if not wl_existing.is_active:
-                wl_existing.is_active = True
-                wl_existing.removed_at = None
-        else:
-            db.add(WatchlistTicker(ticker=payload.ticker.upper()))
-        await db.commit()
-    except Exception:
-        pass
-
-    # Portfolio manager hooks (non-blocking)
-    try:
-        from app.services.portfolio_analysis import evaluate_signal, link_trade_to_holding
-        if payload.signal == "entry":
-            await link_trade_to_holding(trade, db)
-            await evaluate_signal(trade, db)
-            await db.commit()
-        elif payload.signal == "exit":
-            from app.services.portfolio_analysis import track_action_outcome
-            await track_action_outcome(trade, db)
-
-            # Save outcome context (non-blocking)
-            from app.services.ai_service import save_context
-            pnl_pct = trade.pnl_percent or 0.0
-            asyncio.create_task(save_context(
-                content=f"CLOSED {trade.ticker} {trade.direction} | PnL: {pnl_pct:+.2f}% | Bars: {trade.bars_in_trade or '?'} | Exit: {trade.exit_reason or 'unknown'}",
-                context_type="outcome",
-                ticker=trade.ticker,
-                trade_id=trade.id,
-            ))
-
-            # Mark linked holdings as inactive
-            from app.models import PortfolioHolding
-            result = await db.execute(
-                select(PortfolioHolding).where(
-                    PortfolioHolding.trade_id == trade.id,
-                    PortfolioHolding.is_active == True,
+        # 2. Auto-execute on Alpaca for live/paper non-AI portfolios
+        try:
+            async with _async_session() as alpaca_db:
+                linked_result = await alpaca_db.execute(
+                    select(PortfolioStrategy)
+                    .where(PortfolioStrategy.trader_id == _trader_id)
+                    .options(selectinload(PortfolioStrategy.portfolio))
                 )
-            )
-            for h in result.scalars().all():
-                h.is_active = False
-            await db.commit()
-    except Exception as e:
-        logger.warning(f"Portfolio manager hook failed (non-blocking): {e}")
+                for link in linked_result.scalars().all():
+                    port = link.portfolio
+                    if port.execution_mode not in ("paper", "live"):
+                        continue
+                    if not port.alpaca_api_key:
+                        continue
+                    if port.is_ai_managed or getattr(port, "ai_evaluation_enabled", False):
+                        continue
+
+                    if _payload_signal == "entry":
+                        asyncio.create_task(_execute_on_alpaca(
+                            port, _trade_ticker, _trade_qty, "buy", _trade_entry_price,
+                        ))
+                    elif _payload_signal == "exit":
+                        sell_qty = _trade_qty if _trade_qty and _trade_qty > 0 else _payload_qty
+                        asyncio.create_task(_execute_on_alpaca(
+                            port, _trade_ticker, sell_qty, "sell", _payload_price,
+                        ))
+        except Exception as e:
+            logger.warning(f"Alpaca auto-execute routing failed: {e}")
+
+        # 3. Auto-add traded ticker to watchlist
+        try:
+            from app.models.watchlist_ticker import WatchlistTicker
+            async with _async_session() as wl_db:
+                wl_result = await wl_db.execute(
+                    select(WatchlistTicker).where(WatchlistTicker.ticker == _trade_ticker.upper())
+                )
+                wl_existing = wl_result.scalar_one_or_none()
+                if wl_existing:
+                    if not wl_existing.is_active:
+                        wl_existing.is_active = True
+                        wl_existing.removed_at = None
+                else:
+                    wl_db.add(WatchlistTicker(ticker=_trade_ticker.upper()))
+                await wl_db.commit()
+        except Exception:
+            pass
+
+        # 4. Portfolio manager hooks
+        try:
+            async with _async_session() as pm_db:
+                from app.services.portfolio_analysis import evaluate_signal, link_trade_to_holding
+                # Re-fetch trade in this session
+                tr_result = await pm_db.execute(select(Trade).where(Trade.id == _trade_id))
+                pm_trade = tr_result.scalar_one_or_none()
+                if pm_trade and _payload_signal == "entry":
+                    await link_trade_to_holding(pm_trade, pm_db)
+                    await evaluate_signal(pm_trade, pm_db)
+                    await pm_db.commit()
+                elif pm_trade and _payload_signal == "exit":
+                    from app.services.portfolio_analysis import track_action_outcome
+                    await track_action_outcome(pm_trade, pm_db)
+
+                    from app.services.ai_service import save_context
+                    asyncio.create_task(save_context(
+                        content=f"CLOSED {_trade_ticker} {_trade_direction} | PnL: {_trade_pnl_pct:+.2f}% | Bars: {_trade_bars or '?'} | Exit: {_trade_exit_reason or 'unknown'}",
+                        context_type="outcome",
+                        ticker=_trade_ticker,
+                        trade_id=_trade_id,
+                    ))
+
+                    from app.models import PortfolioHolding
+                    result = await pm_db.execute(
+                        select(PortfolioHolding).where(
+                            PortfolioHolding.trade_id == _trade_id,
+                            PortfolioHolding.is_active == True,
+                        )
+                    )
+                    for h in result.scalars().all():
+                        h.is_active = False
+                    await pm_db.commit()
+        except Exception as e:
+            logger.warning(f"Portfolio manager hook failed (non-blocking): {e}")
+
+    asyncio.create_task(_post_commit_tasks())
 
     return trade
 
