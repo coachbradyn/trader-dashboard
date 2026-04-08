@@ -279,7 +279,8 @@ async def _refresh_screener_analysis():
             logger.info(f"Screener analysis refreshed: {len(result.get('picks', []))} picks")
 
     except Exception as e:
-        logger.error(f"Screener analysis refresh failed: {e}")
+        import traceback
+        logger.error(f"Screener analysis refresh failed: {e}\n{traceback.format_exc()}")
 
 
 async def _run_threshold_checks():

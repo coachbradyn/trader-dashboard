@@ -1249,16 +1249,23 @@ Return only the top 5-8 best opportunities. Empty array if nothing compelling.
 No markdown, no backticks. Just the JSON array."""
 
     try:
-        raw = await _call_claude_async(
+        from app.services.ai_provider import call_ai
+        system = "You are Henry, an AI trading analyst. Analyze stock scanner candidates and return a JSON array of the best opportunities. Return ONLY valid JSON, no markdown."
+        raw = await call_ai(
+            system,
             prompt,
-            max_tokens=2000,
-            scope="scanner",
-            function_name="scanner",
-            enable_web_search=True,
+            function_name="screener_analysis",
+            max_tokens=1500,
         )
 
         clean = raw.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(clean)
+        # Extract JSON array even if wrapped in prose
+        import re as _re
+        json_match = _re.search(r'\[[\s\S]*\]', clean)
+        if json_match:
+            result = json.loads(json_match.group())
+        else:
+            result = json.loads(clean)
         if not isinstance(result, list):
             result = [result]
         return result
