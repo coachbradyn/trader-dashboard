@@ -985,56 +985,65 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 async def _get_ai_portfolio_equity(portfolio: Portfolio, db: AsyncSession) -> float:
-    """Calculate current AI portfolio equity = cash + market value of open positions."""
-    # Get open simulated trades
-    result = await db.execute(
+    """Calculate current AI portfolio equity = initial_capital + realized_pnl + unrealized_pnl.
+
+    Uses the same formula as non-AI portfolios in trade_processor._take_snapshot()
+    to prevent cash-tracking drift from inflating equity.
+    """
+    # Realized P&L from closed trades
+    closed_result = await db.execute(
+        select(Trade)
+        .join(PortfolioTrade)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "closed",
+        )
+    )
+    closed_pnl = sum(t.pnl_dollars or 0.0 for t in closed_result.scalars().all())
+
+    # Unrealized P&L from open positions
+    open_result = await db.execute(
         select(Trade)
         .join(PortfolioTrade)
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "open",
-            Trade.is_simulated == True,
         )
     )
-    open_trades = result.scalars().all()
-
-    # Market value of open positions
-    open_market_value = 0.0
-    for t in open_trades:
+    unrealized_pnl = 0.0
+    for t in open_result.scalars().all():
         cp = price_service.get_price(t.ticker) or t.entry_price
-        open_market_value += cp * t.qty
+        if t.direction == "long":
+            unrealized_pnl += (cp - t.entry_price) * t.qty
+        else:
+            unrealized_pnl += (t.entry_price - cp) * t.qty
 
-    # Equity = cash (includes realized P&L from closed trades) + open position market value
-    return portfolio.cash + open_market_value
+    return portfolio.initial_capital + closed_pnl + unrealized_pnl
 
 
 async def _take_ai_snapshot(portfolio: Portfolio, db: AsyncSession):
     """Take an equity snapshot for the AI portfolio."""
     equity = await _get_ai_portfolio_equity(portfolio, db)
 
-    # Count open positions
+    # Count open positions and compute unrealized P&L
     result = await db.execute(
-        select(func.count(Trade.id))
+        select(Trade)
         .join(PortfolioTrade)
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "open",
-            Trade.is_simulated == True,
         )
     )
-    open_count = result.scalar() or 0
+    open_trades = result.scalars().all()
+    open_count = len(open_trades)
 
-    # Unrealized P&L
-    unrealized = equity - portfolio.initial_capital - sum(
-        t.pnl_dollars or 0
-        for t in (await db.execute(
-            select(Trade).join(PortfolioTrade).where(
-                PortfolioTrade.portfolio_id == portfolio.id,
-                Trade.status == "closed",
-                Trade.is_simulated == True,
-            )
-        )).scalars().all()
-    )
+    unrealized = 0.0
+    for t in open_trades:
+        cp = price_service.get_price(t.ticker) or t.entry_price
+        if t.direction == "long":
+            unrealized += (cp - t.entry_price) * t.qty
+        else:
+            unrealized += (t.entry_price - cp) * t.qty
 
     # Peak and drawdown
     last_snap_result = await db.execute(
