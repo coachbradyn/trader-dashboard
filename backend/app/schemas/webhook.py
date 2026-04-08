@@ -99,7 +99,12 @@ class WebhookPayload(BaseModel):
     @classmethod
     def normalize_dir(cls, v):
         if isinstance(v, str):
-            return v.strip().lower()
+            v = v.strip().lower()
+            # Normalize common direction synonyms
+            if v in ("buy", "long", "entry"):
+                return "long"
+            if v in ("sell", "short", "exit", "cover"):
+                return "short"
         return v
 
     @field_validator("exit_reason", "tf", "profile", mode="before")

@@ -511,15 +511,31 @@ async def _reconcile_alpaca_positions():
                             holding.notes = (holding.notes or "") + f" | reconciled_out_{today_str}"
                             closed += 1
 
+                    # Sync cash balance from Alpaca account
+                    cash_synced = False
+                    try:
+                        account_info = await alpaca_service.get_account_info(
+                            api_key=portfolio.alpaca_api_key_decrypted,
+                            secret_key=portfolio.alpaca_secret_key_decrypted,
+                            paper=is_paper,
+                        )
+                        if account_info.get("status") == "connected":
+                            alpaca_cash = account_info.get("cash")
+                            if alpaca_cash is not None and abs(alpaca_cash - port.cash) > 0.01:
+                                port.cash = alpaca_cash
+                                cash_synced = True
+                    except Exception as e:
+                        logger.warning(f"Cash sync failed for {port.name}: {e}")
+
                     await db.commit()
 
                     # Only log if drift was detected
-                    if synced > 0 or closed > 0 or created > 0:
+                    if synced > 0 or closed > 0 or created > 0 or cash_synced:
                         await log_activity(
-                            f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed}",
+                            f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed} cash_synced={cash_synced}",
                             "status",
                         )
-                        logger.info(f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed}")
+                        logger.info(f"Alpaca reconcile [{port.name}]: synced={synced} created={created} closed={closed} cash_synced={cash_synced}")
 
             except Exception as e:
                 logger.error(f"Alpaca reconciliation failed for portfolio {portfolio.name}: {e}")

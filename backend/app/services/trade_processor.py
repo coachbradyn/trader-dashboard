@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -9,6 +11,8 @@ from app.utils.utc import utcnow
 from app.schemas.webhook import WebhookPayload
 from app.utils.auth import verify_api_key
 from app.services.price_service import price_service
+
+logger = logging.getLogger(__name__)
 
 
 async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
@@ -67,15 +71,13 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
 
     # Route to Henry for AI-evaluation-enabled portfolios (background)
     if ai_eval_portfolios and payload.signal == "entry":
-        import asyncio
         from app.services.ai_portfolio import evaluate_signal_for_portfolio
         for portfolio in ai_eval_portfolios:
             asyncio.create_task(evaluate_signal_for_portfolio(
                 trade, trader, payload.model_dump(), portfolio
             ))
 
-    # Auto-execute on Alpaca for live/paper portfolios
-    import asyncio as _aio
+    # Auto-execute on Alpaca for live/paper non-AI portfolios
     try:
         linked_result = await db.execute(
             select(PortfolioStrategy)
@@ -84,53 +86,26 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
         )
         for link in linked_result.scalars().all():
             port = link.portfolio
+            # Skip portfolios that aren't wired to Alpaca
             if port.execution_mode not in ("paper", "live"):
                 continue
             if not port.alpaca_api_key:
                 continue
-
-            side = "buy" if payload.signal == "entry" else "sell"
-
-            # For entries: size based on available cash and max_order_amount
-            if payload.signal == "entry":
-                max_amt = port.max_order_amount or 1000.0
-                available = min(port.cash, max_amt)
-                price = trade.entry_price or payload.price
-                if available <= 0 or not price or price <= 0:
-                    continue
-                qty = round(available / price, 4)
-                if qty <= 0:
-                    continue
-            else:
-                # For exits: sell the qty from the matched trade
-                qty = trade.qty if trade.qty and trade.qty > 0 else payload.qty
-
-            if qty <= 0:
+            # Skip AI-managed portfolios — Henry decides via evaluate_signal_for_portfolio
+            if port.is_ai_managed or getattr(port, "ai_evaluation_enabled", False):
                 continue
 
-            async def _alpaca_order(p=port, t=payload.ticker, q=qty, s=side):
-                try:
-                    from app.services.alpaca_service import alpaca_service
-                    is_paper = p.execution_mode == "paper"
-                    result = await alpaca_service.submit_order(
-                        api_key=p.alpaca_api_key_decrypted,
-                        secret_key=p.alpaca_secret_key_decrypted,
-                        paper=is_paper,
-                        ticker=t,
-                        qty=q,
-                        side=s,
-                    )
-                    import logging
-                    logging.getLogger(__name__).info(
-                        f"Alpaca auto-{s}: {t} x{q} on {p.name} ({p.execution_mode}) — {result.get('order_status', '?')}"
-                    )
-                except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).error(f"Alpaca auto-order failed for {t} on {p.name}: {e}")
-
-            _aio.create_task(_alpaca_order())
-    except Exception:
-        pass  # Non-blocking — don't break the webhook response
+            if payload.signal == "entry":
+                asyncio.create_task(_execute_on_alpaca(
+                    port, trade.ticker, trade.qty, "buy", trade.entry_price,
+                ))
+            elif payload.signal == "exit":
+                sell_qty = trade.qty if trade.qty and trade.qty > 0 else payload.qty
+                asyncio.create_task(_execute_on_alpaca(
+                    port, trade.ticker, sell_qty, "sell", payload.price,
+                ))
+    except Exception as e:
+        logger.warning(f"Alpaca auto-execute routing failed: {e}")
 
     # Auto-add traded ticker to watchlist (non-blocking)
     try:
@@ -161,7 +136,6 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
             await track_action_outcome(trade, db)
 
             # Save outcome context (non-blocking)
-            import asyncio
             from app.services.ai_service import save_context
             pnl_pct = trade.pnl_percent or 0.0
             asyncio.create_task(save_context(
@@ -183,8 +157,7 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
                 h.is_active = False
             await db.commit()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Portfolio manager hook failed (non-blocking): {e}")
+        logger.warning(f"Portfolio manager hook failed (non-blocking): {e}")
 
     return trade
 
@@ -250,8 +223,8 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         pt = PortfolioTrade(portfolio_id=link.portfolio_id, trade_id=trade.id)
         db.add(pt)
 
-        # Deduct position cost from portfolio cash
-        position_cost = payload.price * payload.qty
+        # Deduct position cost from portfolio cash (use trade's resolved price, not payload)
+        position_cost = trade.entry_price * trade.qty
         link.portfolio.cash -= position_cost
         linked_count += 1
 
@@ -319,7 +292,211 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
     for pt in portfolio_trades:
         await _take_snapshot(pt.portfolio, db)
 
+    # Auto-sell on Alpaca for live/paper portfolios
+    for pt in portfolio_trades:
+        port = pt.portfolio
+        if port.execution_mode in ("paper", "live") and port.alpaca_api_key:
+            asyncio.create_task(_execute_on_alpaca(
+                port, trade.ticker, trade.qty, "sell", trade.exit_price,
+            ))
+
     return trade
+
+
+async def _execute_on_alpaca(
+    portfolio: Portfolio,
+    ticker: str,
+    qty: float,
+    side: str,
+    price: float | None = None,
+) -> None:
+    """
+    Submit a market order to Alpaca for a live/paper portfolio, poll for fill,
+    and update the PortfolioHolding in the DB on confirmation.
+
+    Runs as a background task — never raises into the caller.
+    """
+    from app.services.alpaca_service import alpaca_service
+    from app.database import async_session
+    from app.models.portfolio_holding import PortfolioHolding
+
+    try:
+        is_paper = portfolio.execution_mode == "paper"
+
+        # For buys, respect max_order_amount
+        order_qty = qty
+        if side == "buy" and price and price > 0:
+            max_amt = portfolio.max_order_amount or 1000.0
+            max_qty = max_amt / price
+            order_qty = min(qty, max_qty)
+        order_qty = round(order_qty, 4)
+
+        if order_qty <= 0:
+            return
+
+        result = await alpaca_service.submit_order(
+            api_key=portfolio.alpaca_api_key_decrypted,
+            secret_key=portfolio.alpaca_secret_key_decrypted,
+            paper=is_paper,
+            ticker=ticker,
+            qty=order_qty,
+            side=side,
+        )
+
+        if result.get("status") == "error":
+            logger.error(f"Alpaca order failed: {side} {ticker} x{order_qty} on {portfolio.name} — {result.get('message')}")
+            return
+
+        order_id = result.get("order_id")
+        logger.info(f"Alpaca auto-{side}: {ticker} x{order_qty} on {portfolio.name} ({portfolio.execution_mode}) — submitted {order_id}")
+
+        if not order_id:
+            return
+
+        # Poll for fill: 6 × 0.5s inline, then 30 × 2s background = ~63s total
+        fill_price = None
+        fill_qty = 0.0
+        for _ in range(6):
+            await asyncio.sleep(0.5)
+            status = await alpaca_service.get_order_status(
+                api_key=portfolio.alpaca_api_key_decrypted,
+                secret_key=portfolio.alpaca_secret_key_decrypted,
+                paper=is_paper,
+                order_id=order_id,
+            )
+            if status.get("status") == "filled":
+                fill_price = status.get("filled_price", price)
+                fill_qty = status.get("filled_qty", order_qty)
+                break
+            if status.get("status") in ("canceled", "expired", "rejected"):
+                logger.warning(f"Alpaca order {order_id} was {status.get('status')} for {ticker} on {portfolio.name}")
+                return
+
+        if fill_qty and fill_qty > 0:
+            # Update holding in DB
+            async with async_session() as db:
+                await _update_holding_from_fill(db, portfolio.id, ticker, fill_qty, side, fill_price)
+            logger.info(f"Alpaca fill confirmed: {side} {ticker} x{fill_qty} @ ${fill_price:.2f} on {portfolio.name}")
+            try:
+                from app.services.henry_activity import log_activity
+                await log_activity(
+                    f"Alpaca {side}: {ticker} x{fill_qty:.4f} @ ${fill_price:.2f} on {portfolio.name}",
+                    "trade_execute", ticker=ticker,
+                )
+            except Exception:
+                pass
+        else:
+            # Extended polling in background for slow fills
+            logger.info(f"Alpaca order {order_id} not yet filled — continuing background poll")
+            asyncio.create_task(_poll_for_fill(
+                portfolio, order_id, ticker, order_qty, side, is_paper,
+            ))
+
+    except Exception as e:
+        logger.error(f"Alpaca auto-order failed for {ticker} on {portfolio.name}: {e}")
+
+
+async def _poll_for_fill(
+    portfolio: Portfolio,
+    order_id: str,
+    ticker: str,
+    expected_qty: float,
+    side: str,
+    is_paper: bool,
+) -> None:
+    """Extended background poll for delayed Alpaca fills (up to 60s)."""
+    from app.services.alpaca_service import alpaca_service
+    from app.database import async_session
+
+    try:
+        for _ in range(30):
+            await asyncio.sleep(2)
+            status = await alpaca_service.get_order_status(
+                api_key=portfolio.alpaca_api_key_decrypted,
+                secret_key=portfolio.alpaca_secret_key_decrypted,
+                paper=is_paper,
+                order_id=order_id,
+            )
+            if status.get("status") == "filled":
+                fill_price = status.get("filled_price")
+                fill_qty = status.get("filled_qty", expected_qty)
+                if fill_qty and fill_qty > 0:
+                    async with async_session() as db:
+                        await _update_holding_from_fill(db, portfolio.id, ticker, fill_qty, side, fill_price)
+                    logger.info(f"Delayed fill confirmed: {side} {ticker} x{fill_qty} @ ${fill_price:.2f} on {portfolio.name}")
+                    try:
+                        from app.services.henry_activity import log_activity
+                        await log_activity(
+                            f"Delayed fill: {side} {ticker} x{fill_qty:.4f} @ ${fill_price:.2f} on {portfolio.name}",
+                            "trade_execute", ticker=ticker,
+                        )
+                    except Exception:
+                        pass
+                return
+            if status.get("status") in ("canceled", "expired", "rejected"):
+                logger.warning(f"Alpaca order {order_id} was {status.get('status')} for {ticker}")
+                return
+
+        logger.warning(f"Alpaca order {order_id} for {ticker} did not fill within 60s — verify manually")
+    except Exception as e:
+        logger.error(f"Background fill poll failed for {order_id}: {e}")
+
+
+async def _update_holding_from_fill(
+    db: AsyncSession,
+    portfolio_id: str,
+    ticker: str,
+    qty: float,
+    side: str,
+    fill_price: float | None,
+) -> None:
+    """Create or update a PortfolioHolding after an Alpaca fill."""
+    from app.models.portfolio_holding import PortfolioHolding
+
+    ticker = ticker.upper()
+
+    if side.lower() == "buy":
+        existing = await db.execute(
+            select(PortfolioHolding).where(
+                PortfolioHolding.portfolio_id == portfolio_id,
+                PortfolioHolding.ticker == ticker,
+                PortfolioHolding.is_active == True,
+            )
+        )
+        holding = existing.scalar_one_or_none()
+
+        if holding:
+            total_cost = holding.entry_price * holding.qty + (fill_price or holding.entry_price) * qty
+            total_qty = holding.qty + qty
+            holding.entry_price = total_cost / total_qty if total_qty > 0 else 0
+            holding.qty = total_qty
+        else:
+            db.add(PortfolioHolding(
+                portfolio_id=portfolio_id,
+                ticker=ticker,
+                direction="long",
+                entry_price=fill_price or 0,
+                qty=qty,
+                entry_date=utcnow(),
+                is_active=True,
+                notes="alpaca_auto",
+            ))
+    else:
+        existing = await db.execute(
+            select(PortfolioHolding).where(
+                PortfolioHolding.portfolio_id == portfolio_id,
+                PortfolioHolding.ticker == ticker,
+                PortfolioHolding.is_active == True,
+            )
+        )
+        holding = existing.scalar_one_or_none()
+        if holding:
+            if qty >= holding.qty:
+                holding.is_active = False
+            else:
+                holding.qty -= qty
+
+    await db.commit()
 
 
 async def _take_snapshot(portfolio: Portfolio, db: AsyncSession):

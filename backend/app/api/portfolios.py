@@ -91,17 +91,52 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
     except Exception:
         pass
 
-    # Equity = cash + holdings market value + open trade unrealized P&L
-    # This is the true portfolio value — what you'd have if you liquidated everything
-    equity = p.cash + holdings_market_value + webhook_unrealized
-    unrealized = holdings_unrealized + webhook_unrealized
-    open_pos = holdings_count + webhook_open
+    # For AI-managed portfolios, compute equity from first principles to avoid
+    # cash-tracking drift (simulated trade closes credit P&L back to cash,
+    # which inflates p.cash over time).
+    if getattr(p, "is_ai_managed", False):
+        # Include simulated trades in equity calculation
+        sim_closed_pnl = 0.0
+        sim_unrealized = 0.0
+        try:
+            sim_closed_result = await db.execute(
+                select(Trade)
+                .join(PortfolioTrade)
+                .where(
+                    PortfolioTrade.portfolio_id == p.id,
+                    Trade.status == "closed",
+                )
+            )
+            sim_closed_pnl = sum(t.pnl_dollars or 0.0 for t in sim_closed_result.scalars().all())
+
+            sim_open_result = await db.execute(
+                select(Trade)
+                .join(PortfolioTrade)
+                .where(
+                    PortfolioTrade.portfolio_id == p.id,
+                    Trade.status == "open",
+                )
+            )
+            for t in sim_open_result.scalars().all():
+                cp = price_service.get_price(t.ticker) or t.entry_price
+                if t.direction == "long":
+                    sim_unrealized += (cp - t.entry_price) * t.qty
+                else:
+                    sim_unrealized += (t.entry_price - cp) * t.qty
+        except Exception:
+            pass
+
+        equity = p.initial_capital + sim_closed_pnl + sim_unrealized + holdings_unrealized
+        unrealized = sim_unrealized + holdings_unrealized
+        open_pos = holdings_count + webhook_open
+    else:
+        # Non-AI portfolios: cash + market value is correct
+        equity = p.cash + holdings_market_value + webhook_unrealized
+        unrealized = holdings_unrealized + webhook_unrealized
+        open_pos = holdings_count + webhook_open
 
     # Return % = total gains / total capital deployed
-    # Gains = equity - initial_capital (deposits don't create gains, they increase both)
-    # This gives the correct return on invested capital
     if p.initial_capital > 0:
-        # Net gain = equity minus all money put in
         net_gain = equity - p.initial_capital
         total_return = (net_gain / p.initial_capital * 100)
     else:

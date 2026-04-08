@@ -879,12 +879,16 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
 
   const [hoveredAlert, setHoveredAlert] = useState<string | null>(null);
 
-  const totalValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
-  const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
-
   // Deduplicate: filter out strategy positions that already exist as manual holdings
   const holdingTickers = new Set(holdings.map((h) => `${h.ticker}:${h.direction}`));
   const uniquePositions = positions.filter((p) => !holdingTickers.has(`${p.ticker}:${p.direction}`));
+
+  // Include strategy positions in total value so allocation % is accurate
+  const holdingsValue = holdings.reduce((sum, h) => sum + (h.current_price ?? h.entry_price) * h.qty, 0);
+  const strategyValue = uniquePositions.reduce((sum, p) => sum + (p.current_price ?? p.entry_price) * p.qty, 0);
+  const totalValue = holdingsValue + strategyValue;
+  const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0)
+    + uniquePositions.reduce((sum, p) => sum + (p.unrealized_pnl ?? 0), 0);
   const totalCount = holdings.length + uniquePositions.length;
 
   // Build a map of recent actions per ticker for notification tooltips
@@ -1680,27 +1684,35 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
             ))}
             {/* Strategy positions (deduplicated — skip if holding already exists) */}
             {uniquePositions.map((p) => (
-              <div key={p.trade_id} className="flex items-center gap-3 text-[11px] font-mono py-2 px-2 rounded-md hover:bg-surface-light/10">
-                <span className="text-white font-semibold w-12">{p.ticker}</span>
-                <Badge className={`text-[8px] px-1 py-0 ${p.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
-                  {p.direction.toUpperCase()}
-                </Badge>
-                <span className="text-gray-500">{p.qty} @ {formatCurrency(p.entry_price)}</span>
-                {p.current_price && (
-                  <span className="text-gray-500">{String.fromCharCode(8594)} {formatCurrency(p.current_price)}</span>
-                )}
-                <Badge className="text-[8px] px-1 py-0 bg-ai-blue/10 text-ai-blue">strategy</Badge>
-                <div className="ml-auto">
-                  {p.unrealized_pnl != null && (
-                    <div className="text-right">
-                      <span className={`font-semibold ${pnlColor(p.unrealized_pnl)}`}>
-                        {formatCurrency(p.unrealized_pnl)}
-                      </span>
-                      <span className={`ml-1.5 ${pnlColor(p.unrealized_pnl_pct ?? 0)}`}>
-                        ({formatPercent(p.unrealized_pnl_pct ?? 0)})
+              <div key={p.trade_id} className="rounded-lg border border-border/50 hover:border-border p-3 transition">
+                {/* Row 1: Ticker, badges, P&L */}
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-sm font-bold text-white" style={FONT_OUTFIT}>{p.ticker}</span>
+                  <Badge className={`text-[8px] px-1.5 py-0 ${p.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
+                    {p.direction.toUpperCase()}
+                  </Badge>
+                  <Badge className="text-[8px] px-1 py-0 bg-ai-blue/10 text-ai-blue">strategy</Badge>
+                  {/* Allocation */}
+                  <span className="text-[9px] text-gray-600 tabular-nums ml-auto hidden sm:inline">
+                    {getAllocation(p.current_price ?? p.entry_price, p.qty).toFixed(1)}%
+                  </span>
+                  {/* P&L — always visible */}
+                  {p.unrealized_pnl_pct != null && (
+                    <div className="text-right sm:ml-0 ml-auto">
+                      <span className={`text-sm font-mono font-semibold ${pnlColor(p.unrealized_pnl_pct ?? 0)}`}>
+                        {formatPercent(p.unrealized_pnl_pct ?? 0)}
                       </span>
                     </div>
                   )}
+                </div>
+                {/* Row 2: Entry details */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-gray-500">
+                  <span>{p.qty} @ {formatCurrency(p.entry_price)}</span>
+                  {p.current_price != null && <span>{String.fromCharCode(8594)} {formatCurrency(p.current_price)}</span>}
+                  {p.unrealized_pnl != null && (
+                    <span className={pnlColor(p.unrealized_pnl)}>{formatCurrency(p.unrealized_pnl)}</span>
+                  )}
+                  <span className="sm:hidden">{getAllocation(p.current_price ?? p.entry_price, p.qty).toFixed(1)}% alloc</span>
                 </div>
               </div>
             ))}
@@ -1901,11 +1913,30 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
       {/* Daily P&L */}
       {dailyStats && dailyStats.length > 0 && <DailyPnlChart data={dailyStats} />}
 
-      {/* Allocation (full-width horizontal) */}
-      {holdings && holdings.length > 0 && <AllocationChart holdings={holdings} />}
-
-      {/* Holdings Performance */}
-      {holdings && holdings.length > 0 && <HoldingsPerformanceBars holdings={holdings} />}
+      {/* Allocation & Performance charts — include strategy positions */}
+      {(() => {
+        const strategyPositions = (positions || []).filter((p) => {
+          const key = `${p.ticker}:${p.direction}`;
+          return !(holdings || []).some((h) => `${h.ticker}:${h.direction}` === key);
+        });
+        const allHoldings: PortfolioHolding[] = [
+          ...(holdings || []),
+          ...strategyPositions.map((p) => ({
+            id: p.trade_id, portfolio_id: "", trade_id: p.trade_id, ticker: p.ticker,
+            direction: p.direction, entry_price: p.entry_price, qty: p.qty,
+            entry_date: p.entry_time, strategy_name: "strategy", notes: null,
+            is_active: true, source: "strategy", current_price: p.current_price,
+            unrealized_pnl: p.unrealized_pnl, unrealized_pnl_pct: p.unrealized_pnl_pct,
+            created_at: p.entry_time,
+          } as PortfolioHolding)),
+        ];
+        return allHoldings.length > 0 ? (
+          <>
+            <AllocationChart holdings={allHoldings} />
+            <HoldingsPerformanceBars holdings={allHoldings} />
+          </>
+        ) : null;
+      })()}
 
       {/* Content Tabs */}
       <Tabs defaultValue="positions" className="w-full">

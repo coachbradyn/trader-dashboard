@@ -327,9 +327,34 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
             holding.notes = (holding.notes or "") + " | closed_by_alpaca_sync"
             closed += 1
 
+    # Sync cash balance from Alpaca account
+    cash_synced = False
+    alpaca_cash = None
+    try:
+        account_info = await alpaca_service.get_account_info(
+            api_key=portfolio.alpaca_api_key_decrypted,
+            secret_key=portfolio.alpaca_secret_key_decrypted,
+            paper=is_paper,
+        )
+        if account_info.get("status") == "connected":
+            alpaca_cash = account_info.get("cash")
+            if alpaca_cash is not None:
+                portfolio.cash = alpaca_cash
+                cash_synced = True
+    except Exception as e:
+        logger.warning(f"Cash sync failed for portfolio {body.portfolio_id}: {e}")
+
     await db.commit()
-    logger.info(f"SYNC | portfolio={body.portfolio_id} synced={synced} created={created} closed={closed}")
-    return {"status": "synced", "synced": synced, "created": created, "closed": closed, "alpaca_positions": len(alpaca_positions)}
+    logger.info(f"SYNC | portfolio={body.portfolio_id} synced={synced} created={created} closed={closed} cash_synced={cash_synced}")
+    return {
+        "status": "synced",
+        "synced": synced,
+        "created": created,
+        "closed": closed,
+        "alpaca_positions": len(alpaca_positions),
+        "cash_synced": cash_synced,
+        "alpaca_cash": alpaca_cash,
+    }
 
 
 import os
