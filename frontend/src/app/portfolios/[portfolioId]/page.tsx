@@ -322,6 +322,7 @@ function TradeHistorySection({ trades }: { trades: Trade[] }) {
                 <th className="text-right py-2 pr-3 font-medium">P&L</th>
                 <th className="text-left py-2 pr-3 font-medium">Reason</th>
                 <th className="text-right py-2 font-medium">Date</th>
+                <th className="py-2"></th>
               </tr>
             </thead>
             <tbody>
@@ -341,6 +342,23 @@ function TradeHistorySection({ trades }: { trades: Trade[] }) {
                   <td className="py-2 pr-3 text-gray-500">{t.exit_reason || "—"}</td>
                   <td className="py-2 text-right text-gray-500">
                     {t.exit_time ? formatDate(t.exit_time) : formatDate(t.entry_time)}
+                  </td>
+                  <td className="py-2 pl-2">
+                    {t.status === "open" && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Close ghost trade ${t.ticker}? This sets P&L to $0.`)) return;
+                          try {
+                            const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+                            await fetch(`${API_URL}/trades/${t.id}/close?reason=ghost_cleanup`, { method: "PATCH" });
+                            window.location.reload();
+                          } catch {}
+                        }}
+                        className="text-[9px] px-2 py-0.5 rounded border border-loss/30 text-loss hover:bg-loss/10 transition"
+                      >
+                        Close
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
