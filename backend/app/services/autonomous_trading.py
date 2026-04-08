@@ -785,6 +785,13 @@ async def _liquidate_for_capital(
             "trade_exit", ticker=pos.ticker,
         ))
 
+        # Execute sell on Alpaca if portfolio is wired to paper/live
+        if portfolio.execution_mode in ("paper", "live") and portfolio.alpaca_api_key:
+            from app.services.trade_processor import _execute_on_alpaca
+            asyncio.create_task(_execute_on_alpaca(
+                portfolio, pos.ticker, pos.qty, "sell", cp,
+            ))
+
     # Enrich positions with current price and P&L
     enriched = []
     for pos in open_positions:
@@ -1009,6 +1016,14 @@ async def _execute_autonomous_trade(
 
             await db.commit()
             logger.info(f"Autonomous: executed {direction.upper()} {ticker} x{qty:.2f} @ ${price:.2f} (conf {confidence}, source={source})")
+
+            # Execute on Alpaca if portfolio is wired to paper/live
+            if port_obj.execution_mode in ("paper", "live") and port_obj.alpaca_api_key:
+                from app.services.trade_processor import _execute_on_alpaca
+                asyncio.create_task(_execute_on_alpaca(
+                    port_obj, ticker, round(qty, 4), "buy", price,
+                ))
+
             from app.services.henry_activity import log_activity as _log
             await _log(
                 f"BOUGHT {ticker} {direction.upper()} x{qty:.2f} @ ${price:.2f} (confidence {confidence}/10)",
@@ -1169,6 +1184,13 @@ async def check_autonomous_exits() -> int:
                         ticker=pos.ticker,
                         trade_id=pos.id,
                     ))
+
+                    # Execute sell on Alpaca if portfolio is wired to paper/live
+                    if portfolio.execution_mode in ("paper", "live") and portfolio.alpaca_api_key:
+                        from app.services.trade_processor import _execute_on_alpaca
+                        asyncio.create_task(_execute_on_alpaca(
+                            portfolio, pos.ticker, pos.qty, "sell", current_price,
+                        ))
 
                     closed += 1
                     logger.info(f"Autonomous exit: {pos.ticker} | {exit_reason} | PnL: {pos.pnl_percent:+.2f}%")

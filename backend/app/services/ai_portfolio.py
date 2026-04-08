@@ -689,6 +689,13 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                     port.cash -= qty * trade.entry_price
                     logger.info(f"AI eval ({port.name}): BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence})")
 
+                    # Execute on Alpaca if portfolio is wired to paper/live
+                    if port.execution_mode in ("paper", "live") and port.alpaca_api_key:
+                        from app.services.trade_processor import _execute_on_alpaca
+                        asyncio.create_task(_execute_on_alpaca(
+                            port, trade.ticker, qty, "buy", trade.entry_price,
+                        ))
+
                     try:
                         from app.services.henry_activity import log_activity
                         asyncio.create_task(log_activity(
@@ -716,6 +723,14 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                                 action_record.reject_reason = None
                                 realloc_success = True
                                 logger.info(f"AI eval ({port.name}): BUY {trade.ticker} x{qty:.4f} @ ${trade.entry_price:.2f} (conf {confidence}, after reallocation)")
+
+                                # Execute on Alpaca if portfolio is wired to paper/live
+                                if port.execution_mode in ("paper", "live") and port.alpaca_api_key:
+                                    from app.services.trade_processor import _execute_on_alpaca
+                                    asyncio.create_task(_execute_on_alpaca(
+                                        port, trade.ticker, qty, "buy", trade.entry_price,
+                                    ))
+
                                 try:
                                     from app.services.henry_activity import log_activity
                                     asyncio.create_task(log_activity(
