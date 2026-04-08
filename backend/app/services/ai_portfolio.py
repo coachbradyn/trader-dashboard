@@ -262,7 +262,6 @@ async def evaluate_signal_for_ai_portfolio(
                 .where(
                     PortfolioTrade.portfolio_id == portfolio.id,
                     Trade.status == "open",
-                    Trade.is_simulated == True,
                 )
                 .options(selectinload(Trade.trader))
             )
@@ -847,7 +846,6 @@ async def scheduled_ai_portfolio_review() -> None:
                 .where(
                     PortfolioTrade.portfolio_id == portfolio.id,
                     Trade.status == "open",
-                    Trade.is_simulated == True,
                 )
                 .options(selectinload(Trade.trader))
             )

@@ -86,7 +86,7 @@ async def get_status(db: AsyncSession = Depends(get_db)):
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "open",
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
     )
     open_count = pos_result.scalar() or 0
@@ -97,7 +97,7 @@ async def get_status(db: AsyncSession = Depends(get_db)):
         .join(PortfolioTrade)
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
     )
     total_trades = total_result.scalar() or 0
@@ -140,7 +140,7 @@ async def compare_performance(db: AsyncSession = Depends(get_db)):
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "closed",
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
     )
     ai_closed = ai_trades_result.scalars().all()
@@ -306,7 +306,7 @@ async def get_decisions(
                 .where(
                     PortfolioTrade.portfolio_id == portfolio.id,
                     Trade.ticker == a.ticker,
-                    Trade.is_simulated == True,
+                    # Include both simulated and real trades linked to this portfolio
                     Trade.status == "closed",
                     Trade.entry_time >= a.created_at - timedelta(seconds=60),
                     Trade.entry_time <= a.created_at + timedelta(seconds=60),
@@ -353,7 +353,6 @@ async def get_holdings(db: AsyncSession = Depends(get_db)):
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "open",
-            Trade.is_simulated == True,
         )
         .options(selectinload(Trade.trader))
         .order_by(desc(Trade.entry_time))
@@ -451,7 +450,7 @@ async def chat_about_portfolio(req: AIChatRequest, db: AsyncSession = Depends(ge
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "open",
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
         .options(selectinload(Trade.trader))
     )
@@ -472,7 +471,7 @@ async def chat_about_portfolio(req: AIChatRequest, db: AsyncSession = Depends(ge
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
             Trade.status == "closed",
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
     )
     closed = closed_result.scalars().all()
@@ -933,7 +932,7 @@ async def debug_ai_portfolio(db: AsyncSession = Depends(get_db)):
         .join(PortfolioTrade)
         .where(
             PortfolioTrade.portfolio_id == portfolio.id,
-            Trade.is_simulated == True,
+            # Include both simulated and real trades linked to this portfolio
         )
         .options(selectinload(Trade.trader))
         .order_by(desc(Trade.entry_time))

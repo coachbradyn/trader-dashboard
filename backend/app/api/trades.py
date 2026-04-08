@@ -23,12 +23,17 @@ async def get_trades(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Trade).options(selectinload(Trade.trader)).where(Trade.is_simulated == False)
+    query = select(Trade).options(selectinload(Trade.trader))
+
+    if portfolio_id:
+        # When filtering by portfolio, show ALL trades linked to it (including simulated)
+        query = query.join(PortfolioTrade).where(PortfolioTrade.portfolio_id == portfolio_id)
+    else:
+        # Global trade list: hide simulated trades
+        query = query.where(Trade.is_simulated == False)
 
     if trader_id:
         query = query.join(Trader).where(Trader.trader_id == trader_id)
-    if portfolio_id:
-        query = query.join(PortfolioTrade).where(PortfolioTrade.portfolio_id == portfolio_id)
     if status:
         query = query.where(Trade.status == status)
 
