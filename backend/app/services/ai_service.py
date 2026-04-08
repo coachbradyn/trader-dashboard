@@ -1131,8 +1131,10 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             return await _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger)
 
         except Exception as e:
-            logger.error(f"Briefing failed: {e}", exc_info=True)
-            return {"briefing": f"Briefing temporarily unavailable: {type(e).__name__}. Try again in a moment.", "open_positions": 0}
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"Briefing failed: {e}\n{tb}")
+            return {"briefing": f"Briefing unavailable: {type(e).__name__}: {str(e)[:200]}", "open_positions": 0}
 
     @app.get("/api/ai/briefing/history")
     async def ai_briefing_history(limit: int = 14):
@@ -1170,8 +1172,10 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         try:
             return await _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger, force=True)
         except Exception as e:
-            logger.error(f"Briefing refresh failed: {e}", exc_info=True)
-            return {"briefing": f"Refresh failed: {type(e).__name__}", "open_positions": 0}
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"Briefing refresh failed: {e}\n{tb}")
+            return {"briefing": f"Refresh failed: {type(e).__name__}: {str(e)[:200]}", "open_positions": 0}
 
     async def _generate_fresh_briefing(get_trades_fn, get_positions_fn, logger, force=False):
         """Generate a fresh briefing with full market intelligence and cache it."""

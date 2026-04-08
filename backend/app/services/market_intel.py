@@ -321,7 +321,7 @@ def _fetch_spy_context() -> dict:
 
         current_close = round(float(latest["Close"]), 2)
         prev_close = round(float(prev["Close"]), 2)
-        change_pct = round((current_close - prev_close) / prev_close * 100, 2)
+        change_pct = round((current_close - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
 
         # 5-day range
         high_5d = round(float(hist["High"].max()), 2)
