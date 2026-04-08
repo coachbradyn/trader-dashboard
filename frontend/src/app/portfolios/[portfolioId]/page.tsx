@@ -993,6 +993,9 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
   const startEdit = (h: PortfolioHolding) => {
     setEditingId(h.id);
     setEditFields({
+      direction: h.direction,
+      qty: h.qty,
+      entry_price: h.entry_price,
       position_type: h.position_type || "momentum",
       thesis: h.thesis || "",
       catalyst_date: h.catalyst_date || "",
@@ -1008,6 +1011,9 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
     setSubmitting(true);
     try {
       const updates: Record<string, unknown> = { position_type: editFields.position_type };
+      if (editFields.direction) updates.direction = editFields.direction;
+      if (editFields.qty) updates.qty = parseFloat(String(editFields.qty));
+      if (editFields.entry_price) updates.entry_price = parseFloat(String(editFields.entry_price));
       if (editFields.thesis) updates.thesis = editFields.thesis;
       else updates.thesis = null;
       if (editFields.catalyst_date) updates.catalyst_date = editFields.catalyst_date;
@@ -1631,6 +1637,15 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
                   <div className="ml-12 mr-2 mb-2 p-3 rounded-lg border border-ai-blue/20 bg-ai-blue/5">
                     <div className="text-[9px] text-ai-blue font-semibold uppercase tracking-wider mb-2" style={FONT_OUTFIT}>Edit Position</div>
                     <div className="flex flex-wrap gap-2 mb-2">
+                      <select value={String(editFields.direction)} onChange={(e) => setEditFields((f) => ({ ...f, direction: e.target.value }))}
+                        className="h-7 text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 text-white">
+                        <option value="long">Long</option>
+                        <option value="short">Short</option>
+                      </select>
+                      <Input type="number" value={String(editFields.qty || "")} onChange={(e) => setEditFields((f) => ({ ...f, qty: e.target.value }))}
+                        placeholder="Qty" step="0.01" className="w-24 h-7 text-[10px] font-mono bg-surface-light/30" />
+                      <Input type="number" value={String(editFields.entry_price || "")} onChange={(e) => setEditFields((f) => ({ ...f, entry_price: e.target.value }))}
+                        placeholder="Entry $" step="0.01" className="w-28 h-7 text-[10px] font-mono bg-surface-light/30" />
                       <select value={String(editFields.position_type)} onChange={(e) => setEditFields((f) => ({ ...f, position_type: e.target.value }))}
                         className="h-7 text-[10px] font-mono bg-surface-light/30 border border-border rounded-md px-2 text-white">
                         <option value="momentum">Momentum</option>
