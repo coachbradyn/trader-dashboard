@@ -1674,7 +1674,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
     @app.post("/api/ai/chat")
     async def chat_with_henry(req: QueryRequest):
-        """Chat with Henry about his decisions and activity."""
+        """Chat with Henry about his decisions and activity — with conversation memory."""
         from app.services.henry_activity import get_activity_log
 
         recent_activity = await get_activity_log(limit=20)
@@ -1683,21 +1683,121 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             for a in recent_activity
         ) if recent_activity else "No recent activity."
 
+        # Load recent chat history for conversation continuity
+        chat_history_text = ""
+        try:
+            from app.database import async_session as _ch_as
+            from app.models import HenryContext
+            from sqlalchemy import select as sa_sel
+            import json as _json
+            async with _ch_as() as ch_db:
+                ch_result = await ch_db.execute(
+                    sa_sel(HenryContext)
+                    .where(HenryContext.context_type == "chat_message")
+                    .order_by(HenryContext.created_at.desc())
+                    .limit(20)
+                )
+                ch_entries = list(reversed(ch_result.scalars().all()))
+                if ch_entries:
+                    lines = []
+                    for e in ch_entries:
+                        data = _json.loads(e.content) if isinstance(e.content, str) else e.content
+                        role = data.get("role", "user")
+                        text = data.get("text", "")[:300]
+                        lines.append(f"  {'USER' if role == 'user' else 'HENRY'}: {text}")
+                    chat_history_text = "\n".join(lines)
+        except Exception:
+            pass
+
+        history_section = f"\nRECENT CONVERSATION:\n{chat_history_text}\n" if chat_history_text else ""
+
         enhanced_question = f"""The user is asking about your trading decisions and activity.
 
 IMPORTANT: You are an AUTONOMOUS trader. You make your own buy/sell decisions for the AI portfolio without needing user approval. When you evaluate a signal and decide BUY, the trade executes immediately. You also run scanner profiles to find your own opportunities. You are NOT a recommendation engine that waits for approval — you are an independent trader.
 
 YOUR RECENT ACTIVITY LOG:
 {activity_text}
-
+{history_section}
 USER QUESTION: {req.question}
 
-Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring or scanning for."""
+Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring or scanning for. Reference the conversation history if relevant."""
 
         all_trades = await get_trades_fn(days_back=7)
         positions = await get_positions_fn()
         result = await query_trades(enhanced_question, all_trades, positions)
+
+        # Persist both user message and Henry's reply for chat history
+        try:
+            from app.database import async_session as _chat_as
+            from app.models import HenryContext
+            import json as _json
+            async with _chat_as() as cdb:
+                cdb.add(HenryContext(
+                    context_type="chat_message",
+                    content=_json.dumps({"role": "user", "text": req.question}),
+                    expires_at=utcnow() + timedelta(days=30),
+                ))
+                cdb.add(HenryContext(
+                    context_type="chat_message",
+                    content=_json.dumps({"role": "henry", "text": result}),
+                    expires_at=utcnow() + timedelta(days=30),
+                ))
+                await cdb.commit()
+        except Exception:
+            pass
+
         return {"answer": result, "trades_in_context": len(all_trades)}
+
+    @app.get("/api/ai/chat/history")
+    async def get_chat_history(limit: int = 50):
+        """Get persisted chat history (user + henry messages)."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import select
+            import json as _json
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(HenryContext)
+                    .where(HenryContext.context_type == "chat_message")
+                    .order_by(HenryContext.created_at.asc())
+                    .limit(limit * 2)  # 2 messages per exchange
+                )
+                entries = result.scalars().all()
+
+            messages = []
+            for e in entries:
+                try:
+                    data = _json.loads(e.content) if isinstance(e.content, str) else e.content
+                    messages.append({
+                        "id": e.id,
+                        "role": data.get("role", "user"),
+                        "text": data.get("text", ""),
+                        "created_at": (e.created_at.isoformat() + "Z") if e.created_at else None,
+                    })
+                except Exception:
+                    continue
+            return messages
+        except Exception:
+            return []
+
+    @app.delete("/api/ai/chat/history")
+    async def clear_chat_history():
+        """Clear all chat history."""
+        try:
+            from app.database import async_session
+            from app.models import HenryContext
+            from sqlalchemy import delete
+
+            async with async_session() as db:
+                await db.execute(
+                    delete(HenryContext).where(HenryContext.context_type == "chat_message")
+                )
+                await db.commit()
+            return {"status": "cleared"}
+        except Exception as e:
+            raise HTTPException(500, str(e))
 
     # ─── HENRY'S PRICE TARGETS ──────────────────────────────────────
 

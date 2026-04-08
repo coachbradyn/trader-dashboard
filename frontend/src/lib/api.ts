@@ -357,6 +357,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ question }),
     }),
+  getChatHistory: (limit?: number) =>
+    fetchApi<Array<{ id: string; role: string; text: string; created_at: string }>>("/ai/chat/history" + (limit ? "?limit=" + limit : "")),
+  clearChatHistory: () =>
+    fetchApi<{ status: string }>("/ai/chat/history", { method: "DELETE" }),
   getHenryContext: (ticker?: string) =>
     fetchApi<import("./types").HenryContextEntry[]>("/ai/context" + (ticker ? "?ticker=" + ticker : "")),
   getHenryStats: () =>

@@ -13,8 +13,8 @@ const NAV_LINKS = [
   { href: "/screener", label: "Watchlist", dot: "bg-amber-500", key: "w" },
   { href: "/portfolios", label: "Portfolios", key: "p" },
   { href: "/scanner", label: "Scanner", dot: "bg-ai-blue", key: "s" },
+  { href: "/henry", label: "Henry", dot: "bg-[#6366f1]", key: "h" },
   { href: "/settings", label: "Settings" },
-  { href: "/memory", label: "Memory", dot: "bg-[#6366f1]" },
 ];
 
 // ── MetricTooltip ─────────────────────────────────────────────────
@@ -38,6 +38,7 @@ const SHORTCUTS = [
   { key: "w", label: "Watchlist" },
   { key: "s", label: "Scanner" },
   { key: "p", label: "Portfolios" },
+  { key: "h", label: "Henry" },
   { key: "?", label: "Toggle this overlay" },
 ];
 
@@ -401,6 +402,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
         case "w": router.push("/screener"); break;
         case "s": router.push("/scanner"); break;
         case "p": router.push("/portfolios"); break;
+        case "h": router.push("/henry"); break;
         case "?": setShowShortcuts((v) => !v); break;
         case "Escape": setShowShortcuts(false); break;
         default: return;
