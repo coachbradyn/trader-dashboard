@@ -55,7 +55,7 @@ async def _generate_morning_summary():
             positions = []
             for t in open_trades:
                 current_price = price_service.get_price(t.ticker) or t.entry_price
-                pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100) if t.direction == "long" else ((t.entry_price - current_price) / t.entry_price * 100)
+                pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100) if t.direction == "long" else ((t.entry_price - current_price) / t.entry_price * 100) if t.entry_price and t.entry_price > 0 else 0.0
                 positions.append({
                     "trader": t.trader.trader_id,
                     "dir": t.direction,

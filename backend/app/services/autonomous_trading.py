@@ -793,10 +793,13 @@ async def _liquidate_for_capital(
             continue
 
         cp = price_service.get_price(pos.ticker) or pos.entry_price
-        if pos.direction == "long":
-            pnl_pct = (cp - pos.entry_price) / pos.entry_price * 100
+        if pos.entry_price and pos.entry_price > 0:
+            if pos.direction == "long":
+                pnl_pct = (cp - pos.entry_price) / pos.entry_price * 100
+            else:
+                pnl_pct = (pos.entry_price - cp) / pos.entry_price * 100
         else:
-            pnl_pct = (pos.entry_price - cp) / pos.entry_price * 100
+            pnl_pct = 0.0
 
         hold_hours = (utcnow() - pos.entry_time).total_seconds() / 3600 if pos.entry_time else 0
         enriched.append({
@@ -1075,10 +1078,13 @@ async def check_autonomous_exits() -> int:
                     current_price = price_service.get_price(pos.ticker) or pos.entry_price
 
                 # Calculate P&L
-                if pos.direction == "long":
-                    pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+                if pos.entry_price and pos.entry_price > 0:
+                    if pos.direction == "long":
+                        pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
+                    else:
+                        pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
                 else:
-                    pnl_pct = (pos.entry_price - current_price) / pos.entry_price * 100
+                    pnl_pct = 0.0
 
                 hold_days = (utcnow() - pos.entry_time).days if pos.entry_time else 0
 

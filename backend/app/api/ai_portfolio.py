@@ -363,11 +363,14 @@ async def get_holdings(db: AsyncSession = Depends(get_db)):
     holdings = []
     for t in positions:
         cp = price_service.get_price(t.ticker) or t.entry_price
-        if t.direction == "long":
-            pnl_pct = ((cp - t.entry_price) / t.entry_price * 100)
-            pnl_dollars = (cp - t.entry_price) * t.qty
+        if t.entry_price and t.entry_price > 0:
+            if t.direction == "long":
+                pnl_pct = ((cp - t.entry_price) / t.entry_price * 100)
+                pnl_dollars = (cp - t.entry_price) * t.qty
+            else:
+                pnl_pct = ((t.entry_price - cp) / t.entry_price * 100)
         else:
-            pnl_pct = ((t.entry_price - cp) / t.entry_price * 100)
+            pnl_pct = 0.0
             pnl_dollars = (t.entry_price - cp) * t.qty
 
         hold_hours = (utcnow() - t.entry_time).total_seconds() / 3600
@@ -457,7 +460,7 @@ async def chat_about_portfolio(req: AIChatRequest, db: AsyncSession = Depends(ge
     holdings_text = ""
     for t in open_positions:
         cp = price_service.get_price(t.ticker) or t.entry_price
-        pnl = ((cp - t.entry_price) / t.entry_price * 100) if t.direction == "long" else ((t.entry_price - cp) / t.entry_price * 100)
+        pnl = ((cp - t.entry_price) / t.entry_price * 100) if t.direction == "long" else ((t.entry_price - cp) / t.entry_price * 100) if t.entry_price and t.entry_price > 0 else 0.0
         holdings_text += f"  {t.trader.trader_id}: {t.direction.upper()} {t.ticker} @ ${t.entry_price:.2f} → ${cp:.2f} ({pnl:+.2f}%)\n"
     if not holdings_text:
         holdings_text = "  No open positions."

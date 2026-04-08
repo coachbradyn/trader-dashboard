@@ -1222,10 +1222,13 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             holdings_context_lines = []
             for h in holdings:
                 current_price = price_service.get_price(h.ticker) or h.entry_price
-                if h.direction == "long":
-                    pnl = (current_price - h.entry_price) / h.entry_price * 100
+                if h.entry_price and h.entry_price > 0:
+                    if h.direction == "long":
+                        pnl = (current_price - h.entry_price) / h.entry_price * 100
+                    else:
+                        pnl = (h.entry_price - current_price) / h.entry_price * 100
                 else:
-                    pnl = (h.entry_price - current_price) / h.entry_price * 100
+                    pnl = 0.0
                 holdings_context_lines.append(
                     f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "
                     f"current ${current_price:.2f} | {pnl:+.2f}% | strategy: {h.strategy_name or 'manual'}"
@@ -1360,10 +1363,13 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                             value = cp * h.qty
                             total_cost += cost
                             total_value += value
-                            if h.direction == "long":
-                                pnl = (cp - h.entry_price) / h.entry_price * 100
+                            if h.entry_price and h.entry_price > 0:
+                                if h.direction == "long":
+                                    pnl = (cp - h.entry_price) / h.entry_price * 100
+                                else:
+                                    pnl = (h.entry_price - cp) / h.entry_price * 100
                             else:
-                                pnl = (h.entry_price - cp) / h.entry_price * 100
+                                pnl = 0.0
                             alloc = 0.0  # will compute after totaling
                             lines.append({
                                 "text": f"  {h.ticker} | {h.direction.upper()} | {h.qty} shares @ ${h.entry_price:.2f} | "

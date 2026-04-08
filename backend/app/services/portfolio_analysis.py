@@ -145,7 +145,7 @@ async def evaluate_signal(trade: Trade, db: AsyncSession):
             portfolio_values[pid]["by_ticker"][h.ticker] = portfolio_values[pid]["by_ticker"].get(h.ticker, 0) + pos_val
 
             if h.ticker == ticker:
-                pnl = ((cp - h.entry_price) / h.entry_price * 100) if h.direction == "long" else ((h.entry_price - cp) / h.entry_price * 100)
+                pnl = ((cp - h.entry_price) / h.entry_price * 100) if h.direction == "long" else ((h.entry_price - cp) / h.entry_price * 100) if h.entry_price and h.entry_price > 0 else 0.0
                 holdings_text += (
                     f"  {h.ticker} {h.direction.upper()} {h.qty} shares @ ${h.entry_price:.2f} "
                     f"(now ${cp:.2f}, {pnl:+.2f}%) source={h.strategy_name or 'manual'}\n"
@@ -416,10 +416,13 @@ async def evaluate_thresholds(db: AsyncSession):
                     if cp is None:
                         continue
 
-                    if h.direction == "long":
-                        pnl_pct = (cp - h.entry_price) / h.entry_price * 100
+                    if h.entry_price and h.entry_price > 0:
+                        if h.direction == "long":
+                            pnl_pct = (cp - h.entry_price) / h.entry_price * 100
+                        else:
+                            pnl_pct = (h.entry_price - cp) / h.entry_price * 100
                     else:
-                        pnl_pct = (h.entry_price - cp) / h.entry_price * 100
+                        pnl_pct = 0.0
 
                     # Check against backtest avg gain — if 2x avg, suggest taking profits
                     bt_result = await db.execute(
@@ -535,10 +538,13 @@ async def scheduled_review(db: AsyncSession):
                 pos_val = cp * h.qty
                 total_value += pos_val
 
-                if h.direction == "long":
-                    pnl_pct = (cp - h.entry_price) / h.entry_price * 100
+                if h.entry_price and h.entry_price > 0:
+                    if h.direction == "long":
+                        pnl_pct = (cp - h.entry_price) / h.entry_price * 100
+                    else:
+                        pnl_pct = (h.entry_price - cp) / h.entry_price * 100
                 else:
-                    pnl_pct = (h.entry_price - cp) / h.entry_price * 100
+                    pnl_pct = 0.0
 
                 hold_days = (utcnow() - h.entry_date).days
 

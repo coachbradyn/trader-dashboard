@@ -643,10 +643,13 @@ async def get_positions_for_ai() -> list[dict]:
     out = []
     for t in open_trades:
         current_price = price_service.get_price(t.ticker) or t.entry_price
-        if t.direction == "long":
-            pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+        if t.entry_price and t.entry_price > 0:
+            if t.direction == "long":
+                pnl_pct = ((current_price - t.entry_price) / t.entry_price * 100)
+            else:
+                pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
         else:
-            pnl_pct = ((t.entry_price - current_price) / t.entry_price * 100)
+            pnl_pct = 0.0
 
         out.append({
             "trader": t.trader.trader_id,

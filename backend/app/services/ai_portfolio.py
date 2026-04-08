@@ -277,10 +277,13 @@ async def evaluate_signal_for_ai_portfolio(
                 pos_val = cp * pos.qty
                 total_exposure += pos_val
                 ticker_exposure[pos.ticker] = ticker_exposure.get(pos.ticker, 0) + pos_val
-                if pos.direction == "long":
-                    pnl = ((cp - pos.entry_price) / pos.entry_price * 100)
+                if pos.entry_price and pos.entry_price > 0:
+                    if pos.direction == "long":
+                        pnl = ((cp - pos.entry_price) / pos.entry_price * 100)
+                    else:
+                        pnl = ((pos.entry_price - cp) / pos.entry_price * 100)
                 else:
-                    pnl = ((pos.entry_price - cp) / pos.entry_price * 100)
+                    pnl = 0.0
                 holdings_lines.append(
                     f"  {pos.trader.trader_id}: {pos.direction.upper()} {pos.ticker} "
                     f"x{pos.qty:.2f} @ ${pos.entry_price:.2f} (now ${cp:.2f}, {pnl:+.2f}%)"
@@ -833,10 +836,13 @@ async def scheduled_ai_portfolio_review() -> None:
             pos_lines = []
             for pos in open_positions:
                 cp = price_service.get_price(pos.ticker) or pos.entry_price
-                if pos.direction == "long":
-                    pnl = ((cp - pos.entry_price) / pos.entry_price * 100)
+                if pos.entry_price and pos.entry_price > 0:
+                    if pos.direction == "long":
+                        pnl = ((cp - pos.entry_price) / pos.entry_price * 100)
+                    else:
+                        pnl = ((pos.entry_price - cp) / pos.entry_price * 100)
                 else:
-                    pnl = ((pos.entry_price - cp) / pos.entry_price * 100)
+                    pnl = 0.0
                 hold_hours = (utcnow() - pos.entry_time).total_seconds() / 3600
                 pos_lines.append(
                     f"  {pos.trader.trader_id}: {pos.direction.upper()} {pos.ticker} "

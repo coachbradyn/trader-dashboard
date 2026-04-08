@@ -98,10 +98,13 @@ async def generate_watchlist_summary(ticker: str) -> None:
                 pos_lines = []
                 for t in open_positions:
                     current_price = price_service.get_price(t.ticker) or t.entry_price
-                    if t.direction == "long":
-                        pnl = ((current_price - t.entry_price) / t.entry_price * 100)
+                    if t.entry_price and t.entry_price > 0:
+                        if t.direction == "long":
+                            pnl = ((current_price - t.entry_price) / t.entry_price * 100)
+                        else:
+                            pnl = ((t.entry_price - current_price) / t.entry_price * 100)
                     else:
-                        pnl = ((t.entry_price - current_price) / t.entry_price * 100)
+                        pnl = 0.0
                     pos_lines.append(
                         f"  {t.trader.display_name} ({t.trader.trader_id}): {t.direction.upper()} @ ${t.entry_price:.2f}, "
                         f"current ${current_price:.2f}, pnl {pnl:+.2f}%"
