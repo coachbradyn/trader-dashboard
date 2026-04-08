@@ -204,8 +204,8 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
-  deleteHolding: (id: string) =>
-    fetchApi("/portfolio-manager/holdings/" + id, { method: "DELETE" }),
+  deleteHolding: (id: string, recordTrade: boolean = false) =>
+    fetchApi("/portfolio-manager/holdings/" + id + (recordTrade ? "?record_trade=true" : ""), { method: "DELETE" }),
 
   // Portfolio Manager - Portfolio History
   getPortfolioHistory: (portfolioId: string, days: number = 90) =>

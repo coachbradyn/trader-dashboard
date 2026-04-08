@@ -973,7 +973,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
     if (matching) {
       const sellQty = parseFloat(qty);
       if (sellQty >= matching.qty) {
-        try { await api.deleteHolding(matching.id); } catch {}
+        try { await api.deleteHolding(matching.id, true); } catch {}
       } else {
         try {
           await api.updateHolding(matching.id, { qty: matching.qty - sellQty });
