@@ -101,3 +101,25 @@ async def export_trades_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=trades_export.csv"},
     )
+
+
+@router.patch("/trades/{trade_id}/close")
+async def close_trade(
+    trade_id: str,
+    reason: str = Query("manual_close"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Close a trade manually (e.g. ghost trade cleanup)."""
+    from app.utils.utc import utcnow
+    result = await db.execute(select(Trade).where(Trade.id == trade_id))
+    trade = result.scalar_one_or_none()
+    if not trade:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Trade not found")
+    trade.status = "closed"
+    trade.exit_reason = reason
+    trade.exit_time = utcnow()
+    trade.pnl_dollars = 0
+    trade.pnl_percent = 0
+    await db.commit()
+    return {"status": "closed", "trade_id": trade_id, "ticker": trade.ticker}
