@@ -348,12 +348,19 @@ async def evaluate_signal_for_ai_portfolio(
             require_stop = cfg.get("require_stop", DEFAULT_REQUIRE_STOP)
             rr_ratio = cfg.get("reward_risk_ratio", DEFAULT_REWARD_RISK_RATIO)
 
-            # Current drawdown
+            # Current drawdown — use 30-day peak to avoid stale/corrupted historical peaks
+            dd_cutoff = utcnow() - timedelta(days=30)
             snap_result = await db.execute(
                 select(func.max(PortfolioSnapshot.peak_equity))
-                .where(PortfolioSnapshot.portfolio_id == portfolio.id)
+                .where(
+                    PortfolioSnapshot.portfolio_id == portfolio.id,
+                    PortfolioSnapshot.timestamp >= dd_cutoff,
+                )
             )
-            peak = snap_result.scalar() or portfolio.initial_capital
+            peak = snap_result.scalar() or equity or portfolio.initial_capital
+            # If peak is less than current equity, use current equity (no drawdown)
+            if peak < equity:
+                peak = equity
             current_dd = ((peak - equity) / peak * 100) if peak > 0 else 0
 
             # Pre-compute hard SKIPs — no AI needed

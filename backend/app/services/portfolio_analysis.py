@@ -737,6 +737,11 @@ async def link_trade_to_holding(trade: Trade, db: AsyncSession):
                 if link.direction_filter and link.direction_filter != trade.direction:
                     continue
 
+                # Skip AI-managed portfolios — they get holdings via AI eval with proper sizing
+                portfolio = await db.get(Portfolio, link.portfolio_id)
+                if portfolio and (portfolio.is_ai_managed or getattr(portfolio, "ai_evaluation_enabled", False)):
+                    continue
+
                 holding = PortfolioHolding(
                     portfolio_id=link.portfolio_id,
                     trade_id=trade.id,
