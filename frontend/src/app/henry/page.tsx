@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
@@ -466,7 +466,19 @@ function MemoryTab() {
 // Whitelist of tab values — guards against arbitrary strings in ?tab=.
 const VALID_TABS = new Set(["chat", "activity", "decisions", "memory", "memory-3d"]);
 
+// Wrapper provides the Suspense boundary required by Next 14 App Router
+// when a client component uses useSearchParams() — without this, the
+// /henry page fails static prerender at build time with
+// "useSearchParams() should be wrapped in a suspense boundary".
 export default function HenryPage() {
+  return (
+    <Suspense fallback={<div className="h-screen" />}>
+      <HenryPageInner />
+    </Suspense>
+  );
+}
+
+function HenryPageInner() {
   useFonts();
   // Read ?tab=... from URL so the 3D Map's "Open in Memory tab" click and
   // other deep-links land on the right tab. Controlled <Tabs value=...>
