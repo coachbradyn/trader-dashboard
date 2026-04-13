@@ -54,6 +54,31 @@ const SUGGESTIONS = [
   "What are you watching right now?",
 ];
 
+// Phase 4 chat citation parser:
+// Henry's prompt now lists memories with [mem:<12-char id>] tags and is
+// instructed to cite them inline. Post-render, we replace each token
+// with an anchor that deep-links to the 3D memory map and pulses the
+// memory there. Done after renderMarkdown so it survives any inline
+// formatting the model might apply around the tag.
+const MEM_TAG_RE = /\[mem:([a-f0-9]{6,36})\]/gi;
+function injectMemoryCitations(html: string): string {
+  return html.replace(MEM_TAG_RE, (_match, id) => {
+    const safe = String(id).toLowerCase().replace(/[^a-f0-9]/g, "");
+    if (!safe) return _match;
+    const href = `/henry?tab=memory-3d&focus=${encodeURIComponent(safe)}`;
+    // Inline-pill styling so citations are visually obvious without
+    // dominating the message body. Title shows the full id on hover.
+    return (
+      `<a href="${href}" ` +
+      `class="inline-block px-1.5 py-0.5 mx-0.5 rounded text-[10px] font-mono ` +
+      `bg-[#6366f1]/15 text-[#6366f1] hover:bg-[#6366f1]/30 hover:text-white ` +
+      `border border-[#6366f1]/30 no-underline" ` +
+      `title="Memory ${safe} — open in 3D map">` +
+      `mem:${safe.slice(0, 6)}</a>`
+    );
+  });
+}
+
 function ChatTab() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -165,7 +190,7 @@ function ChatTab() {
               }`}>
                 {msg.role === "henry" ? (
                   <div className="text-[12px] leading-relaxed prose-sm" style={FONT_MONO}
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }} />
+                    dangerouslySetInnerHTML={{ __html: injectMemoryCitations(renderMarkdown(msg.text)) }} />
                 ) : (
                   <p className="text-[13px]" style={FONT_OUTFIT}>{msg.text}</p>
                 )}

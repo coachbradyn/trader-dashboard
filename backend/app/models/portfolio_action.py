@@ -39,6 +39,18 @@ class PortfolioAction(Base):
     outcome_correct: Mapped[bool | None] = mapped_column(Boolean)
     outcome_resolved_at: Mapped[datetime | None] = mapped_column()
 
+    # Position sizing recommendation (intelligence upgrade Phase 4,
+    # System 5). Computed by app.services.position_sizing.compute_size
+    # using fractional Kelly + the conditional probability table when
+    # both are available; falls back to a fixed % of equity otherwise.
+    # All nullable — actions created before sizing was wired (or by
+    # paths that don't compute it yet, like autonomous_trading) leave
+    # these NULL and the UI shows "—".
+    recommended_shares: Mapped[float | None] = mapped_column(Float)
+    recommended_dollar_amount: Mapped[float | None] = mapped_column(Float)
+    recommended_pct_of_equity: Mapped[float | None] = mapped_column(Float)
+    sizing_method: Mapped[str | None] = mapped_column(String(30))  # kelly | fixed | insufficient_data | negative_ev
+
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship()

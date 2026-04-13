@@ -241,6 +241,15 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
             )
             db.add(action)
             await db.flush()
+            # Phase 4 — populate position sizing fields (Kelly + cond prob).
+            # No-op for non-add action types (SELL/TRIM/CLOSE).
+            try:
+                from app.services.position_sizing import apply_sizing_to_action
+                await apply_sizing_to_action(
+                    db, action, strategy_id=strategy_slug
+                )
+            except Exception:
+                pass
 
             # Save recommendation context (non-blocking)
             import asyncio

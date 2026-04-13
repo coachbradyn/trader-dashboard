@@ -448,6 +448,16 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
                 reject_reason="Low confidence or SKIP" if action == "SKIP" or confidence < min_conf else None,
             )
             db.add(action_record)
+            await db.flush()
+            # Phase 4 — populate position sizing fields (Kelly + cond prob).
+            # Skipped for non-add action types inside the helper.
+            try:
+                from app.services.position_sizing import apply_sizing_to_action
+                await apply_sizing_to_action(
+                    db, action_record, strategy_id=trader.trader_id
+                )
+            except Exception:
+                pass
 
             # Auto-execute if BUY and sufficient confidence
             if action == "BUY" and confidence >= min_conf:
@@ -672,6 +682,14 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                 reject_reason=None if action == "BUY" and confidence >= min_conf else "SKIP or low confidence",
             )
             db.add(action_record)
+            await db.flush()
+            try:
+                from app.services.position_sizing import apply_sizing_to_action
+                await apply_sizing_to_action(
+                    db, action_record, strategy_id=getattr(trade.trader, "trader_id", None) if hasattr(trade, "trader") else None
+                )
+            except Exception:
+                pass
 
             if action == "BUY" and confidence >= min_conf:
                 # Size to available cash

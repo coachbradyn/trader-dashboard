@@ -288,12 +288,27 @@ async def _build_system_prompt(
                         sanitized,
                     )
 
-                    mem_lines.append(f"  {prefix}{mem_scope}{validated}: {sanitized}")
+                    # Each memory carries a citation tag [mem:<12-char id>]
+                    # so Henry can reference specific memories in chat
+                    # responses. The frontend chat parser converts these
+                    # tokens into clickable links → 3D Map focus.
+                    # 12 chars of UUID4 = ~48 bits of entropy — collision
+                    # probability over 10K memories ≈ 1 in 10⁷.
+                    cite = f"[mem:{m.id[:12]}]"
+                    mem_lines.append(
+                        f"  {cite} {prefix}{mem_scope}{validated}: {sanitized}"
+                    )
                     mem_ids.append(m.id)
 
                 sections.append(
                     "YOUR MEMORY LOG (past observations & lessons — reference these in analysis):\n"
                     + "\n".join(mem_lines)
+                    + "\n\n"
+                    "When you reference any of the above in your response, "
+                    "cite it inline with its [mem:...] tag exactly as shown. "
+                    "The user's UI converts those tags into links to the 3D "
+                    "memory map. Do not invent tags — only cite memories "
+                    "that appear in this list."
                 )
 
                 # Atomic reference_count increment — avoids read-modify-write race

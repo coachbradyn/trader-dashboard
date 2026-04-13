@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
@@ -498,6 +498,13 @@ interface ContextMenu {
 
 export function MemoryMap3D() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // ?focus=<full-id-or-12-char-prefix> → pulse the matching memory.
+  // Used by the chat citation parser to deep-link from a [mem:abc12345]
+  // tag in Henry's response. Prefix-matched against the loaded
+  // projection (citation tags ship as the first 12 hex chars of the
+  // memory UUID; collision probability is negligible at our scale).
+  const focusId = searchParams?.get("focus") || null;
   const [projection, setProjection] = useState<MemoryProjection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -823,6 +830,25 @@ export function MemoryMap3D() {
     load(false);
     loadHealth();
   }, []);
+
+  // ?focus=<id> handler — pulses the matching memory whenever the URL
+  // changes OR a fresh projection lands. Prefix-matches against the
+  // loaded projection so the 12-char chat-citation IDs resolve to full
+  // UUIDs cleanly.
+  useEffect(() => {
+    if (!focusId) return;
+    if (!projection || !projection.available) return;
+    const id = focusId.toLowerCase();
+    const target = projection.memories.find(
+      (m) => m.id.toLowerCase().startsWith(id) || m.id.toLowerCase() === id
+    );
+    if (!target) return;
+    setPulses((prev) => {
+      const next = new Map(prev);
+      next.set(target.id, 1.0);
+      return next;
+    });
+  }, [focusId, projection]);
 
   // ─── Admin actions ─────────────────────────────────────────────────────
 

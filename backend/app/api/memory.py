@@ -829,6 +829,23 @@ async def admin_ensure_schema(
             "add_trade_entry_spy_adx",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_spy_adx FLOAT",
         ),
+        # Phase 4 — position sizing fields on portfolio_actions.
+        (
+            "add_action_recommended_shares",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS recommended_shares FLOAT",
+        ),
+        (
+            "add_action_recommended_dollar_amount",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS recommended_dollar_amount FLOAT",
+        ),
+        (
+            "add_action_recommended_pct_of_equity",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS recommended_pct_of_equity FLOAT",
+        ),
+        (
+            "add_action_sizing_method",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS sizing_method VARCHAR(30)",
+        ),
     ]
 
     # Check which columns exist before attempting the DDL so we can report
@@ -858,9 +875,26 @@ async def admin_ensure_schema(
 
     target_cols = {"embedding", "embedding_model", "cluster_id", "cluster_silhouette"}
     target_trade_cols = {"entry_vix", "entry_spy_close", "entry_spy_20ema", "entry_spy_adx"}
-    missing_before = (target_cols - existing_cols) | {
-        f"trades.{c}" for c in (target_trade_cols - trade_cols)
+    target_action_cols = {
+        "recommended_shares",
+        "recommended_dollar_amount",
+        "recommended_pct_of_equity",
+        "sizing_method",
     }
+
+    action_cols_q = await db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'portfolio_actions'"
+        )
+    )
+    action_cols = {row[0] for row in action_cols_q.all()}
+
+    missing_before = (
+        (target_cols - existing_cols)
+        | {f"trades.{c}" for c in (target_trade_cols - trade_cols)}
+        | {f"portfolio_actions.{c}" for c in (target_action_cols - action_cols)}
+    )
 
     try:
         for name, stmt in ddl_statements:
@@ -881,7 +915,7 @@ async def admin_ensure_schema(
         # Bump alembic_version to the latest head so future deploys don't
         # try to re-apply these migrations (and fail on already-existing
         # columns without IF NOT EXISTS).
-        latest_head = "m374859607h9"
+        latest_head = "n485960718i0"
         try:
             version_result = await db.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")
@@ -924,9 +958,18 @@ async def admin_ensure_schema(
             )
         )
         trade_cols_after = {row[0] for row in trades_after.all()}
-        missing_after = (target_cols - henry_cols_after) | {
-            f"trades.{c}" for c in (target_trade_cols - trade_cols_after)
-        }
+        actions_after = await db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'portfolio_actions'"
+            )
+        )
+        action_cols_after = {row[0] for row in actions_after.all()}
+        missing_after = (
+            (target_cols - henry_cols_after)
+            | {f"trades.{c}" for c in (target_trade_cols - trade_cols_after)}
+            | {f"portfolio_actions.{c}" for c in (target_action_cols - action_cols_after)}
+        )
 
         return {
             "ok": len(missing_after) == 0,
