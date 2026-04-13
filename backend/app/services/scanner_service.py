@@ -1377,6 +1377,17 @@ async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:
                     expires_at=expiry,
                 )
                 db.add(action)
+                await db.flush()
+                # Phase 4.5 — surface adaptive-Kelly suggested size on
+                # scanner opportunities so the user has a baseline when
+                # approving. Strategy_id null because scanner opps aren't
+                # tied to a specific strategy — Kelly will fall back to
+                # fixed % of equity in that case.
+                try:
+                    from app.services.position_sizing import apply_sizing_to_action
+                    await apply_sizing_to_action(db, action, strategy_id=None)
+                except Exception:
+                    pass
                 created.append({
                     "ticker": ticker,
                     "direction": opp.get("direction", "long"),

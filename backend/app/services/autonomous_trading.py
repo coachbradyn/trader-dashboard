@@ -1002,6 +1002,17 @@ async def _execute_autonomous_trade(
                 resolved_at=utcnow(),
             )
             db.add(action)
+            await db.flush()
+            # Phase 4.5 — autonomous trades go through the same Kelly +
+            # injected_memory_ids capture as user-approved actions. The
+            # sizing here is informational only (autonomous already
+            # picked alloc_amount above) — surfaces what Kelly *would*
+            # have recommended for outcome calibration.
+            try:
+                from app.services.position_sizing import apply_sizing_to_action
+                await apply_sizing_to_action(db, action, strategy_id=source)
+            except Exception:
+                pass
 
             # Save context
             from app.services.ai_service import save_context

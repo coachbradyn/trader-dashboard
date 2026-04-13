@@ -396,7 +396,9 @@ def _build_result(
 
 
 # Action types that warrant sizing (we only size adds, not exits).
-SIZE_ACTION_TYPES = {"BUY", "ADD", "DCA"}
+# OPPORTUNITY is the scanner_service variant — it's an entry candidate
+# the user reviews, so Kelly sizing is appropriate guidance.
+SIZE_ACTION_TYPES = {"BUY", "ADD", "DCA", "OPPORTUNITY"}
 
 
 async def apply_sizing_to_action(
