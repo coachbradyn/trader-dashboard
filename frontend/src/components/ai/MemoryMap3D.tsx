@@ -13,11 +13,15 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useFrame, ThreeEvent } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
+import { OrbitControls, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
 import { api } from "@/lib/api";
-import type { MemoryProjection, MemoryProjectionPoint } from "@/lib/types";
+import type {
+  MemoryProjection,
+  MemoryProjectionPoint,
+  MemoryProjectionCluster,
+} from "@/lib/types";
 
 // A deterministic palette so the same cluster_id always gets the same hue.
 // Keeps the viz stable across refits when cluster counts are similar.
@@ -52,9 +56,10 @@ interface PointProps {
   point: MemoryProjectionPoint;
   onHover: (p: MemoryProjectionPoint | null) => void;
   isHovered: boolean;
+  onRightClick: (p: MemoryProjectionPoint, screenX: number, screenY: number) => void;
 }
 
-function MemoryPoint({ point, onHover, isHovered }: PointProps) {
+function MemoryPoint({ point, onHover, isHovered, onRightClick }: PointProps) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const color = useMemo(() => clusterColor(point.cluster_id), [point.cluster_id]);
   // Importance 1-10 → sphere radius 0.008-0.028. Stays readable across the
@@ -62,7 +67,7 @@ function MemoryPoint({ point, onHover, isHovered }: PointProps) {
   const radius = 0.008 + (Math.max(1, Math.min(10, point.importance)) / 10) * 0.02;
 
   // Gentle bob on hover so the cursor target is unambiguous.
-  useFrame(({ clock }) => {
+  useFrame(() => {
     if (!meshRef.current) return;
     const target = isHovered ? 1.6 : 1.0;
     const current = meshRef.current.scale.x;
@@ -81,6 +86,13 @@ function MemoryPoint({ point, onHover, isHovered }: PointProps) {
       onPointerOut={(e: ThreeEvent<PointerEvent>) => {
         e.stopPropagation();
         onHover(null);
+      }}
+      onContextMenu={(e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        // nativeEvent exists on R3F's synthetic events and gives us the DOM
+        // coords for positioning the menu overlay.
+        const ne = e.nativeEvent as MouseEvent | undefined;
+        onRightClick(point, ne?.clientX ?? 0, ne?.clientY ?? 0);
       }}
     >
       <sphereGeometry args={[radius, 12, 12]} />
@@ -126,15 +138,74 @@ function ClusterCentroid({ id, x, y, z, memberCount, weight }: CentroidProps) {
   );
 }
 
+// ─── Cluster label (Gemini-generated, billboarded toward camera) ────────────
+
+interface LabelProps {
+  cluster: MemoryProjectionCluster;
+}
+
+function ClusterLabel({ cluster }: LabelProps) {
+  const color = useMemo(() => clusterColor(cluster.id), [cluster.id]);
+  // Y-offset scales with cluster size so labels float just above the centroid
+  // sphere. Matches the ClusterCentroid radius formula.
+  const yOffset = 0.05 + Math.sqrt(Math.max(0, cluster.weight)) * 0.25 + 0.06;
+  const text = cluster.label || `cluster ${cluster.id}`;
+  return (
+    <Billboard position={[cluster.x, cluster.y + yOffset, cluster.z]}>
+      <Text
+        fontSize={0.06}
+        color={color}
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.006}
+        outlineColor="#000"
+        outlineOpacity={0.85}
+        maxWidth={0.8}
+      >
+        {text}
+      </Text>
+    </Billboard>
+  );
+}
+
+// ─── Screenshot capture helper ──────────────────────────────────────────────
+// Exposes a function that grabs the canvas contents as a data URL. Parent
+// component stores the function via setCapture and calls it when the user
+// clicks the screenshot button. Has to live inside <Canvas> so it can call
+// useThree() to reach the renderer.
+
+function CaptureHelper({ onReady }: { onReady: (fn: () => string) => void }) {
+  const { gl, scene, camera } = useThree();
+  const readyRef = useRef(false);
+  useEffect(() => {
+    if (readyRef.current) return;
+    readyRef.current = true;
+    onReady(() => {
+      // Force a render right before capture so we don't grab a stale frame.
+      gl.render(scene, camera);
+      return gl.domElement.toDataURL("image/png");
+    });
+  }, [gl, scene, camera, onReady]);
+  return null;
+}
+
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 interface SceneProps {
   projection: Extract<MemoryProjection, { available: true }>;
   onHover: (p: MemoryProjectionPoint | null) => void;
+  onRightClick: (p: MemoryProjectionPoint, screenX: number, screenY: number) => void;
   hoveredId: string | null;
+  onCaptureReady: (fn: () => string) => void;
 }
 
-function Scene({ projection, onHover, hoveredId }: SceneProps) {
+function Scene({
+  projection,
+  onHover,
+  onRightClick,
+  hoveredId,
+  onCaptureReady,
+}: SceneProps) {
   return (
     <>
       <ambientLight intensity={0.45} />
@@ -154,6 +225,12 @@ function Scene({ projection, onHover, hoveredId }: SceneProps) {
         />
       ))}
 
+      {/* Cluster labels (Gemini-generated) — rendered after centroids so
+          they billboard on top. */}
+      {projection.clusters.map((c) => (
+        <ClusterLabel key={`label-${c.id}`} cluster={c} />
+      ))}
+
       {/* Memory points */}
       {projection.memories.map((p) => (
         <MemoryPoint
@@ -161,6 +238,7 @@ function Scene({ projection, onHover, hoveredId }: SceneProps) {
           point={p}
           onHover={onHover}
           isHovered={p.id === hoveredId}
+          onRightClick={onRightClick}
         />
       ))}
 
@@ -172,6 +250,8 @@ function Scene({ projection, onHover, hoveredId }: SceneProps) {
         rotateSpeed={0.5}
         zoomSpeed={0.6}
       />
+
+      <CaptureHelper onReady={onCaptureReady} />
     </>
   );
 }
@@ -185,12 +265,79 @@ interface HealthSummary {
   clustered: number;
 }
 
+interface ContextMenu {
+  point: MemoryProjectionPoint;
+  x: number;
+  y: number;
+}
+
 export function MemoryMap3D() {
   const [projection, setProjection] = useState<MemoryProjection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState<MemoryProjectionPoint | null>(null);
   const [health, setHealth] = useState<HealthSummary | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [captureMsg, setCaptureMsg] = useState<string | null>(null);
+  const captureFnRef = useRef<(() => string) | null>(null);
+
+  const handleCaptureReady = (fn: () => string) => {
+    captureFnRef.current = fn;
+  };
+
+  const takeScreenshot = () => {
+    if (!captureFnRef.current) return;
+    try {
+      const dataUrl = captureFnRef.current();
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `henry-memory-3d-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setCaptureMsg("Screenshot saved");
+      setTimeout(() => setCaptureMsg(null), 2000);
+    } catch (e) {
+      setCaptureMsg(`Screenshot failed: ${(e as Error).message}`);
+      setTimeout(() => setCaptureMsg(null), 4000);
+    }
+  };
+
+  const handleRightClick = (
+    p: MemoryProjectionPoint,
+    screenX: number,
+    screenY: number
+  ) => {
+    setContextMenu({ point: p, x: screenX, y: screenY });
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this memory permanently?")) return;
+    try {
+      await api.deleteMemory(id);
+      setContextMenu(null);
+      // Reload projection so the deleted node disappears. Force refresh to
+      // bypass the 10-min cache.
+      await load(true);
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message}`);
+    }
+  };
+
+  // Close context menu on outside click / Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onClick = () => setContextMenu(null);
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    document.addEventListener("click", onClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [contextMenu]);
 
   const loadHealth = async () => {
     try {
@@ -491,18 +638,32 @@ export function MemoryMap3D() {
   return (
     <div className="space-y-3">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="text-xs text-gray-400">
           {projection.n_memories} memories · {projection.clusters.length}{" "}
           clusters · model{" "}
           <span className="font-mono text-gray-300">{projection.model_name}</span>
         </div>
-        <button
-          onClick={() => load(true)}
-          className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
-        >
-          Refresh projection
-        </button>
+        <div className="flex items-center gap-2">
+          {captureMsg && (
+            <span className="text-[11px] text-gray-400 font-mono">
+              {captureMsg}
+            </span>
+          )}
+          <button
+            onClick={takeScreenshot}
+            className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
+            title="Download a PNG of the current 3D view"
+          >
+            Screenshot
+          </button>
+          <button
+            onClick={() => load(true)}
+            className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
+          >
+            Refresh projection
+          </button>
+        </div>
       </div>
 
       {/* 3D canvas */}
@@ -510,20 +671,26 @@ export function MemoryMap3D() {
         <Canvas
           camera={{ position: [2.2, 1.4, 2.2], fov: 50 }}
           dpr={[1, 2]}
-          gl={{ antialias: true, alpha: true }}
+          // preserveDrawingBuffer: required so toDataURL returns pixels
+          // instead of a blank canvas on Chromium (spec-default clears
+          // after composition).
+          gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true }}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <color attach="background" args={["#0b0f19"]} />
           <Scene
             projection={projection}
             onHover={setHovered}
+            onRightClick={handleRightClick}
             hoveredId={hovered?.id ?? null}
+            onCaptureReady={handleCaptureReady}
           />
         </Canvas>
 
         {/* Hover tooltip */}
-        {hovered && (
+        {hovered && !contextMenu && (
           <div className="absolute bottom-3 left-3 right-3 p-3 rounded-md bg-[#0b0f19]/95 border border-border text-xs max-w-lg pointer-events-none">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span
                 className="inline-block w-2 h-2 rounded-full"
                 style={{ backgroundColor: clusterColor(hovered.cluster_id) }}
@@ -541,6 +708,34 @@ export function MemoryMap3D() {
                   ({hovered.strategy_id})
                 </span>
               )}
+              {/* Prototype indicator — ★ if this memory is closest to its
+                  cluster centroid. Small but meaningful "this is the
+                  archetypal memory for its cluster" signal. */}
+              {projection.clusters.some(
+                (c) => c.prototype_memory_id === hovered.id
+              ) && (
+                <span
+                  className="text-[10px] text-amber-400"
+                  title="Prototype for its cluster (closest to centroid)"
+                >
+                  ★ prototype
+                </span>
+              )}
+              {/* Cluster label if available */}
+              {hovered.cluster_id !== null &&
+                (() => {
+                  const c = projection.clusters.find(
+                    (x) => x.id === hovered.cluster_id
+                  );
+                  return c?.label ? (
+                    <span
+                      className="text-[10px] text-gray-400 italic"
+                      title="Cluster label (Gemini-generated)"
+                    >
+                      {c.label}
+                    </span>
+                  ) : null;
+                })()}
               <span className="text-[10px] text-gray-500 ml-auto">
                 importance {hovered.importance}/10
               </span>
@@ -548,9 +743,101 @@ export function MemoryMap3D() {
             <p className="text-gray-200 leading-relaxed">
               {hovered.content_preview || "(no preview)"}
             </p>
+            <p className="text-[10px] text-gray-600 mt-1.5 italic">
+              Right-click to delete.
+            </p>
+          </div>
+        )}
+
+        {/* Right-click context menu */}
+        {contextMenu && (
+          <div
+            className="fixed z-50 min-w-[180px] rounded-md bg-[#0b0f19] border border-border shadow-lg text-xs overflow-hidden"
+            style={{
+              left: Math.min(contextMenu.x, window.innerWidth - 200),
+              top: Math.min(contextMenu.y, window.innerHeight - 120),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-2 border-b border-border text-[10px] text-gray-500 uppercase tracking-wide">
+              {contextMenu.point.memory_type}
+              {contextMenu.point.ticker && ` · ${contextMenu.point.ticker}`}
+            </div>
+            <button
+              onClick={() => handleDelete(contextMenu.point.id)}
+              className="w-full text-left px-3 py-2 text-red-400 hover:bg-red-500/10"
+            >
+              Delete memory
+            </button>
+            <button
+              onClick={() => setContextMenu(null)}
+              className="w-full text-left px-3 py-2 text-gray-400 hover:bg-[#1f2937]/40"
+            >
+              Cancel
+            </button>
           </div>
         )}
       </div>
+
+      {/* Fit-quality diagnostics card */}
+      {projection.cluster_quality && projection.cluster_quality.k !== null && (
+        <div className="rounded-lg border border-border bg-[#1f2937]/20 p-3 text-[11px] text-gray-400 grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div>
+            <div className="text-[10px] text-gray-600 uppercase tracking-wide">
+              k
+            </div>
+            <div className="text-gray-300 font-mono">
+              {projection.cluster_quality.k}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-600 uppercase tracking-wide">
+              fit log-likelihood
+            </div>
+            <div className="text-gray-300 font-mono">
+              {projection.cluster_quality.log_likelihood?.toFixed(1) ?? "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-600 uppercase tracking-wide">
+              BIC
+            </div>
+            <div className="text-gray-300 font-mono">
+              {projection.cluster_quality.bic?.toFixed(1) ?? "—"}
+            </div>
+          </div>
+          <div>
+            <div
+              className="text-[10px] text-gray-600 uppercase tracking-wide"
+              title="Mean silhouette ∈ [-1, 1]. >0 = clusters are meaningfully separated; ≈0 = overlap; <0 = bad fit."
+            >
+              avg silhouette
+            </div>
+            <div
+              className={
+                "font-mono " +
+                ((projection.cluster_quality.avg_silhouette ?? 0) > 0.15
+                  ? "text-emerald-400"
+                  : (projection.cluster_quality.avg_silhouette ?? 0) > 0
+                  ? "text-gray-300"
+                  : "text-amber-400")
+              }
+            >
+              {projection.cluster_quality.avg_silhouette?.toFixed(3) ?? "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-600 uppercase tracking-wide">
+              fit at
+            </div>
+            <div className="text-gray-400 font-mono text-[10px]">
+              {projection.cluster_quality.fit_at
+                ? new Date(projection.cluster_quality.fit_at).toLocaleString()
+                : "—"}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex flex-wrap gap-2 pt-1">
