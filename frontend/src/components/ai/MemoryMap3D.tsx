@@ -896,6 +896,38 @@ export function MemoryMap3D() {
     }
   };
 
+  // Carryover #32 — manually pin a memory to a specific cluster (or
+  // clear an existing override). Routes through the admin-gated
+  // /admin/reassign-cluster endpoint; secret cached per sessionStorage tab.
+  const handleReassignCluster = async (
+    memoryId: string,
+    clusterId: number | null
+  ) => {
+    const cached = sessionStorage.getItem("memory_admin_secret");
+    const secret =
+      cached ||
+      window.prompt(
+        "Enter ADMIN_SECRET (stored only for this browser tab):"
+      );
+    if (!secret) return;
+    if (!cached) sessionStorage.setItem("memory_admin_secret", secret);
+    try {
+      const res = await api.adminReassignCluster(secret, {
+        memory_id: memoryId,
+        cluster_id: clusterId,
+      });
+      setContextMenu(null);
+      if (!res.ok) {
+        alert(`Reassign failed: ${res.reason || "unknown"}`);
+        return;
+      }
+      // Force-refresh the projection so the node moves visually.
+      await load(true);
+    } catch (e) {
+      alert(`Reassign request failed: ${(e as Error).message}`);
+    }
+  };
+
   // Close context menu on outside click / Escape
   useEffect(() => {
     if (!contextMenu) return;
@@ -1577,16 +1609,20 @@ export function MemoryMap3D() {
         {/* Right-click context menu */}
         {contextMenu && (
           <div
-            className="fixed z-50 min-w-[180px] rounded-md bg-[#0b0f19] border border-border shadow-lg text-xs overflow-hidden"
+            className="fixed z-50 min-w-[220px] max-h-[400px] overflow-y-auto rounded-md bg-[#0b0f19] border border-border shadow-lg text-xs"
             style={{
-              left: Math.min(contextMenu.x, window.innerWidth - 200),
-              top: Math.min(contextMenu.y, window.innerHeight - 120),
+              left: Math.min(contextMenu.x, window.innerWidth - 240),
+              top: Math.min(contextMenu.y, window.innerHeight - 200),
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-3 py-2 border-b border-border text-[10px] text-gray-500 uppercase tracking-wide">
               {contextMenu.point.memory_type}
               {contextMenu.point.ticker && ` · ${contextMenu.point.ticker}`}
+              {contextMenu.point.cluster_id_override !== null &&
+                contextMenu.point.cluster_id_override !== undefined && (
+                  <span className="ml-1 text-amber-400">· override</span>
+                )}
             </div>
             <button
               onClick={() => handleDelete(contextMenu.point.id)}
@@ -1594,9 +1630,74 @@ export function MemoryMap3D() {
             >
               Delete memory
             </button>
+
+            {/* Carryover #32 — manually pin to a cluster. Lists every
+                cluster from the current projection so the user can pick.
+                Selecting "Auto (clear override)" returns the memory to
+                GMM-assigned cluster_id. */}
+            <details className="border-t border-border">
+              <summary className="px-3 py-2 cursor-pointer text-gray-300 hover:bg-[#1f2937]/40">
+                Reassign cluster…
+                {contextMenu.point.cluster_id !== null && (
+                  <span className="ml-1 text-[10px] text-gray-500">
+                    (currently {contextMenu.point.cluster_id})
+                  </span>
+                )}
+              </summary>
+              <div className="max-h-[200px] overflow-y-auto">
+                {contextMenu.point.cluster_id_override !== null &&
+                  contextMenu.point.cluster_id_override !== undefined && (
+                    <button
+                      onClick={() =>
+                        handleReassignCluster(contextMenu.point.id, null)
+                      }
+                      className="w-full text-left px-3 py-1.5 text-[11px] text-gray-400 hover:bg-[#1f2937]/40"
+                    >
+                      Clear override (auto)
+                    </button>
+                  )}
+                {projection &&
+                  projection.available &&
+                  projection.clusters.map((c) => {
+                    const isCurrent = c.id === contextMenu.point.cluster_id;
+                    return (
+                      <button
+                        key={`reassign-${c.id}`}
+                        onClick={() =>
+                          handleReassignCluster(contextMenu.point.id, c.id)
+                        }
+                        disabled={isCurrent}
+                        className={
+                          "w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 " +
+                          (isCurrent
+                            ? "text-gray-600 cursor-not-allowed"
+                            : "text-gray-300 hover:bg-[#1f2937]/40")
+                        }
+                      >
+                        <span
+                          className="inline-block w-2 h-2 rounded-full"
+                          style={{
+                            backgroundColor: clusterColor(c.id),
+                          }}
+                        />
+                        <span>cluster {c.id}</span>
+                        {c.label && (
+                          <span className="text-[10px] text-gray-500 truncate">
+                            — {c.label}
+                          </span>
+                        )}
+                        <span className="ml-auto text-[10px] text-gray-600">
+                          {c.member_count}
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
+            </details>
+
             <button
               onClick={() => setContextMenu(null)}
-              className="w-full text-left px-3 py-2 text-gray-400 hover:bg-[#1f2937]/40"
+              className="w-full text-left px-3 py-2 text-gray-400 hover:bg-[#1f2937]/40 border-t border-border"
             >
               Cancel
             </button>

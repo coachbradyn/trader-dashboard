@@ -268,8 +268,16 @@ async def _build_system_prompt(
                     # Memories in the same gaussian neighborhood as the query
                     # get a scaled bump. Unclustered memories → 0 bump.
                     cluster_boost = 0.0
-                    if cluster_probs and m.cluster_id is not None:
-                        cluster_boost = cluster_weight * cluster_probs.get(int(m.cluster_id), 0.0)
+                    # Carryover #32 — manual cluster override wins over
+                    # GMM-assigned cluster_id. Lets users pin a memory
+                    # to a specific cluster from the 3D viz.
+                    effective_cid = (
+                        m.cluster_id_override
+                        if getattr(m, "cluster_id_override", None) is not None
+                        else m.cluster_id
+                    )
+                    if cluster_probs and effective_cid is not None:
+                        cluster_boost = cluster_weight * cluster_probs.get(int(effective_cid), 0.0)
                     score = sim + importance_nudge + cluster_boost
                     ranked.append((score, m))
                 ranked.sort(key=lambda x: x[0], reverse=True)

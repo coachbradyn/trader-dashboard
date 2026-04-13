@@ -1116,8 +1116,14 @@ async def preview_retrieval(
         sim = cosine_similarity(qvec, m.embedding or [])
         importance_nudge = max(0, int(m.importance or 5)) / 50.0
         cluster_boost = 0.0
-        if cluster_probs and m.cluster_id is not None:
-            cluster_boost = cluster_weight * cluster_probs.get(int(m.cluster_id), 0.0)
+        # Honor cluster_id_override (carryover #32) ahead of GMM-assigned cluster_id.
+        effective_cid = (
+            m.cluster_id_override
+            if getattr(m, "cluster_id_override", None) is not None
+            else m.cluster_id
+        )
+        if cluster_probs and effective_cid is not None:
+            cluster_boost = cluster_weight * cluster_probs.get(int(effective_cid), 0.0)
         score = sim + importance_nudge + cluster_boost
         ranked.append({
             "id": m.id,
@@ -1125,7 +1131,7 @@ async def preview_retrieval(
             "similarity": float(sim),
             "cluster_boost": float(cluster_boost),
             "importance": int(m.importance or 5),
-            "cluster_id": m.cluster_id,
+            "cluster_id": effective_cid,  # respects manual override (#32)
             "memory_type": m.memory_type,
             "ticker": m.ticker,
             "content_preview": (m.content or "")[:160].strip(),
@@ -1281,6 +1287,11 @@ async def admin_ensure_schema(
                 "USING importance::double precision"
             ),
         ),
+        # Carryover #32 — manual cluster override.
+        (
+            "add_memory_cluster_id_override",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS cluster_id_override INTEGER",
+        ),
     ]
 
     # Check which columns exist before attempting the DDL so we can report
@@ -1310,7 +1321,7 @@ async def admin_ensure_schema(
 
     target_cols = {
         "embedding", "embedding_model", "cluster_id", "cluster_silhouette",
-        "last_retrieved_at", "retrieval_count",
+        "last_retrieved_at", "retrieval_count", "cluster_id_override",
     }
     target_trade_cols = {"entry_vix", "entry_spy_close", "entry_spy_20ema", "entry_spy_adx"}
     target_action_cols = {
@@ -1356,7 +1367,7 @@ async def admin_ensure_schema(
         # Bump alembic_version to the latest head so future deploys don't
         # try to re-apply these migrations (and fail on already-existing
         # columns without IF NOT EXISTS).
-        latest_head = "o596071829j1"
+        latest_head = "p607182930k2"
         try:
             version_result = await db.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")
@@ -1551,6 +1562,73 @@ async def admin_backfill_status(secret: str = Query(...)):
     """Returns the current backfill job state."""
     _require_admin(secret)
     return _backfill_state
+
+
+class ReassignClusterRequest(BaseModel):
+    memory_id: str
+    cluster_id: int | None  # int → set override; null → clear override
+
+
+@router.post("/admin/reassign-cluster")
+async def admin_reassign_cluster(
+    body: ReassignClusterRequest,
+    secret: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually pin a memory to a specific cluster (carryover #32).
+    Pass cluster_id=null to clear the override and let the GMM
+    assignment take over again.
+
+    Persists across refits — _compute_memory_clusters writes
+    cluster_id (auto), retrieval reads cluster_id_override first.
+    """
+    _require_admin(secret)
+    from sqlalchemy import update
+
+    result = await db.execute(
+        select(HenryMemory).where(HenryMemory.id == body.memory_id)
+    )
+    memory = result.scalar_one_or_none()
+    if not memory:
+        raise HTTPException(404, "Memory not found")
+
+    # Validate target cluster exists in the latest fit (when not clearing).
+    if body.cluster_id is not None:
+        from app.models import HenryStats as _HS_r
+        cluster_row = (
+            await db.execute(
+                select(_HS_r)
+                .where(_HS_r.stat_type == "memory_clusters")
+                .order_by(_HS_r.computed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if cluster_row and cluster_row.data:
+            valid_ids = {int(c.get("id")) for c in (cluster_row.data.get("clusters") or [])}
+            if valid_ids and body.cluster_id not in valid_ids:
+                return {
+                    "ok": False,
+                    "reason": f"cluster_id {body.cluster_id} not in current fit. Valid: {sorted(valid_ids)}",
+                }
+
+    await db.execute(
+        update(HenryMemory)
+        .where(HenryMemory.id == body.memory_id)
+        .values(cluster_id_override=body.cluster_id)
+    )
+    await db.commit()
+    # Invalidate the projection cache so the viz reflects the change.
+    try:
+        from app.services.memory_projection import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "memory_id": body.memory_id,
+        "cluster_id_override": body.cluster_id,
+    }
 
 
 @router.post("/admin/relabel-clusters")

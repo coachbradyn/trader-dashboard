@@ -56,6 +56,11 @@ class HenryMemory(Base):
     # Gaussian mixture cluster assignment from memory_clustering.fit_clusters.
     # Null when unclustered. Retrieval blends P(cluster | query) into ranking.
     cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None, index=True)
+    # Manual cluster override (carryover #32). When set, takes precedence
+    # over cluster_id in retrieval scoring + the 3D viz. Persists across
+    # GMM refits — _compute_memory_clusters preserves the override and
+    # ignores the auto-assigned cluster for any memory with an override.
+    cluster_id_override: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     # Silhouette-like score in [-1, 1] — how well this memory fits its
     # cluster vs the next-nearest one. Populated by fit_memory_clusters.
     # Drives the "silhouette coloring" viz mode (outliers desaturated).

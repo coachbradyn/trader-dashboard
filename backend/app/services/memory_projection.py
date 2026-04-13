@@ -108,6 +108,7 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             HenryMemory.embedding,
             HenryMemory.embedding_model,
             HenryMemory.cluster_id,
+            HenryMemory.cluster_id_override,  # carryover #32
             HenryMemory.cluster_silhouette,
             HenryMemory.importance,
             HenryMemory.reference_count,
@@ -201,7 +202,14 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             "x": float(xyz[0]),
             "y": float(xyz[1]),
             "z": float(xyz[2]),
-            "cluster_id": r.cluster_id if r.cluster_id is not None else None,
+            # Effective cluster respects manual override (carryover #32).
+            "cluster_id": (
+                r.cluster_id_override
+                if r.cluster_id_override is not None
+                else r.cluster_id
+            ),
+            "cluster_id_auto": r.cluster_id,
+            "cluster_id_override": r.cluster_id_override,
             "silhouette": (
                 float(r.cluster_silhouette)
                 if r.cluster_silhouette is not None

@@ -550,6 +550,19 @@ export const api = {
       { method: "POST" }
     );
   },
+  adminReassignCluster: (
+    secret: string,
+    body: { memory_id: string; cluster_id: number | null }
+  ) =>
+    fetchApi<{
+      ok: boolean;
+      reason?: string;
+      memory_id?: string;
+      cluster_id_override?: number | null;
+    }>(
+      "/memory/admin/reassign-cluster?secret=" + encodeURIComponent(secret),
+      { method: "POST", body: JSON.stringify(body) }
+    ),
   adminMergeMemory: (
     secret: string,
     body: { keep_id: string; drop_id: string; bump_importance?: boolean }

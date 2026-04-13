@@ -890,7 +890,9 @@ export interface MemoryProjectionPoint {
   x: number;
   y: number;
   z: number;
-  cluster_id: number | null;
+  cluster_id: number | null;          // effective cluster (override if set, else auto)
+  cluster_id_auto?: number | null;     // GMM-assigned (carryover #32)
+  cluster_id_override?: number | null; // manual override (carryover #32)
   silhouette: number | null;
   importance: number;
   reference_count: number;
