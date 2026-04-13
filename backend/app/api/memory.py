@@ -1569,6 +1569,216 @@ class ReassignClusterRequest(BaseModel):
     cluster_id: int | None  # int → set override; null → clear override
 
 
+class GapAnalysisRequest(BaseModel):
+    thin_cluster_ratio: float = 0.5      # member_count < ratio × median → thin
+    min_cluster_size_absolute: int = 3
+    min_ticker_memories: int = 2         # tickers below this = under-covered
+    recent_trade_window_days: int = 30
+    max_llm_calls: int = 6               # cap Gemini calls per request
+
+
+@router.post("/curation/gap-analysis")
+async def curation_gap_analysis(
+    body: GapAnalysisRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Identify underrepresented regions in the memory store and ask
+    Gemini what topics would strengthen them (carryover #40).
+
+    Two surfaces:
+
+      1. Thin clusters — GMM clusters with abnormally few members vs
+         the median. For each, pull its prototype + labeled previews
+         and have Gemini suggest 3-5 related observations Henry
+         should actively seek out.
+
+      2. Under-covered tickers — tickers that Henry has actually
+         traded in the last N days but has <min_ticker_memories
+         memories about. These are blind spots: Henry has real
+         positions to learn from but isn't banking observations.
+
+    LLM spend is capped at max_llm_calls per request (default 6) so
+    manual invocation stays cheap. Run ad-hoc from the Curation panel.
+    """
+    from sqlalchemy import select as _sel
+    from collections import Counter
+    from datetime import timedelta
+    from statistics import median
+    from app.models import HenryStats, Trade
+
+    # ── Part 1: thin clusters ─────────────────────────────────────────
+    cluster_row = (
+        await db.execute(
+            _sel(HenryStats)
+            .where(HenryStats.stat_type == "memory_clusters")
+            .order_by(HenryStats.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    thin: list[dict] = []
+    if cluster_row and cluster_row.data:
+        clusters = cluster_row.data.get("clusters") or []
+        if clusters:
+            member_counts = [int(c.get("member_count", 0) or 0) for c in clusters]
+            med = max(1.0, float(median(member_counts)))
+            thin_threshold = max(body.min_cluster_size_absolute, int(med * body.thin_cluster_ratio))
+            thin_clusters = [
+                c for c in clusters
+                if int(c.get("member_count", 0) or 0) <= thin_threshold
+            ]
+            # Sort ascending by size so smallest get prioritised
+            thin_clusters.sort(key=lambda c: int(c.get("member_count", 0) or 0))
+            # Cap LLM work
+            thin_clusters = thin_clusters[: body.max_llm_calls]
+
+            # Pull memory previews for each thin cluster
+            from app.services.ai_provider import call_ai
+            import asyncio as _asyncio
+
+            async def _suggest_for_cluster(c: dict) -> dict:
+                cid = int(c.get("id"))
+                # Up to 6 members for the prompt
+                rows = list(
+                    (
+                        await db.execute(
+                            _sel(HenryMemory)
+                            .where(
+                                (HenryMemory.cluster_id == cid)
+                                | (HenryMemory.cluster_id_override == cid)
+                            )
+                            .order_by(HenryMemory.importance.desc())
+                            .limit(6)
+                        )
+                    ).scalars().all()
+                )
+                if not rows:
+                    return {
+                        "cluster_id": cid,
+                        "cluster_label": c.get("label"),
+                        "member_count": c.get("member_count"),
+                        "threshold": thin_threshold,
+                        "median_cluster_size": round(med, 1),
+                        "suggested_topics": [],
+                        "reason": "Cluster has no retrievable members — likely stale after recent deletes.",
+                    }
+                preview_lines = [
+                    f"- [{r.memory_type}] {(r.content or '')[:200].strip()}"
+                    for r in rows
+                ]
+                system = (
+                    "You identify gaps in a trading AI's memory store. "
+                    "Given a cluster of related memories, suggest 3-5 "
+                    "SPECIFIC quantitative observations the trader should "
+                    "actively collect to strengthen this theme. Output ONLY "
+                    "a JSON array of short sentences (strings). No markdown, "
+                    "no preamble."
+                )
+                prompt = (
+                    f"Cluster label: {c.get('label') or f'cluster {cid}'}\n"
+                    f"Members ({len(rows)}):\n" + "\n".join(preview_lines) + "\n\n"
+                    "What related observations would round out this cluster? "
+                    "Each suggestion should:\n"
+                    "- Reference a specific ticker/strategy/regime combo or setup\n"
+                    "- Ask for a numerical value (ADX, VIX level, win rate, "
+                    "avg gain %, sample size)\n"
+                    "- Not duplicate what's already listed\n\n"
+                    "Return ONLY a JSON array of 3-5 strings."
+                )
+                try:
+                    text = await call_ai(
+                        system=system,
+                        prompt=prompt,
+                        function_name="memory_extraction",  # Gemini-routed
+                        max_tokens=400,
+                    )
+                except Exception as e:
+                    logger.warning(f"gap-analysis Gemini call failed for cluster {cid}: {e}")
+                    text = ""
+                suggestions: list[str] = []
+                if text:
+                    # Tolerant parse — model may or may not fence
+                    clean = text.strip().replace("```json", "").replace("```", "").strip()
+                    try:
+                        parsed = json.loads(clean)
+                        if isinstance(parsed, list):
+                            suggestions = [
+                                str(s).strip() for s in parsed if str(s).strip()
+                            ][:5]
+                    except Exception:
+                        # Fall back to bullet-line split
+                        suggestions = [
+                            line.lstrip("-*•").strip()
+                            for line in clean.splitlines()
+                            if line.strip() and not line.strip().startswith("[")
+                        ][:5]
+                return {
+                    "cluster_id": cid,
+                    "cluster_label": c.get("label") or f"cluster {cid}",
+                    "member_count": int(c.get("member_count", 0) or 0),
+                    "threshold": thin_threshold,
+                    "median_cluster_size": round(med, 1),
+                    "suggested_topics": suggestions,
+                    "reason": (
+                        f"Cluster size {c.get('member_count')} ≤ threshold "
+                        f"{thin_threshold} (median {med:.1f} × "
+                        f"{body.thin_cluster_ratio})."
+                    ),
+                }
+
+            thin = list(
+                await _asyncio.gather(
+                    *(_suggest_for_cluster(c) for c in thin_clusters),
+                    return_exceptions=False,
+                )
+            )
+
+    # ── Part 2: under-covered tickers from recent trade activity ────
+    import json as _json  # noqa (already imported above via top-level; explicit for clarity)
+    trade_cutoff = utcnow() - timedelta(days=body.recent_trade_window_days)
+    recent_trades = list(
+        (
+            await db.execute(
+                select(Trade.ticker)
+                .where(Trade.entry_time >= trade_cutoff)
+            )
+        ).all()
+    )
+    ticker_counter: Counter[str] = Counter()
+    for row in recent_trades:
+        t = (row[0] or "").upper()
+        if t:
+            ticker_counter[t] += 1
+
+    under_covered: list[dict] = []
+    if ticker_counter:
+        # Count memories per ticker
+        memory_counts_q = await db.execute(
+            select(HenryMemory.ticker, func.count(HenryMemory.id))
+            .where(HenryMemory.ticker.in_(list(ticker_counter.keys())))
+            .group_by(HenryMemory.ticker)
+        )
+        mem_by_ticker = {row[0]: int(row[1]) for row in memory_counts_q.all()}
+        for ticker, trade_count in ticker_counter.most_common():
+            mem_count = int(mem_by_ticker.get(ticker, 0))
+            if mem_count < body.min_ticker_memories:
+                under_covered.append({
+                    "ticker": ticker,
+                    "trade_count": trade_count,
+                    "memory_count": mem_count,
+                    "gap": body.min_ticker_memories - mem_count,
+                })
+
+    return {
+        "window_days": body.recent_trade_window_days,
+        "thin_cluster_threshold": body.thin_cluster_ratio,
+        "min_ticker_memories": body.min_ticker_memories,
+        "thin_clusters": thin,
+        "under_covered_tickers": under_covered,
+    }
+
+
 @router.get("/diff")
 async def memory_diff(
     since: str = Query(..., description="ISO timestamp to diff against"),

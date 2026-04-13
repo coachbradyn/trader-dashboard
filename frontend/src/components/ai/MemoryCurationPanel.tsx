@@ -28,6 +28,7 @@ import type {
   ConsolidateGroup,
   MemoryDiffResponse,
   MemoryDiffEntry,
+  GapAnalysisResponse,
 } from "@/lib/types";
 
 interface Props {
@@ -36,7 +37,7 @@ interface Props {
   onChanged?: () => void;
 }
 
-type Tab = "duplicates" | "orphans" | "forget" | "consolidate" | "diff";
+type Tab = "duplicates" | "orphans" | "forget" | "consolidate" | "diff" | "gaps";
 
 function promptSecret(): string | null {
   const cached = sessionStorage.getItem("memory_admin_secret");
@@ -55,7 +56,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
     <div className="rounded-lg border border-border bg-[#1f2937]/30">
       {/* Tabs */}
       <div className="flex gap-1 p-1.5 border-b border-border">
-        {(["duplicates", "orphans", "forget", "consolidate", "diff"] as Tab[]).map((t) => (
+        {(["duplicates", "orphans", "forget", "consolidate", "diff", "gaps"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -71,6 +72,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
             {t === "forget" && "Forget"}
             {t === "consolidate" && "Auto-consolidate"}
             {t === "diff" && "Diff"}
+            {t === "gaps" && "Gaps"}
           </button>
         ))}
       </div>
@@ -81,6 +83,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
         {tab === "forget" && <ForgetTab onChanged={onChanged} />}
         {tab === "consolidate" && <ConsolidateTab onChanged={onChanged} />}
         {tab === "diff" && <DiffTab />}
+        {tab === "gaps" && <GapsTab />}
       </div>
     </div>
   );
@@ -1125,6 +1128,185 @@ function relativeTime(thenMs: number): string {
   if (d < 1) return `${Math.round(d * 24)}h ago`;
   if (d < 30) return `${d.toFixed(1)}d ago`;
   return `${(d / 30).toFixed(1)}mo ago`;
+}
+
+// ─── Gaps tab (carryover #40) ───────────────────────────────────────────────
+
+function GapsTab() {
+  const [result, setResult] = useState<GapAnalysisResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [windowDays, setWindowDays] = useState(30);
+  const [thinRatio, setThinRatio] = useState(0.5);
+
+  const run = async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await api.curationGapAnalysis({
+        thin_cluster_ratio: thinRatio,
+        recent_trade_window_days: windowDays,
+      });
+      setResult(res);
+      setMsg(
+        `${res.thin_clusters.length} thin cluster${
+          res.thin_clusters.length === 1 ? "" : "s"
+        } · ${res.under_covered_tickers.length} under-covered ticker${
+          res.under_covered_tickers.length === 1 ? "" : "s"
+        }`
+      );
+    } catch (e) {
+      setMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-400">
+        Find underrepresented regions of Henry&apos;s memory. Gemini proposes
+        3-5 specific observations to collect per thin cluster; recently-traded
+        tickers with fewer than the minimum memory count are flagged as blind
+        spots. Runs at most 6 Gemini calls per invocation (~$0.001 total).
+      </p>
+
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <label className="flex items-center gap-1.5 text-gray-400">
+          Thin ratio
+          <input
+            type="number"
+            min={0.1}
+            max={1}
+            step={0.05}
+            value={thinRatio}
+            onChange={(e) => setThinRatio(parseFloat(e.target.value) || 0.5)}
+            className="w-16 bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200"
+          />
+          <span className="text-[10px] text-gray-500">× median</span>
+        </label>
+        <label className="flex items-center gap-1.5 text-gray-400">
+          Trade window
+          <input
+            type="number"
+            min={1}
+            max={365}
+            value={windowDays}
+            onChange={(e) => setWindowDays(parseInt(e.target.value) || 30)}
+            className="w-16 bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200"
+          />
+          <span className="text-[10px] text-gray-500">days</span>
+        </label>
+        <button
+          onClick={run}
+          disabled={loading}
+          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/15 text-[#6366f1] hover:bg-[#6366f1]/25 disabled:opacity-40"
+        >
+          {loading ? "Analyzing…" : "Run gap analysis"}
+        </button>
+      </div>
+
+      {msg && (
+        <p className="text-[11px] text-gray-400 font-mono">{msg}</p>
+      )}
+
+      {result && result.under_covered_tickers.length > 0 && (
+        <div className="rounded border border-border bg-[#0b0f19] p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{ backgroundColor: "#f59e0b" }}
+            />
+            <p className="text-xs text-gray-200 font-medium">
+              Under-covered tickers ({result.under_covered_tickers.length})
+            </p>
+          </div>
+          <p className="text-[10px] text-gray-500">
+            Traded in the last {result.window_days}d but with fewer than{" "}
+            {result.min_ticker_memories} memories. You&apos;re trading these
+            without banking observations.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {result.under_covered_tickers.map((t) => (
+              <div
+                key={t.ticker}
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] bg-[#1f2937]/40 border border-border"
+                title={`${t.trade_count} trades · ${t.memory_count} memories · gap ${t.gap}`}
+              >
+                <span className="font-mono text-amber-400">{t.ticker}</span>
+                <span className="text-gray-500">
+                  {t.memory_count}/{t.trade_count + t.memory_count}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {result && result.thin_clusters.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-block w-2 h-2 rounded-full"
+              style={{ backgroundColor: "#6366f1" }}
+            />
+            <p className="text-xs text-gray-200 font-medium">
+              Thin clusters ({result.thin_clusters.length})
+            </p>
+          </div>
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1">
+            {result.thin_clusters.map((c) => (
+              <div
+                key={c.cluster_id}
+                className="rounded border border-border bg-[#0b0f19] p-3 space-y-2"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-mono text-gray-300">
+                    cluster {c.cluster_id}
+                  </span>
+                  {c.cluster_label && (
+                    <span className="text-[11px] text-gray-400 italic">
+                      — {c.cluster_label}
+                    </span>
+                  )}
+                  <span className="ml-auto text-[10px] text-gray-500 font-mono">
+                    {c.member_count} members (median {c.median_cluster_size})
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-500">{c.reason}</p>
+                {c.suggested_topics.length > 0 ? (
+                  <ul className="space-y-1 pl-1">
+                    {c.suggested_topics.map((s, i) => (
+                      <li
+                        key={i}
+                        className="text-[11px] text-gray-200 leading-snug flex items-start gap-1.5"
+                      >
+                        <span className="text-[#6366f1] mt-0.5">→</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[11px] text-gray-500 italic">
+                    No suggestions returned by LLM.
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {result &&
+        result.thin_clusters.length === 0 &&
+        result.under_covered_tickers.length === 0 && (
+          <p className="text-xs text-gray-500 italic">
+            No gaps detected — memory store is well-distributed and every
+            recently-traded ticker has ≥{result.min_ticker_memories} memories.
+          </p>
+        )}
+    </div>
+  );
 }
 
 export default MemoryCurationPanel;

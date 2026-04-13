@@ -550,6 +550,26 @@ export const api = {
       { method: "POST" }
     );
   },
+  curationGapAnalysis: (body?: {
+    thin_cluster_ratio?: number;
+    min_cluster_size_absolute?: number;
+    min_ticker_memories?: number;
+    recent_trade_window_days?: number;
+    max_llm_calls?: number;
+  }) =>
+    fetchApi<import("./types").GapAnalysisResponse>(
+      "/memory/curation/gap-analysis",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          thin_cluster_ratio: body?.thin_cluster_ratio ?? 0.5,
+          min_cluster_size_absolute: body?.min_cluster_size_absolute ?? 3,
+          min_ticker_memories: body?.min_ticker_memories ?? 2,
+          recent_trade_window_days: body?.recent_trade_window_days ?? 30,
+          max_llm_calls: body?.max_llm_calls ?? 6,
+        }),
+      }
+    ),
   memoryDiff: (sinceIso: string, limit = 50) =>
     fetchApi<import("./types").MemoryDiffResponse>(
       "/memory/diff?since=" + encodeURIComponent(sinceIso) + "&limit=" + limit

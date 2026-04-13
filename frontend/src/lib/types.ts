@@ -1053,6 +1053,32 @@ export interface ForgetCandidatesResponse {
   candidates: ForgetCandidate[];
 }
 
+// Gap analysis (carryover #40)
+export interface GapThinCluster {
+  cluster_id: number;
+  cluster_label: string | null;
+  member_count: number;
+  threshold: number;
+  median_cluster_size: number;
+  suggested_topics: string[];
+  reason: string;
+}
+
+export interface GapUnderCoveredTicker {
+  ticker: string;
+  trade_count: number;
+  memory_count: number;
+  gap: number;
+}
+
+export interface GapAnalysisResponse {
+  window_days: number;
+  thin_cluster_threshold: number;
+  min_ticker_memories: number;
+  thin_clusters: GapThinCluster[];
+  under_covered_tickers: GapUnderCoveredTicker[];
+}
+
 // Cross-session memory diff (carryover #42)
 export interface MemoryDiffEntry {
   id: string;
