@@ -556,49 +556,164 @@ export function MemoryMap3D() {
     return () => clearInterval(id);
   }, []);
 
-  // Polling loop — picks up retrieval events from any AI call.
+  // Live retrieval feed — Phase 5b. Prefer WebSocket; fall back to the
+  // 3s polling Sprint B used if the socket can't connect or drops.
+  // The polling fallback is also what runs on backends that haven't
+  // shipped /ws/retrieval-events yet.
+  const [wsConnected, setWsConnected] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = async () => {
-      try {
-        const res = await api.getRetrievalEvents(pulseCursorRef.current);
-        pulseCursorRef.current = res.cursor;
-        if (!pulseSeededRef.current) {
-          // Throw away the first poll's events — they're history we
-          // don't want to replay on mount. Actual live events from now on.
-          pulseSeededRef.current = true;
-        } else if (res.events.length) {
-          setPulses((prev) => {
-            const next = new Map(prev);
-            for (const e of res.events) {
-              for (const id of e.memory_ids) {
-                next.set(id, 1.0);
-              }
-            }
-            return next;
-          });
+    let ws: WebSocket | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+
+    const applyEvents = (events: { memory_ids: string[] }[]) => {
+      if (!events || events.length === 0) return;
+      setPulses((prev) => {
+        const next = new Map(prev);
+        for (const e of events) {
+          for (const id of e.memory_ids) {
+            next.set(id, 1.0);
+          }
         }
-      } catch {
-        // Silent — endpoint might be down or backend redeploying.
-      }
-      if (!cancelled) {
-        timer = setTimeout(tick, PULSE_POLL_MS);
+        return next;
+      });
+    };
+
+    const startPolling = () => {
+      if (pollTimer || cancelled) return;
+      const tick = async () => {
+        try {
+          const res = await api.getRetrievalEvents(pulseCursorRef.current);
+          pulseCursorRef.current = res.cursor;
+          if (!pulseSeededRef.current) {
+            pulseSeededRef.current = true;
+          } else if (res.events.length) {
+            applyEvents(res.events);
+          }
+        } catch {
+          /* swallow */
+        }
+        if (!cancelled) {
+          pollTimer = setTimeout(tick, PULSE_POLL_MS);
+        }
+      };
+      tick();
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
       }
     };
-    // Pause polling when the tab is hidden — saves bandwidth + battery.
+
+    const wsUrl = (): string | null => {
+      // Derive ws(s):// URL from the API base. NEXT_PUBLIC_API_URL looks
+      // like https://...railway.app/api — swap protocol to wss.
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL ||
+        (typeof window !== "undefined"
+          ? `${window.location.protocol}//${window.location.host}/api`
+          : null);
+      if (!apiBase) return null;
+      try {
+        const u = new URL(apiBase, typeof window !== "undefined" ? window.location.href : undefined);
+        u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+        // Strip trailing slash, append the ws route
+        const path = u.pathname.replace(/\/$/, "");
+        return `${u.protocol}//${u.host}${path}/memory/ws/retrieval-events`;
+      } catch {
+        return null;
+      }
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      const url = wsUrl();
+      if (!url) {
+        startPolling();
+        return;
+      }
+      try {
+        ws = new WebSocket(url);
+      } catch {
+        startPolling();
+        return;
+      }
+      ws.onopen = () => {
+        if (cancelled) return;
+        setWsConnected(true);
+        reconnectAttempt = 0;
+        stopPolling(); // WS is the source of truth while connected
+        pulseSeededRef.current = true; // ignore historical events
+      };
+      ws.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+          if (data && Array.isArray(data.events)) {
+            applyEvents(data.events);
+          }
+          // {hello: <ts>} arrives once on connect — used to advance the
+          // polling cursor so a future fallback doesn't replay history.
+          if (typeof data?.hello === "number") {
+            pulseCursorRef.current = data.hello;
+          }
+        } catch {
+          /* ignore malformed messages */
+        }
+      };
+      ws.onerror = () => {
+        // Don't act here — onclose runs next and triggers reconnect.
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        setWsConnected(false);
+        ws = null;
+        // Resume polling immediately so we don't miss events while
+        // backing off. Reconnect WS in the background.
+        startPolling();
+        // Exponential backoff: 1s, 2s, 4s, 8s, max 30s.
+        const delay = Math.min(30_000, 1000 * Math.pow(2, reconnectAttempt));
+        reconnectAttempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+    };
+
+    // Pause when the tab is hidden — close the socket and stop polling.
     const onVisibility = () => {
-      if (document.visibilityState === "visible" && !cancelled) {
-        clearTimeout(timer);
-        tick();
+      if (cancelled) return;
+      if (document.visibilityState === "hidden") {
+        if (ws) {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        stopPolling();
+      } else {
+        // Tab visible again — reconnect immediately.
+        if (!ws) connect();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
-    tick();
+
+    connect();
+
     return () => {
       cancelled = true;
-      clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
+      stopPolling();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      }
     };
   }, []);
 
@@ -1152,6 +1267,25 @@ export function MemoryMap3D() {
           {projection.n_memories} memories · {projection.clusters.length}{" "}
           clusters · model{" "}
           <span className="font-mono text-gray-300">{projection.model_name}</span>
+          <span
+            className={
+              "ml-2 inline-flex items-center gap-1 text-[10px] " +
+              (wsConnected ? "text-emerald-400" : "text-gray-500")
+            }
+            title={
+              wsConnected
+                ? "Live retrieval feed via WebSocket"
+                : "Polling fallback (3s interval) — WebSocket disconnected"
+            }
+          >
+            <span
+              className={
+                "inline-block w-1.5 h-1.5 rounded-full " +
+                (wsConnected ? "bg-emerald-400 animate-pulse" : "bg-gray-500")
+              }
+            />
+            {wsConnected ? "live" : "polling"}
+          </span>
           {searchMatches.size > 0 && (
             <span className="ml-2 text-amber-400">
               · {searchMatches.size} match{searchMatches.size === 1 ? "" : "es"}

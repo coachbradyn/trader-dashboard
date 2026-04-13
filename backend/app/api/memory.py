@@ -1,10 +1,11 @@
 """Henry Memory Management API — CRUD for HenryMemory entries."""
 
 import asyncio
+import json
 import logging
 from app.utils.utc import utcnow
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -910,6 +911,53 @@ async def admin_merge_memory(
         },
         "dropped_id": body.drop_id,
     }
+
+
+@router.websocket("/ws/retrieval-events")
+async def ws_retrieval_events(websocket: WebSocket):
+    """
+    Live push channel for retrieval events. Replaces the 3s polling that
+    Sprint B used to drive the 3D map's pulse animation. Frontend reuses
+    GET /retrieval-events as a fallback when the socket fails to connect
+    or drops.
+
+    Protocol:
+      Server → client: {"events": [{ts, function_name, query_preview,
+                                     memory_ids[], scope_*}]} on every
+                       new retrieval. Also sends an initial {"hello":
+                       <cursor>} so the client knows to drop any
+                       polling-based catch-up since the cursor.
+      Client → server: nothing required. Clients that send anything are
+                       ignored (we still keep them connected).
+
+    No auth header on the socket — same posture as the polling endpoint
+    (memory IDs only, no content). If your deploy needs origin gating,
+    add it here.
+    """
+    from app.services.retrieval_events import (
+        register_ws, unregister_ws, latest_ts,
+    )
+    await websocket.accept()
+    register_ws(websocket)
+    try:
+        # Initial hello so the client can advance its cursor and stop
+        # double-polling for events older than this.
+        await websocket.send_text(json.dumps({"hello": latest_ts()}))
+        # Idle loop — we just need to keep the socket open. Receive
+        # raises WebSocketDisconnect when the client closes; until then,
+        # all sends happen via _broadcast() in retrieval_events.
+        while True:
+            try:
+                # Block waiting for any incoming message; we ignore
+                # contents but this is the standard pattern to detect
+                # disconnect cleanly.
+                await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        logger.debug(f"ws_retrieval_events loop ended: {e}")
+    finally:
+        unregister_ws(websocket)
 
 
 @router.get("/retrieval-events")
