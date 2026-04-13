@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePolling } from "@/hooks/usePolling";
 import { renderMarkdown } from "@/lib/markdown";
@@ -462,8 +463,27 @@ function MemoryTab() {
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════
 
+// Whitelist of tab values — guards against arbitrary strings in ?tab=.
+const VALID_TABS = new Set(["chat", "activity", "decisions", "memory", "memory-3d"]);
+
 export default function HenryPage() {
   useFonts();
+  // Read ?tab=... from URL so the 3D Map's "Open in Memory tab" click and
+  // other deep-links land on the right tab. Controlled <Tabs value=...>
+  // so the default is only the initial URL — user clicks after that work
+  // locally without a navigation.
+  const searchParams = useSearchParams();
+  const urlTab = searchParams?.get("tab");
+  const initialTab =
+    urlTab && VALID_TABS.has(urlTab) ? urlTab : "chat";
+  const [activeTab, setActiveTab] = useState(initialTab);
+  // Re-sync when the URL changes (back button, external link).
+  useEffect(() => {
+    if (urlTab && VALID_TABS.has(urlTab) && urlTab !== activeTab) {
+      setActiveTab(urlTab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlTab]);
 
   return (
     <div className="space-y-6">
@@ -481,7 +501,7 @@ export default function HenryPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="chat" className="w-full">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="bg-[#1f2937]/30 border border-border p-1 rounded-lg">
           <TabsTrigger value="chat" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">Chat</TabsTrigger>
           <TabsTrigger value="activity" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">Activity</TabsTrigger>

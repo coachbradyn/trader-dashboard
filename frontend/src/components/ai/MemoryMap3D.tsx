@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
@@ -50,6 +51,117 @@ function clusterColor(clusterId: number | null | undefined): string {
   return CLUSTER_PALETTE[clusterId % CLUSTER_PALETTE.length];
 }
 
+// Per-memory-type palette — stable, distinct, readable on dark bg.
+const TYPE_COLORS: Record<string, string> = {
+  observation: "#6366f1", // indigo
+  lesson: "#10b981",      // emerald
+  preference: "#f59e0b",  // amber
+  strategy_note: "#8b5cf6", // violet
+  decision: "#06b6d4",    // cyan
+};
+const UNKNOWN_TYPE_COLOR = "#6b7280"; // gray-500
+
+function typeColor(memType: string | null | undefined): string {
+  if (!memType) return UNKNOWN_TYPE_COLOR;
+  return TYPE_COLORS[memType] ?? UNKNOWN_TYPE_COLOR;
+}
+
+// Lerp between two hex colors. Returns hex string.
+function lerpHex(a: string, b: string, t: number): string {
+  const clamp = (x: number) => Math.max(0, Math.min(1, x));
+  t = clamp(t);
+  const ai = parseInt(a.slice(1), 16);
+  const bi = parseInt(b.slice(1), 16);
+  const ar = (ai >> 16) & 0xff, ag = (ai >> 8) & 0xff, ab = ai & 0xff;
+  const br = (bi >> 16) & 0xff, bg = (bi >> 8) & 0xff, bb = bi & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return "#" + ((r << 16) | (g << 8) | bl).toString(16).padStart(6, "0");
+}
+
+// Importance 1-10 → cool blue → warm red gradient. Matches the "heatmap"
+// aesthetic people intuitively read as low-to-high.
+function importanceColor(importance: number): string {
+  const t = (Math.max(1, Math.min(10, importance)) - 1) / 9;
+  // #1e40af (blue-800) → #7c3aed (violet-600) → #dc2626 (red-600)
+  if (t < 0.5) return lerpHex("#1e40af", "#7c3aed", t * 2);
+  return lerpHex("#7c3aed", "#dc2626", (t - 0.5) * 2);
+}
+
+// Age (hours since created) → fresh cyan → faded gray. Clamp at 30 days.
+function ageColor(createdAtIso: string | null | undefined): string {
+  if (!createdAtIso) return "#6b7280";
+  const age = (Date.now() - new Date(createdAtIso).getTime()) / 3_600_000;
+  const t = Math.max(0, Math.min(1, age / (24 * 30))); // 0-30 days → 0-1
+  return lerpHex("#22d3ee", "#4b5563", t); // cyan → gray-600
+}
+
+// reference_count on log scale → dim → bright white.
+function referenceColor(refCount: number): string {
+  const t = Math.max(0, Math.min(1, Math.log2(Math.max(1, refCount + 1)) / 6));
+  return lerpHex("#374151", "#f3f4f6", t); // gray-700 → gray-100
+}
+
+// silhouette ∈ [-1, 1] → red (outlier) → gray → green (prototypical).
+function silhouetteColor(sil: number | null | undefined): string {
+  if (sil === null || sil === undefined) return "#4b5563";
+  // Map [-1, 1] → [0, 1]
+  const t = Math.max(0, Math.min(1, (sil + 1) / 2));
+  if (t < 0.5) return lerpHex("#ef4444", "#6b7280", t * 2); // red → gray
+  return lerpHex("#6b7280", "#10b981", (t - 0.5) * 2);       // gray → emerald
+}
+
+export type ColorMode =
+  | "cluster"
+  | "type"
+  | "importance"
+  | "age"
+  | "reference"
+  | "silhouette";
+
+export type SizeMode = "importance" | "reference";
+
+function colorForPoint(
+  p: MemoryProjectionPoint,
+  mode: ColorMode
+): string {
+  switch (mode) {
+    case "cluster":
+      return clusterColor(p.cluster_id);
+    case "type":
+      return typeColor(p.memory_type);
+    case "importance":
+      return importanceColor(p.importance);
+    case "age":
+      return ageColor(p.created_at);
+    case "reference":
+      return referenceColor(p.reference_count);
+    case "silhouette":
+      return silhouetteColor(p.silhouette);
+  }
+}
+
+function sizeForPoint(
+  p: MemoryProjectionPoint,
+  mode: SizeMode,
+  maxRef: number
+): number {
+  if (mode === "reference") {
+    // Log-scale so a 100-ref memory doesn't render 100× bigger.
+    const t = Math.log2(Math.max(1, p.reference_count + 1)) / Math.max(1, Math.log2(Math.max(2, maxRef + 1)));
+    return 0.008 + t * 0.02;
+  }
+  // default: importance
+  return 0.008 + (Math.max(1, Math.min(10, p.importance)) / 10) * 0.02;
+}
+
+// Created within the last 24h? Drives the recency glow pulse.
+function isRecent(createdAtIso: string | null | undefined): boolean {
+  if (!createdAtIso) return false;
+  return Date.now() - new Date(createdAtIso).getTime() < 86_400_000;
+}
+
 // ─── Memory point ────────────────────────────────────────────────────────────
 
 interface PointProps {
@@ -57,28 +169,76 @@ interface PointProps {
   onHover: (p: MemoryProjectionPoint | null) => void;
   isHovered: boolean;
   onRightClick: (p: MemoryProjectionPoint, screenX: number, screenY: number) => void;
+  onClick: (p: MemoryProjectionPoint) => void;
+  colorMode: ColorMode;
+  sizeMode: SizeMode;
+  maxRef: number;
+  is2D: boolean;
+  // When search is active, non-matching points dim out.
+  searchDim: boolean;
+  // Created in the last 24h — drives the glow pulse.
+  recent: boolean;
 }
 
-function MemoryPoint({ point, onHover, isHovered, onRightClick }: PointProps) {
+function MemoryPoint({
+  point,
+  onHover,
+  isHovered,
+  onRightClick,
+  onClick,
+  colorMode,
+  sizeMode,
+  maxRef,
+  is2D,
+  searchDim,
+  recent,
+}: PointProps) {
   const meshRef = useRef<THREE.Mesh>(null!);
-  const color = useMemo(() => clusterColor(point.cluster_id), [point.cluster_id]);
-  // Importance 1-10 → sphere radius 0.008-0.028. Stays readable across the
-  // full range without high-importance nodes eating the scene.
-  const radius = 0.008 + (Math.max(1, Math.min(10, point.importance)) / 10) * 0.02;
+  const matRef = useRef<THREE.MeshStandardMaterial>(null!);
+  const color = useMemo(
+    () => colorForPoint(point, colorMode),
+    [point, colorMode]
+  );
+  const radius = useMemo(
+    () => sizeForPoint(point, sizeMode, maxRef),
+    [point, sizeMode, maxRef]
+  );
 
-  // Gentle bob on hover so the cursor target is unambiguous.
-  useFrame(() => {
+  // 2D mode: collapse z to 0 so all points lie on a plane.
+  const position: [number, number, number] = is2D
+    ? [point.x, point.y, 0]
+    : [point.x, point.y, point.z];
+
+  // Animated scale on hover + emissive pulse for recency. Computed per-frame
+  // so the fresh-memory glow breathes gently.
+  useFrame(({ clock }) => {
     if (!meshRef.current) return;
-    const target = isHovered ? 1.6 : 1.0;
-    const current = meshRef.current.scale.x;
-    const next = current + (target - current) * 0.2;
-    meshRef.current.scale.setScalar(next);
+    const targetScale = isHovered ? 1.6 : searchDim ? 0.85 : 1.0;
+    const cur = meshRef.current.scale.x;
+    meshRef.current.scale.setScalar(cur + (targetScale - cur) * 0.2);
+
+    if (matRef.current) {
+      let baseEm = isHovered ? 0.9 : 0.35;
+      if (recent) {
+        // 0.2 amplitude pulse at ~0.5 Hz
+        baseEm += 0.25 + 0.2 * Math.sin(clock.elapsedTime * Math.PI);
+      }
+      // Dim matching if search is active and this point doesn't match.
+      const targetEm = searchDim ? baseEm * 0.25 : baseEm;
+      matRef.current.emissiveIntensity =
+        matRef.current.emissiveIntensity +
+        (targetEm - matRef.current.emissiveIntensity) * 0.2;
+
+      const targetOpacity = searchDim ? 0.2 : 1.0;
+      matRef.current.opacity =
+        matRef.current.opacity + (targetOpacity - matRef.current.opacity) * 0.2;
+    }
   });
 
   return (
     <mesh
       ref={meshRef}
-      position={[point.x, point.y, point.z]}
+      position={position}
       onPointerOver={(e: ThreeEvent<PointerEvent>) => {
         e.stopPropagation();
         onHover(point);
@@ -87,21 +247,26 @@ function MemoryPoint({ point, onHover, isHovered, onRightClick }: PointProps) {
         e.stopPropagation();
         onHover(null);
       }}
+      onClick={(e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        onClick(point);
+      }}
       onContextMenu={(e: ThreeEvent<MouseEvent>) => {
         e.stopPropagation();
-        // nativeEvent exists on R3F's synthetic events and gives us the DOM
-        // coords for positioning the menu overlay.
         const ne = e.nativeEvent as MouseEvent | undefined;
         onRightClick(point, ne?.clientX ?? 0, ne?.clientY ?? 0);
       }}
     >
       <sphereGeometry args={[radius, 12, 12]} />
       <meshStandardMaterial
+        ref={matRef}
         color={color}
         emissive={color}
-        emissiveIntensity={isHovered ? 0.9 : 0.35}
+        emissiveIntensity={0.35}
         roughness={0.4}
         metalness={0.1}
+        transparent
+        opacity={1.0}
       />
     </mesh>
   );
@@ -116,15 +281,14 @@ interface CentroidProps {
   z: number;
   memberCount: number;
   weight: number;
+  is2D: boolean;
 }
 
-function ClusterCentroid({ id, x, y, z, memberCount, weight }: CentroidProps) {
+function ClusterCentroid({ id, x, y, z, weight, is2D }: CentroidProps) {
   const color = useMemo(() => clusterColor(id), [id]);
-  // Sphere radius scales with weight (sqrt so a cluster with 4× members
-  // doesn't render 4× bigger — keeps the viz readable).
   const radius = 0.05 + Math.sqrt(Math.max(0, weight)) * 0.25;
   return (
-    <mesh position={[x, y, z]}>
+    <mesh position={is2D ? [x, y, 0] : [x, y, z]}>
       <sphereGeometry args={[radius, 24, 24]} />
       <meshStandardMaterial
         color={color}
@@ -142,16 +306,19 @@ function ClusterCentroid({ id, x, y, z, memberCount, weight }: CentroidProps) {
 
 interface LabelProps {
   cluster: MemoryProjectionCluster;
+  is2D: boolean;
 }
 
-function ClusterLabel({ cluster }: LabelProps) {
+function ClusterLabel({ cluster, is2D }: LabelProps) {
   const color = useMemo(() => clusterColor(cluster.id), [cluster.id]);
   // Y-offset scales with cluster size so labels float just above the centroid
   // sphere. Matches the ClusterCentroid radius formula.
   const yOffset = 0.05 + Math.sqrt(Math.max(0, cluster.weight)) * 0.25 + 0.06;
   const text = cluster.label || `cluster ${cluster.id}`;
   return (
-    <Billboard position={[cluster.x, cluster.y + yOffset, cluster.z]}>
+    <Billboard
+      position={[cluster.x, cluster.y + yOffset, is2D ? 0 : cluster.z]}
+    >
       <Text
         fontSize={0.06}
         color={color}
@@ -195,19 +362,45 @@ interface SceneProps {
   projection: Extract<MemoryProjection, { available: true }>;
   onHover: (p: MemoryProjectionPoint | null) => void;
   onRightClick: (p: MemoryProjectionPoint, screenX: number, screenY: number) => void;
+  onClick: (p: MemoryProjectionPoint) => void;
   hoveredId: string | null;
   onCaptureReady: (fn: () => string) => void;
+  colorMode: ColorMode;
+  sizeMode: SizeMode;
+  is2D: boolean;
+  showFog: boolean;
+  showRecentGlow: boolean;
+  searchMatches: Set<string>; // empty = no filter; populated = only these match
 }
 
 function Scene({
   projection,
   onHover,
   onRightClick,
+  onClick,
   hoveredId,
   onCaptureReady,
+  colorMode,
+  sizeMode,
+  is2D,
+  showFog,
+  showRecentGlow,
+  searchMatches,
 }: SceneProps) {
+  const maxRef = useMemo(() => {
+    let m = 0;
+    for (const p of projection.memories) {
+      if (p.reference_count > m) m = p.reference_count;
+    }
+    return m;
+  }, [projection.memories]);
+
   return (
     <>
+      {/* Fog depth cue — far points fade into the scene background. Matches
+          the Canvas background color so there's no visible boundary. */}
+      {showFog && <fog attach="fog" args={["#0b0f19", 2.5, 7]} />}
+
       <ambientLight intensity={0.45} />
       <directionalLight position={[2, 3, 5]} intensity={0.8} />
       <directionalLight position={[-3, -2, -4]} intensity={0.3} />
@@ -222,13 +415,13 @@ function Scene({
           z={c.z}
           memberCount={c.member_count}
           weight={c.weight}
+          is2D={is2D}
         />
       ))}
 
-      {/* Cluster labels (Gemini-generated) — rendered after centroids so
-          they billboard on top. */}
+      {/* Cluster labels — Gemini-generated when available. */}
       {projection.clusters.map((c) => (
-        <ClusterLabel key={`label-${c.id}`} cluster={c} />
+        <ClusterLabel key={`label-${c.id}`} cluster={c} is2D={is2D} />
       ))}
 
       {/* Memory points */}
@@ -239,13 +432,20 @@ function Scene({
           onHover={onHover}
           isHovered={p.id === hoveredId}
           onRightClick={onRightClick}
+          onClick={onClick}
+          colorMode={colorMode}
+          sizeMode={sizeMode}
+          maxRef={maxRef}
+          is2D={is2D}
+          searchDim={searchMatches.size > 0 && !searchMatches.has(p.id)}
+          recent={showRecentGlow && isRecent(p.created_at)}
         />
       ))}
 
       <OrbitControls
         enablePan
         enableZoom
-        enableRotate
+        enableRotate={!is2D}
         dampingFactor={0.1}
         rotateSpeed={0.5}
         zoomSpeed={0.6}
@@ -272,6 +472,7 @@ interface ContextMenu {
 }
 
 export function MemoryMap3D() {
+  const router = useRouter();
   const [projection, setProjection] = useState<MemoryProjection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -280,6 +481,36 @@ export function MemoryMap3D() {
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
   const captureFnRef = useRef<(() => string) | null>(null);
+
+  // View controls
+  const [colorMode, setColorMode] = useState<ColorMode>("cluster");
+  const [sizeMode, setSizeMode] = useState<SizeMode>("importance");
+  const [is2D, setIs2D] = useState(false);
+  const [showFog, setShowFog] = useState(true);
+  const [showRecentGlow, setShowRecentGlow] = useState(true);
+  const [search, setSearch] = useState("");
+
+  // Compute the set of matching memory IDs for search dimming. Empty set
+  // means no search active (everything renders at full opacity).
+  const searchMatches = useMemo(() => {
+    const matches = new Set<string>();
+    const q = search.trim().toLowerCase();
+    if (!q || !projection || !projection.available) return matches;
+    for (const p of projection.memories) {
+      const hay =
+        (p.content_preview || "") +
+        " " +
+        (p.ticker || "") +
+        " " +
+        (p.memory_type || "") +
+        " " +
+        (p.strategy_id || "");
+      if (hay.toLowerCase().includes(q)) {
+        matches.add(p.id);
+      }
+    }
+    return matches;
+  }, [search, projection]);
 
   const handleCaptureReady = (fn: () => string) => {
     captureFnRef.current = fn;
@@ -309,6 +540,85 @@ export function MemoryMap3D() {
     screenY: number
   ) => {
     setContextMenu({ point: p, x: screenX, y: screenY });
+  };
+
+  const handlePointClick = (p: MemoryProjectionPoint) => {
+    // Navigate to the Memory tab with the focused id in the URL. The Henry
+    // page reads `?tab=memory&focus=<id>` and switches tabs accordingly.
+    router.push(`/henry?tab=memory&focus=${encodeURIComponent(p.id)}`);
+  };
+
+  const handleExportJson = () => {
+    if (!projection || !projection.available) return;
+    const blob = new Blob(
+      [JSON.stringify(projection, null, 2)],
+      { type: "application/json" }
+    );
+    triggerDownload(blob, "json");
+  };
+
+  const handleExportCsv = () => {
+    if (!projection || !projection.available) return;
+    const headers = [
+      "id",
+      "x",
+      "y",
+      "z",
+      "cluster_id",
+      "silhouette",
+      "importance",
+      "reference_count",
+      "memory_type",
+      "ticker",
+      "strategy_id",
+      "validated",
+      "created_at",
+      "updated_at",
+      "content_preview",
+    ];
+    const esc = (v: unknown): string => {
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const lines = [headers.join(",")];
+    for (const m of projection.memories) {
+      lines.push(
+        [
+          m.id,
+          m.x.toFixed(4),
+          m.y.toFixed(4),
+          m.z.toFixed(4),
+          m.cluster_id,
+          m.silhouette ?? "",
+          m.importance,
+          m.reference_count,
+          m.memory_type,
+          m.ticker,
+          m.strategy_id,
+          m.validated,
+          m.created_at,
+          m.updated_at,
+          m.content_preview,
+        ]
+          .map(esc)
+          .join(",")
+      );
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    triggerDownload(blob, "csv");
+  };
+
+  const triggerDownload = (blob: Blob, ext: "json" | "csv") => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `henry-memory-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleDelete = async (id: string) => {
@@ -643,6 +953,11 @@ export function MemoryMap3D() {
           {projection.n_memories} memories · {projection.clusters.length}{" "}
           clusters · model{" "}
           <span className="font-mono text-gray-300">{projection.model_name}</span>
+          {searchMatches.size > 0 && (
+            <span className="ml-2 text-amber-400">
+              · {searchMatches.size} match{searchMatches.size === 1 ? "" : "es"}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {captureMsg && (
@@ -650,6 +965,20 @@ export function MemoryMap3D() {
               {captureMsg}
             </span>
           )}
+          <button
+            onClick={handleExportJson}
+            className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
+            title="Download the projection as JSON"
+          >
+            Export JSON
+          </button>
+          <button
+            onClick={handleExportCsv}
+            className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
+            title="Download a CSV of memory coords + metadata"
+          >
+            Export CSV
+          </button>
           <button
             onClick={takeScreenshot}
             className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-300 hover:bg-[#1f2937] border border-border"
@@ -666,10 +995,113 @@ export function MemoryMap3D() {
         </div>
       </div>
 
+      {/* Controls panel — color/size modes, search, 2D toggle, fog/glow */}
+      <div className="flex items-center gap-3 flex-wrap p-2 rounded-md bg-[#1f2937]/20 border border-border">
+        {/* Search */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-[10px] uppercase tracking-wide text-gray-500">
+            Search
+          </label>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="content, ticker, type…"
+            className="text-xs bg-[#0b0f19] border border-border rounded px-2 py-1 text-gray-200 w-52 focus:border-[#6366f1] focus:outline-none"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="text-[10px] text-gray-500 hover:text-gray-300"
+              aria-label="Clear search"
+            >
+              clear
+            </button>
+          )}
+        </div>
+
+        <div className="h-5 w-px bg-border" />
+
+        {/* Color-by */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-[10px] uppercase tracking-wide text-gray-500">
+            Color
+          </label>
+          <select
+            value={colorMode}
+            onChange={(e) => setColorMode(e.target.value as ColorMode)}
+            className="text-xs bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200 focus:border-[#6366f1] focus:outline-none"
+          >
+            <option value="cluster">cluster</option>
+            <option value="type">memory type</option>
+            <option value="importance">importance</option>
+            <option value="age">age</option>
+            <option value="reference">reference count</option>
+            <option value="silhouette">silhouette</option>
+          </select>
+        </div>
+
+        {/* Size-by */}
+        <div className="flex items-center gap-1.5">
+          <label className="text-[10px] uppercase tracking-wide text-gray-500">
+            Size
+          </label>
+          <select
+            value={sizeMode}
+            onChange={(e) => setSizeMode(e.target.value as SizeMode)}
+            className="text-xs bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200 focus:border-[#6366f1] focus:outline-none"
+          >
+            <option value="importance">importance</option>
+            <option value="reference">reference count</option>
+          </select>
+        </div>
+
+        <div className="h-5 w-px bg-border" />
+
+        {/* Toggles */}
+        <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={is2D}
+            onChange={(e) => setIs2D(e.target.checked)}
+            className="accent-[#6366f1]"
+          />
+          2D mode
+        </label>
+        <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showFog}
+            onChange={(e) => setShowFog(e.target.checked)}
+            className="accent-[#6366f1]"
+          />
+          Fog
+        </label>
+        <label
+          className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer"
+          title="Pulse memories created in the last 24h"
+        >
+          <input
+            type="checkbox"
+            checked={showRecentGlow}
+            onChange={(e) => setShowRecentGlow(e.target.checked)}
+            className="accent-[#6366f1]"
+          />
+          Recent glow
+        </label>
+      </div>
+
       {/* 3D canvas */}
       <div className="relative w-full h-[60vh] rounded-lg border border-border bg-black/40 overflow-hidden">
         <Canvas
-          camera={{ position: [2.2, 1.4, 2.2], fov: 50 }}
+          // Key on is2D so the camera position reset takes effect when
+          // toggling modes (otherwise OrbitControls retains its own state
+          // and you stay in whatever 3D-orbit view you had).
+          key={is2D ? "2d" : "3d"}
+          camera={{
+            position: is2D ? [0, 0, 2.2] : [2.2, 1.4, 2.2],
+            fov: 50,
+          }}
           dpr={[1, 2]}
           // preserveDrawingBuffer: required so toDataURL returns pixels
           // instead of a blank canvas on Chromium (spec-default clears
@@ -682,8 +1114,15 @@ export function MemoryMap3D() {
             projection={projection}
             onHover={setHovered}
             onRightClick={handleRightClick}
+            onClick={handlePointClick}
             hoveredId={hovered?.id ?? null}
             onCaptureReady={handleCaptureReady}
+            colorMode={colorMode}
+            sizeMode={sizeMode}
+            is2D={is2D}
+            showFog={showFog}
+            showRecentGlow={showRecentGlow}
+            searchMatches={searchMatches}
           />
         </Canvas>
 
@@ -744,7 +1183,7 @@ export function MemoryMap3D() {
               {hovered.content_preview || "(no preview)"}
             </p>
             <p className="text-[10px] text-gray-600 mt-1.5 italic">
-              Right-click to delete.
+              Click to open in Memory tab · Right-click to delete
             </p>
           </div>
         )}
