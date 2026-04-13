@@ -41,6 +41,7 @@ async def compute_all_stats():
             _compute_hold_time_analysis,
             _compute_portfolio_risk,
             _compute_strategy_correlation,
+            _compute_conditional_probability,
         ]:
             try:
                 await fn(db)
@@ -373,3 +374,238 @@ async def _compute_strategy_correlation(db):
         }
 
     await _upsert_stat(db, "strategy_correlation", correlation_data, period_days=90)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Conditional Probability Table (intelligence upgrade Phase 3, System 4)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+# Tunable thresholds — kept module-level so they're easy to adjust.
+COND_PROB_MIN_TRADES = 5      # Min total trades per strategy×ticker for any output
+COND_PROB_MIN_BUCKET = 3      # Min trades per bucket to surface a conditional split
+COND_PROB_LOOKBACK_DAYS = 365 # Webhook trade lookback
+
+
+def _bucket_adx(adx: float | None) -> str | None:
+    if adx is None:
+        return None
+    if adx >= 30:
+        return "adx_high"
+    if adx >= 20:
+        return "adx_mid"
+    return "adx_low"
+
+
+def _bucket_vix(vix: float | None) -> str | None:
+    if vix is None:
+        return None
+    if vix < 18:
+        return "vix_low"
+    if vix <= 25:
+        return "vix_mid"
+    return "vix_high"
+
+
+def _bucket_spy_trend(close: float | None, ema: float | None) -> str | None:
+    if close is None or ema is None:
+        return None
+    return "spy_uptrend" if close > ema else "spy_downtrend"
+
+
+def _summarize_bucket(trades_in_bucket: list) -> dict:
+    """Compact stats for one bucket's slice of trades."""
+    n = len(trades_in_bucket)
+    if n == 0:
+        return {"n": 0}
+    wins = [t for t in trades_in_bucket if (t.pnl_dollars or 0) > 0]
+    losses = [t for t in trades_in_bucket if (t.pnl_dollars or 0) <= 0]
+    win_rate = (len(wins) / n) * 100.0
+    avg_gain = (
+        sum(t.pnl_percent or 0 for t in wins) / len(wins) if wins else 0.0
+    )
+    avg_loss = (
+        sum(t.pnl_percent or 0 for t in losses) / len(losses) if losses else 0.0
+    )
+    # EV per trade in % terms — simple expected value (not Kelly).
+    ev_pct = (win_rate / 100.0) * avg_gain + (1 - win_rate / 100.0) * avg_loss
+    return {
+        "n": n,
+        "win_rate": round(win_rate, 1),
+        "avg_gain_pct": round(avg_gain, 2),
+        "avg_loss_pct": round(avg_loss, 2),
+        "ev_pct": round(ev_pct, 2),
+    }
+
+
+async def _compute_conditional_probability(db):
+    """
+    Per (strategy_id, ticker) with ≥ COND_PROB_MIN_TRADES closed trades,
+    write a HenryStats(stat_type='conditional_probability') row containing:
+
+      - unconditional stats (win_rate, avg_gain, avg_loss, ev_pct,
+        profit_factor, avg_hold_days, n)
+      - conditional breakdowns (each shown only if ≥ COND_PROB_MIN_BUCKET):
+          * by_adx:   adx_high (>30) / adx_mid (20-30) / adx_low (<20)
+          * by_vix:   vix_low (<18) / vix_mid (18-25) / vix_high (>25)
+          * by_spy:   spy_uptrend / spy_downtrend (vs 20EMA)
+
+    Webhook trades supply ADX (from entry_adx) + the regime snapshot
+    (entry_vix / entry_spy_close / entry_spy_20ema). Backtest trades
+    contribute only to the unconditional counts because their rows
+    don't carry regime context.
+
+    Stored per-pair so the prompt-injection helper can fetch by ticker
+    in O(K) rather than rebuilding aggregates on every call.
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.models import Trade, Trader, BacktestTrade, BacktestImport
+
+    # ── Pull webhook closed trades within the lookback window ─────────
+    cutoff = utcnow() - timedelta(days=COND_PROB_LOOKBACK_DAYS)
+    result = await db.execute(
+        select(Trade)
+        .options(selectinload(Trade.trader))
+        .where(
+            Trade.status == "closed",
+            Trade.exit_time >= cutoff,
+        )
+    )
+    webhook_trades = list(result.scalars().all())
+
+    # Group webhook by (strategy_id, ticker)
+    grouped: dict[tuple[str, str], list] = defaultdict(list)
+    for t in webhook_trades:
+        if not t.trader or not t.ticker:
+            continue
+        grouped[(t.trader.trader_id, t.ticker.upper())].append(t)
+
+    # ── Pull backtest trades (group by ticker via BacktestImport) ────
+    # BacktestTrade rows are ordered alternating Entry/Exit per the CSV
+    # format. Since the existing code already imports them paired and
+    # cumulative_pnl_pct is per-Exit row, we use Exit rows as the
+    # "closed trade" record for unconditional stats. Strategy comes
+    # from the BacktestImport.strategy field if present; ticker from
+    # BacktestImport.ticker.
+    bt_grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    try:
+        bt_result = await db.execute(
+            select(BacktestTrade, BacktestImport)
+            .join(BacktestImport, BacktestTrade.import_id == BacktestImport.id)
+            .where(BacktestTrade.type.like("Exit%"))
+        )
+        for bt, imp in bt_result.all():
+            strat = getattr(imp, "strategy", None)
+            tkr = getattr(imp, "ticker", None)
+            if not strat or not tkr or bt.net_pnl_pct is None:
+                continue
+            bt_grouped[(strat, tkr.upper())].append({
+                "pnl_pct": float(bt.net_pnl_pct),
+                "pnl_dollars": float(bt.net_pnl or 0.0),
+            })
+    except Exception as e:
+        logger.debug(f"backtest trade aggregation skipped: {e}")
+
+    all_keys = set(grouped.keys()) | set(bt_grouped.keys())
+    if not all_keys:
+        return
+
+    # Clear stale conditional_probability rows so removed pairs don't linger
+    # in the table after a strategy or ticker stops trading.
+    from app.models import HenryStats as _HenryStats
+    await db.execute(
+        delete(_HenryStats).where(_HenryStats.stat_type == "conditional_probability")
+    )
+
+    for (strategy_id, ticker) in all_keys:
+        wb = grouped.get((strategy_id, ticker), [])
+        bt = bt_grouped.get((strategy_id, ticker), [])
+        n_total = len(wb) + len(bt)
+        if n_total < COND_PROB_MIN_TRADES:
+            continue
+
+        # ── Unconditional ────────────────────────────────────────────
+        # Combine webhook + backtest pnl_pct for unconditional stats.
+        combined_pnl_pcts: list[float] = [t.pnl_percent or 0 for t in wb]
+        combined_pnl_dollars: list[float] = [t.pnl_dollars or 0 for t in wb]
+        for b in bt:
+            combined_pnl_pcts.append(b["pnl_pct"])
+            combined_pnl_dollars.append(b["pnl_dollars"])
+
+        wins_idx = [i for i, p in enumerate(combined_pnl_dollars) if p > 0]
+        losses_idx = [i for i, p in enumerate(combined_pnl_dollars) if p <= 0]
+        n = len(combined_pnl_pcts)
+        win_rate = (len(wins_idx) / n) * 100.0 if n else 0.0
+        avg_gain = (
+            sum(combined_pnl_pcts[i] for i in wins_idx) / len(wins_idx)
+            if wins_idx else 0.0
+        )
+        avg_loss = (
+            sum(combined_pnl_pcts[i] for i in losses_idx) / len(losses_idx)
+            if losses_idx else 0.0
+        )
+        ev_pct = (win_rate / 100.0) * avg_gain + (1 - win_rate / 100.0) * avg_loss
+        gross_profit = sum(p for p in combined_pnl_dollars if p > 0)
+        gross_loss = abs(sum(p for p in combined_pnl_dollars if p <= 0))
+        profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
+
+        # Avg hold days: webhook trades only (backtest doesn't track bars
+        # in days reliably without the timeframe metadata we don't store).
+        bars = [t.bars_in_trade for t in wb if t.bars_in_trade is not None]
+        # bars_in_trade is in TF units; without TF we can't convert to days
+        # cleanly. Report avg bars and let the consumer decide.
+        avg_bars = round(sum(bars) / len(bars), 1) if bars else None
+
+        unconditional = {
+            "n": n,
+            "n_webhook": len(wb),
+            "n_backtest": len(bt),
+            "win_rate": round(win_rate, 1),
+            "avg_gain_pct": round(avg_gain, 2),
+            "avg_loss_pct": round(avg_loss, 2),
+            "ev_pct": round(ev_pct, 2),
+            "profit_factor": profit_factor,
+            "avg_bars_in_trade": avg_bars,
+        }
+
+        # ── Conditional breakdowns (webhook only) ───────────────────
+        by_adx: dict[str, list] = defaultdict(list)
+        by_vix: dict[str, list] = defaultdict(list)
+        by_spy: dict[str, list] = defaultdict(list)
+        for t in wb:
+            adx_b = _bucket_adx(t.entry_adx)
+            if adx_b:
+                by_adx[adx_b].append(t)
+            vix_b = _bucket_vix(t.entry_vix)
+            if vix_b:
+                by_vix[vix_b].append(t)
+            spy_b = _bucket_spy_trend(t.entry_spy_close, t.entry_spy_20ema)
+            if spy_b:
+                by_spy[spy_b].append(t)
+
+        def _filter_buckets(d: dict[str, list]) -> dict:
+            return {
+                k: _summarize_bucket(v)
+                for k, v in d.items()
+                if len(v) >= COND_PROB_MIN_BUCKET
+            }
+
+        conditional = {
+            "by_adx": _filter_buckets(by_adx),
+            "by_vix": _filter_buckets(by_vix),
+            "by_spy_trend": _filter_buckets(by_spy),
+        }
+
+        await _upsert_stat(
+            db,
+            "conditional_probability",
+            {
+                "unconditional": unconditional,
+                "conditional": conditional,
+            },
+            strategy=strategy_id,
+            ticker=ticker,
+        )

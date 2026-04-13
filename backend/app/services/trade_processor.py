@@ -204,6 +204,24 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         except Exception:
             pass
 
+    # Snapshot the entry-time market regime so conditional probability
+    # stats (henry_stats_engine._compute_conditional_probability) can
+    # split this trade's outcome by VIX bucket / SPY trend / ADX regime.
+    # Reads from the in-process market_regime cache populated by the
+    # pre-market + EOD scheduled jobs — no FMP round-trip on the hot
+    # webhook path. None when regime hasn't been computed yet.
+    entry_vix = entry_spy_close = entry_spy_20ema = entry_spy_adx = None
+    try:
+        from app.services.market_regime import current_regime_classification
+        regime = await current_regime_classification()
+        if regime:
+            entry_vix = regime.get("vix")
+            entry_spy_close = regime.get("spy_close")
+            entry_spy_20ema = regime.get("spy_20ema")
+            entry_spy_adx = regime.get("spy_adx")
+    except Exception:
+        pass  # Snapshot is best-effort; missing fields handled by stats engine
+
     trade = Trade(
         trader_id=trader.id,
         ticker=payload.ticker,
@@ -217,6 +235,10 @@ async def _process_entry(trader: Trader, payload: WebhookPayload, db: AsyncSessi
         timeframe=payload.tf,
         entry_time=entry_time,
         status="open",
+        entry_vix=entry_vix,
+        entry_spy_close=entry_spy_close,
+        entry_spy_20ema=entry_spy_20ema,
+        entry_spy_adx=entry_spy_adx,
         raw_entry_payload=payload.model_dump(),
     )
     db.add(trade)

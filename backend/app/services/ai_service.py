@@ -516,6 +516,106 @@ async def _build_system_prompt(
         except Exception:
             pass  # Warnings are advisory — never block the prompt build
 
+    # Conditional probability table (intelligence upgrade Phase 3,
+    # System 4) — for any ticker in scope, surface the precomputed
+    # win-rate-by-regime tables Henry should reference when reasoning
+    # about a new entry. Pure data lookup; the heavy lifting happened
+    # in _compute_conditional_probability. Skipped silently if no rows
+    # exist for this ticker yet.
+    if ticker:
+        try:
+            from app.models import HenryStats as _HS
+            async with async_session() as db:
+                rows = list(
+                    (
+                        await db.execute(
+                            select(_HS)
+                            .where(_HS.stat_type == "conditional_probability")
+                            .where(_HS.ticker == ticker.upper())
+                            .order_by(_HS.computed_at.desc())
+                        )
+                    ).scalars().all()
+                )
+            # One row per strategy×ticker — keep the most recent per strategy.
+            seen: set[str] = set()
+            tables: list[str] = []
+            for row in rows:
+                if not row.strategy or row.strategy in seen:
+                    continue
+                seen.add(row.strategy)
+                if not row.data:
+                    continue
+                d = row.data
+                u = d.get("unconditional", {})
+                c = d.get("conditional", {})
+                if not u.get("n"):
+                    continue
+                header = (
+                    f"{row.strategy} × {ticker.upper()} ({u.get('n')} trades): "
+                    f"{u.get('win_rate', '?')}% win, "
+                    f"EV {u.get('ev_pct', '?')}%/trade, "
+                    f"PF {u.get('profit_factor', '?')}, "
+                    f"avg gain {u.get('avg_gain_pct', '?')}% / "
+                    f"loss {u.get('avg_loss_pct', '?')}%"
+                )
+                lines = [header]
+                # ADX
+                by_adx = c.get("by_adx") or {}
+                adx_parts = [
+                    f"ADX>30: {by_adx['adx_high']['win_rate']}% win "
+                    f"({by_adx['adx_high']['n']} trades), "
+                    f"EV {by_adx['adx_high']['ev_pct']}%"
+                    if "adx_high" in by_adx else None,
+                    f"ADX 20-30: {by_adx['adx_mid']['win_rate']}% win "
+                    f"({by_adx['adx_mid']['n']} trades), "
+                    f"EV {by_adx['adx_mid']['ev_pct']}%"
+                    if "adx_mid" in by_adx else None,
+                    f"ADX<20: {by_adx['adx_low']['win_rate']}% win "
+                    f"({by_adx['adx_low']['n']} trades), "
+                    f"EV {by_adx['adx_low']['ev_pct']}%"
+                    if "adx_low" in by_adx else None,
+                ]
+                adx_parts = [p for p in adx_parts if p]
+                if adx_parts:
+                    lines.append("  ADX: " + " | ".join(adx_parts))
+                # VIX
+                by_vix = c.get("by_vix") or {}
+                vix_parts = [
+                    f"VIX<18: {by_vix['vix_low']['win_rate']}% win "
+                    f"({by_vix['vix_low']['n']})"
+                    if "vix_low" in by_vix else None,
+                    f"VIX 18-25: {by_vix['vix_mid']['win_rate']}% win "
+                    f"({by_vix['vix_mid']['n']})"
+                    if "vix_mid" in by_vix else None,
+                    f"VIX>25: {by_vix['vix_high']['win_rate']}% win "
+                    f"({by_vix['vix_high']['n']})"
+                    if "vix_high" in by_vix else None,
+                ]
+                vix_parts = [p for p in vix_parts if p]
+                if vix_parts:
+                    lines.append("  VIX: " + " | ".join(vix_parts))
+                # SPY trend
+                by_spy = c.get("by_spy_trend") or {}
+                spy_parts = [
+                    f"SPY uptrend: {by_spy['spy_uptrend']['win_rate']}% win "
+                    f"({by_spy['spy_uptrend']['n']})"
+                    if "spy_uptrend" in by_spy else None,
+                    f"SPY downtrend: {by_spy['spy_downtrend']['win_rate']}% win "
+                    f"({by_spy['spy_downtrend']['n']})"
+                    if "spy_downtrend" in by_spy else None,
+                ]
+                spy_parts = [p for p in spy_parts if p]
+                if spy_parts:
+                    lines.append("  Trend: " + " | ".join(spy_parts))
+                tables.append("\n".join(lines))
+            if tables:
+                sections.append(
+                    f"PROBABILITY TABLES ({ticker.upper()}):\n  "
+                    + "\n  ".join(tables)
+                )
+        except Exception:
+            pass  # Pure-data lookup; missing data → no section
+
     # Add web search guidance if enabled
     if enable_web_search:
         sections.append(WEB_SEARCH_GUIDANCE.strip())

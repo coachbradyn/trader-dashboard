@@ -810,6 +810,25 @@ async def admin_ensure_schema(
             "create_cluster_id_index",
             "CREATE INDEX IF NOT EXISTS ix_henry_memory_cluster_id ON henry_memory (cluster_id)",
         ),
+        # Phase 3 — entry-time regime snapshot on trades. Used by
+        # _compute_conditional_probability to split win rates by VIX
+        # bucket / SPY-trend / SPY-ADX regime.
+        (
+            "add_trade_entry_vix",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_vix FLOAT",
+        ),
+        (
+            "add_trade_entry_spy_close",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_spy_close FLOAT",
+        ),
+        (
+            "add_trade_entry_spy_20ema",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_spy_20ema FLOAT",
+        ),
+        (
+            "add_trade_entry_spy_adx",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_spy_adx FLOAT",
+        ),
     ]
 
     # Check which columns exist before attempting the DDL so we can report
@@ -817,13 +836,31 @@ async def admin_ensure_schema(
     existing_cols_result = await db.execute(
         text(
             "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name IN ('henry_memory', 'trades')"
+        )
+    )
+    # Now we span two tables — namespace by table to keep counts clear.
+    rows_existing = list(existing_cols_result.all())
+    henry_cols_q = await db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'henry_memory'"
         )
     )
-    existing_cols = {row[0] for row in existing_cols_result.all()}
+    existing_cols = {row[0] for row in henry_cols_q.all()}
+    trade_cols_q = await db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'trades'"
+        )
+    )
+    trade_cols = {row[0] for row in trade_cols_q.all()}
 
     target_cols = {"embedding", "embedding_model", "cluster_id", "cluster_silhouette"}
-    missing_before = target_cols - existing_cols
+    target_trade_cols = {"entry_vix", "entry_spy_close", "entry_spy_20ema", "entry_spy_adx"}
+    missing_before = (target_cols - existing_cols) | {
+        f"trades.{c}" for c in (target_trade_cols - trade_cols)
+    }
 
     try:
         for name, stmt in ddl_statements:
@@ -844,7 +881,7 @@ async def admin_ensure_schema(
         # Bump alembic_version to the latest head so future deploys don't
         # try to re-apply these migrations (and fail on already-existing
         # columns without IF NOT EXISTS).
-        latest_head = "l263748596g8"
+        latest_head = "m374859607h9"
         try:
             version_result = await db.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")
@@ -873,14 +910,23 @@ async def admin_ensure_schema(
 
         await db.commit()
 
-        existing_cols_after_result = await db.execute(
+        henry_after = await db.execute(
             text(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'henry_memory'"
             )
         )
-        existing_cols_after = {row[0] for row in existing_cols_after_result.all()}
-        missing_after = target_cols - existing_cols_after
+        henry_cols_after = {row[0] for row in henry_after.all()}
+        trades_after = await db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'trades'"
+            )
+        )
+        trade_cols_after = {row[0] for row in trades_after.all()}
+        missing_after = (target_cols - henry_cols_after) | {
+            f"trades.{c}" for c in (target_trade_cols - trade_cols_after)
+        }
 
         return {
             "ok": len(missing_after) == 0,

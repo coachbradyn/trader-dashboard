@@ -40,6 +40,17 @@ class Trade(Base):
     status: Mapped[str] = mapped_column(String(10), default="open", index=True)
     is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Entry-time market regime snapshot (intelligence upgrade Phase 3,
+    # System 4). Populated by trade_processor at entry from the
+    # market_regime cache. All nullable — backfill of historical trades
+    # would require historical FMP data so we only enrich going forward.
+    # Used by henry_stats_engine._compute_conditional_probability to
+    # split win rates by VIX bucket / SPY-trend / SPY-ADX regime.
+    entry_vix: Mapped[float | None] = mapped_column(Float)
+    entry_spy_close: Mapped[float | None] = mapped_column(Float)
+    entry_spy_20ema: Mapped[float | None] = mapped_column(Float)
+    entry_spy_adx: Mapped[float | None] = mapped_column(Float)
+
     # Raw webhook data
     raw_entry_payload: Mapped[dict | None] = mapped_column(JSON)
     raw_exit_payload: Mapped[dict | None] = mapped_column(JSON)
