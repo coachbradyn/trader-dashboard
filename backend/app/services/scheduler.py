@@ -798,6 +798,27 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Market regime jobs (intelligence upgrade Phase 1, System 2)
+    # ---------------------------------------------------------------------
+    # 8:30 AM ET pre-market: snapshot overnight gaps, sector setup, calendar.
+    # 4:30 PM ET EOD recap:  what actually happened, regime confirmation.
+    # Both save a portfolio-wide memory + persist the regime classification
+    # to HenryStats so _build_system_prompt can inject it into every call.
+    from app.services.market_regime import pre_market_job, eod_recap_job
+
+    scheduler.add_job(
+        pre_market_job,
+        CronTrigger(hour=8, minute=30, timezone=ET, day_of_week="mon-fri"),
+        id="market_regime_premarket",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        eod_recap_job,
+        CronTrigger(hour=16, minute=30, timezone=ET, day_of_week="mon-fri"),
+        id="market_regime_eod",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "

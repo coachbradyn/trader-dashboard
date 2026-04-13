@@ -91,6 +91,42 @@ async def _build_system_prompt(
     except Exception:
         sections.append(f"CURRENT DATE/TIME: {utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}")
 
+    # Inject the latest market regime classification — populated by the
+    # pre-market + EOD scheduled jobs in app/services/market_regime.py.
+    # Cached in-process; falls back to HenryStats(stat_type='market_regime')
+    # so a process restart doesn't strand Henry without context. Skipped
+    # silently if the regime jobs haven't run yet (e.g., fresh deploy).
+    try:
+        from app.services.market_regime import current_regime_classification
+        regime = await current_regime_classification()
+        if regime and regime.get("label"):
+            spy_part = (
+                f" SPY ${regime['spy_close']:.2f}"
+                if regime.get("spy_close") is not None
+                else ""
+            )
+            ema_part = (
+                f" vs 20EMA ${regime['spy_20ema']:.2f}"
+                if regime.get("spy_20ema") is not None
+                else ""
+            )
+            vix_part = (
+                f", VIX {regime['vix']:.1f}"
+                if regime.get("vix") is not None
+                else ""
+            )
+            adx_part = (
+                f", SPY ADX {regime['spy_adx']:.1f}"
+                if regime.get("spy_adx") is not None
+                else ""
+            )
+            sections.append(
+                f"CURRENT MARKET REGIME: {regime['label']}."
+                f"{spy_part}{ema_part}{vix_part}{adx_part}"
+            )
+    except Exception:
+        pass  # Regime cache miss — non-fatal; memory log can still surface it
+
     # Pull strategy descriptions dynamically — separate session to isolate errors
     try:
         async with async_session() as db:
@@ -643,50 +679,128 @@ async def _extract_and_save_context(
 
 async def extract_and_save_memories(analysis_text: str, source: str = "briefing") -> None:
     """
-    Single AI call to extract key observations AND context conclusions from analysis.
-    Previously this was two separate calls — now merged to save tokens.
+    Single AI call to extract structured trading memories from an analysis.
+
+    Phase 1 of the intelligence upgrade replaced the prior generic prompt
+    with a strict schema that demands quantitative fields per memory
+    category. The extractor will return zero memories rather than save
+    vague prose — this is by design.
+
+    Categories the prompt instructs the model to recognize:
+      - trade_entry      → memory_type=observation (saved when source text
+                           describes an entry signal with ADX/ATR/regime)
+      - trade_outcome    → memory_type=lesson (closed trade discussion)
+      - conflict         → memory_type=decision (multi-strategy resolution)
+      - pattern          → memory_type=observation (recurring quant pattern)
+      - screener_confluence → memory_type=observation (indicator alignment)
+
+    Each memory must include enough numerical context to be useful for
+    future semantic retrieval against new signals.
     """
     try:
         from app.services.ai_provider import call_ai
         system = (
-            "Extract 1-3 key findings from this trading analysis. Return a JSON array of objects with keys: "
-            "content (1 sentence), memory_type (observation|lesson|strategy_note), "
-            "ticker (null or ticker symbol), strategy_id (null or strategy slug), "
-            "importance (1-10, only include if >= 6). Skip generic observations."
+            "You extract structured trading memories from analysis text for a "
+            "swing/momentum trading AI named Henry. Output ONLY a JSON array, "
+            "no prose, no markdown fences. Empty array [] if nothing extractable.\n\n"
+            "Each memory is an object with these required fields:\n"
+            "  content       — one or two sentences. MUST contain numerical "
+            "values (prices, %s, ADX, ATR, VIX level, win rate). Vague "
+            "qualitative claims are forbidden.\n"
+            "  memory_type   — one of: observation, lesson, decision\n"
+            "  ticker        — uppercase symbol if memory is about a specific "
+            "ticker, else null\n"
+            "  strategy_id   — strategy slug (e.g. S1, S3, HENRY) if relevant, "
+            "else null\n"
+            "  importance    — integer 1-10 based on information density:\n"
+            "                  9-10 = full entry conditions + market regime + "
+            "outcome (a complete training example)\n"
+            "                  7-8  = entry conditions + regime context, no "
+            "outcome yet\n"
+            "                  5-6  = partial data (ticker + direction + "
+            "reasoning, missing regime or quant)\n"
+            "                  <5   = DO NOT SAVE; return nothing for this "
+            "candidate\n\n"
+            "Memory category guidance — pick the closest one and ensure the "
+            "content carries the listed fields:\n\n"
+            "1. TRADE ENTRY (memory_type=observation):\n"
+            "   ticker, direction, strategy, entry price, ADX, ATR, signal "
+            "strength, market regime (SPY vs 20EMA, VIX level), confidence.\n"
+            "   Example content: \"S1 long NVDA @ $478.20 — ADX 32, ATR 8.4, "
+            "signal strength 7. Regime: low-vol uptrend (SPY +0.4% above "
+            "20EMA, VIX 14.1). Confidence 8/10.\"\n\n"
+            "2. TRADE OUTCOME (memory_type=lesson):\n"
+            "   ticker, direction, strategy, entry/exit prices, P&L %, hold "
+            "days, what worked or failed, regime during hold, single-sentence "
+            "lesson.\n"
+            "   Example content: \"S3 long AMD entry $145 → exit $151.30 in "
+            "3 days, +4.3%. Stop held; thesis (volume breakout) confirmed. "
+            "Regime: low-vol uptrend throughout. Lesson: S3 on AMD breakouts "
+            "performs best when VIX <16 and held 2-4d.\"\n\n"
+            "3. CONFLICT (memory_type=decision):\n"
+            "   tickers, strategies on each side, chosen direction + reason, "
+            "confidence.\n\n"
+            "4. PATTERN (memory_type=observation):\n"
+            "   Quantitative recurring pattern with sample size — never \"X "
+            "tends to go up\". Required: strategy + ticker + condition + "
+            "metric + N (sample size).\n"
+            "   Example content: \"S1 on NVDA: 4 consecutive long entries "
+            "with ADX>30 — all winners, avg +3.8% in 2.5 days.\"\n\n"
+            "5. SCREENER CONFLUENCE (memory_type=observation):\n"
+            "   ticker, date, indicators that fired, bullish vs bearish count, "
+            "confluence direction.\n\n"
+            "STRICT RULES:\n"
+            "- If the source text doesn't contain the numerical values for a "
+            "category, DO NOT FABRICATE THEM. Skip that memory.\n"
+            "- Always set ticker when the memory is about a specific symbol; "
+            "always set strategy_id when about a specific strategy.\n"
+            "- Output 0-5 memories. Quality > quantity.\n"
+            "- Output ONLY the JSON array."
         )
-        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=400)
+        raw = await call_ai(system, analysis_text, function_name="memory_extraction", max_tokens=900)
 
         raw = raw.strip().replace("```json", "").replace("```", "").strip()
         memories = json.loads(raw)
 
-        if isinstance(memories, list):
-            for m in memories[:3]:
-                try:
-                    importance = max(1, min(10, int(m.get("importance", 5))))
-                except (ValueError, TypeError):
-                    importance = 5
-                if importance < 6:
-                    continue  # Skip low-importance memories
-                # Save to HenryMemory
-                await save_memory(
-                    content=m.get("content", ""),
-                    memory_type=m.get("memory_type", "observation"),
-                    strategy_id=m.get("strategy_id"),
-                    ticker=m.get("ticker"),
-                    importance=importance,
-                    source=source,
-                )
-                # Also save to HenryContext (merged from _extract_and_save_context)
-                await save_context(
-                    content=m.get("content", ""),
-                    context_type=m.get("memory_type", "observation"),
-                    ticker=m.get("ticker"),
-                    strategy=m.get("strategy_id"),
-                    confidence=importance,
-                    expires_days=14,
-                )
+        if not isinstance(memories, list):
+            return
+
+        for m in memories[:5]:  # cap at 5 per call (was 3)
+            try:
+                importance = max(1, min(10, int(m.get("importance", 5))))
+            except (ValueError, TypeError):
+                importance = 5
+            if importance < 5:
+                # Hard floor — the prompt tells the model not to save
+                # anything <5, but enforce here defensively.
+                continue
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            mtype = m.get("memory_type") or "observation"
+            if mtype not in {"observation", "lesson", "decision", "preference", "strategy_note"}:
+                mtype = "observation"
+            ticker = m.get("ticker")
+            if isinstance(ticker, str):
+                ticker = ticker.strip().upper() or None
+            await save_memory(
+                content=content,
+                memory_type=mtype,
+                strategy_id=m.get("strategy_id"),
+                ticker=ticker,
+                importance=importance,
+                source=source,
+            )
+            await save_context(
+                content=content,
+                context_type=mtype,
+                ticker=ticker,
+                strategy=m.get("strategy_id"),
+                confidence=importance,
+                expires_days=14,
+            )
     except Exception:
-        pass  # Non-blocking
+        pass  # Non-blocking — extraction failure must never break the call
 
 
 def _format_trades_for_prompt(trades: list[dict]) -> str:
