@@ -2,7 +2,7 @@ import uuid
 from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Text, Integer, Float
+from sqlalchemy import String, Text, Integer, Float, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -40,6 +40,15 @@ class HenryMemory(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     # Source: "briefing", "signal_eval", "scheduled_review", "user", "outcome_tracking"
     source: Mapped[str] = mapped_column(String(30), default="system")
+
+    # Semantic embedding of `content` — list[float] stored as JSON. Null when
+    # embedding provider is disabled or the write path failed. Used by top-K
+    # retrieval in ai_service._build_system_prompt to filter memories
+    # semantically instead of injecting everything importance>=6.
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Which model produced `embedding`. Vectors from different models are NOT
+    # comparable — retrieval must filter to matching model_name before ranking.
+    embedding_model: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     updated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), onupdate=lambda: utcnow())

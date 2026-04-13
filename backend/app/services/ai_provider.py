@@ -121,6 +121,25 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
     if web_search:
         tools = [{"type": "web_search_20260209", "name": "web_search"}]
 
+    # Prompt caching: wrap the system prompt in a single cached block so the
+    # same prefix across calls (base prompt + strategies + memories that
+    # haven't changed) is billed at ~10% of input token cost after the first
+    # hit. Requires the system param to be a list of content blocks, not a
+    # plain string. Blocks with cache_control must be >=1024 tokens for Sonnet
+    # — our system prompt easily clears that once strategies + memories land.
+    settings = get_settings()
+    use_cache = getattr(settings, "prompt_cache_enabled", True) and not web_search
+    if use_cache:
+        system_param = [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    else:
+        system_param = system
+
     try:
         client = anthropic.AsyncAnthropic()
         for model in MODELS:
@@ -128,7 +147,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                 kwargs = dict(
                     model=model,
                     max_tokens=max_tokens,
-                    system=system,
+                    system=system_param,
                     messages=[{"role": "user", "content": prompt}],
                     timeout=60.0 if web_search else 45.0,
                 )
@@ -154,7 +173,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                         response = await client.messages.create(
                             model=model,
                             max_tokens=max_tokens,
-                            system=system,
+                            system=system_param,
                             messages=messages,
                             tools=tools,
                             timeout=60.0,

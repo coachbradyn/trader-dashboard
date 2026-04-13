@@ -56,10 +56,24 @@ WEB_SEARCH_GUIDANCE = """
 You have access to web search. Use it when you lack critical context about a stock — for example, upcoming catalysts, recent earnings results, FDA decisions, analyst actions, or why a stock is moving significantly. Do not search for basic price data (you already have that). Search for the WHY behind moves and the WHAT's COMING that your existing data doesn't cover. When you find important information through search, highlight it in your analysis so the user knows you researched it."""
 
 
-async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: str = "general", enable_web_search: bool = False) -> str:
+async def _build_system_prompt(
+    ticker: str = None,
+    strategy: str = None,
+    scope: str = "general",
+    enable_web_search: bool = False,
+    query_text: str = None,
+) -> str:
     """
     Build a dynamic system prompt that includes strategy descriptions,
     memories, prior context notes, track record, and strategy stats.
+
+    When `query_text` is provided and the embedding provider is configured,
+    memories are selected by semantic top-K (Voyage + cosine similarity)
+    instead of importance bucket. This is the primary token-saving path —
+    callers that have user text (ask_henry, signal notes) should pass it.
+    Callers without a query (scheduled briefings, etc.) fall back to the
+    scope-filtered importance-ordered path, which is still tighter than the
+    old broad scan.
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -97,17 +111,106 @@ async def _build_system_prompt(ticker: str = None, strategy: str = None, scope: 
     except Exception:
         pass  # Strategy query failed — continue without it
 
-    # Pull memories in a separate session so strategy failure doesn't block this
+    # Pull memories in a separate session so strategy failure doesn't block this.
+    #
+    # Retrieval strategy:
+    #   1. Semantic (preferred): if query_text + embedding provider available,
+    #      embed the query, fetch a scope-filtered candidate pool, and rank by
+    #      cosine similarity. Returns top_k (default 8).
+    #   2. Fallback: scope-filtered importance>=6 ordered by importance+recency,
+    #      limited to top_k_fallback (default 10). Replaces the old limit=20.
     try:
         from app.models import HenryMemory
+        from app.config import get_settings as _get_settings
+        _s = _get_settings()
+        top_k = max(1, int(_s.memory_top_k))
+        top_k_fallback = max(1, int(_s.memory_top_k_fallback))
+
+        # Try semantic retrieval first
+        query_vec = None
+        query_model_name = None
+        if query_text and _s.embedding_enabled:
+            try:
+                from app.services.embeddings import get_embedding_provider
+                _provider = get_embedding_provider()
+                if _provider is not None:
+                    # Use embed_query if available (Voyage recommends input_type='query')
+                    if hasattr(_provider, "embed_query"):
+                        query_vec = await _provider.embed_query(query_text)
+                    else:
+                        query_vec = await _provider.embed(query_text)
+                    query_model_name = _provider.model_name
+            except Exception:
+                query_vec = None
+
+        memories = []
         async with async_session() as db:
-            result = await db.execute(
-                select(HenryMemory)
-                .where(HenryMemory.importance >= 6)
-                .order_by(HenryMemory.importance.desc(), HenryMemory.updated_at.desc())
-                .limit(20)
-            )
-            memories = result.scalars().all()
+            if query_vec is not None and query_model_name is not None:
+                # Semantic path — pull a candidate pool scoped by ticker/strategy
+                # when available, filter to same embedding model, then rank
+                # client-side by cosine similarity.
+                from sqlalchemy import or_ as _or
+                from app.services.embeddings import cosine_similarity
+
+                stmt = (
+                    select(HenryMemory)
+                    .where(HenryMemory.embedding_model == query_model_name)
+                    .where(HenryMemory.embedding.is_not(None))
+                )
+                # Scope filter — include ticker/strategy-specific plus general
+                # (null-scoped) memories so portfolio-wide lessons still surface.
+                scope_filters = []
+                if ticker:
+                    scope_filters.append(HenryMemory.ticker == ticker)
+                if strategy:
+                    scope_filters.append(HenryMemory.strategy_id == strategy)
+                if scope_filters:
+                    scope_filters.append(HenryMemory.ticker.is_(None))
+                    scope_filters.append(HenryMemory.strategy_id.is_(None))
+                    stmt = stmt.where(_or(*scope_filters))
+                # Cap candidate pool — keeps Python-side ranking O(200) not O(all)
+                stmt = stmt.order_by(
+                    HenryMemory.importance.desc(),
+                    HenryMemory.updated_at.desc(),
+                ).limit(200)
+
+                result = await db.execute(stmt)
+                candidates = list(result.scalars().all())
+
+                ranked = []
+                for m in candidates:
+                    sim = cosine_similarity(query_vec, m.embedding or [])
+                    # Blend similarity with importance so a wildly relevant
+                    # importance-3 memory can still beat a middling importance-8.
+                    # importance 1-10 scaled into a 0-0.2 nudge.
+                    score = sim + (max(0, int(m.importance or 5)) / 50.0)
+                    ranked.append((score, m))
+                ranked.sort(key=lambda x: x[0], reverse=True)
+                memories = [m for _, m in ranked[:top_k]]
+
+            if not memories:
+                # Fallback: scope-filtered importance ordering. Tighter than the
+                # prior broad scan (limit 20 → top_k_fallback, default 10).
+                from sqlalchemy import or_ as _or
+                stmt = (
+                    select(HenryMemory)
+                    .where(HenryMemory.importance >= 6)
+                )
+                scope_filters = []
+                if ticker:
+                    scope_filters.append(HenryMemory.ticker == ticker)
+                if strategy:
+                    scope_filters.append(HenryMemory.strategy_id == strategy)
+                if scope_filters:
+                    scope_filters.append(HenryMemory.ticker.is_(None))
+                    scope_filters.append(HenryMemory.strategy_id.is_(None))
+                    stmt = stmt.where(_or(*scope_filters))
+                stmt = stmt.order_by(
+                    HenryMemory.importance.desc(),
+                    HenryMemory.updated_at.desc(),
+                ).limit(top_k_fallback)
+                result = await db.execute(stmt)
+                memories = list(result.scalars().all())
 
             if memories:
                 mem_lines = []
@@ -411,6 +514,21 @@ async def save_memory(
             if existing.scalar_one_or_none() is not None:
                 return  # Duplicate — skip
 
+            # Generate embedding on write so retrieval can rank semantically.
+            # Failures are non-fatal — memory is still saved, just without a
+            # vector, and retrieval falls back to importance ordering for it.
+            embedding_vec = None
+            embedding_model_name = None
+            try:
+                from app.services.embeddings import get_embedding_provider
+                provider = get_embedding_provider()
+                if provider is not None:
+                    embedding_vec = await provider.embed(content)
+                    if embedding_vec is not None:
+                        embedding_model_name = provider.model_name
+            except Exception:
+                pass  # Keep save_memory resilient — embed is best-effort
+
             memory = HenryMemory(
                 memory_type=memory_type,
                 strategy_id=strategy_id,
@@ -419,6 +537,8 @@ async def save_memory(
                 importance=importance,
                 source=source,
                 content_hash=content_hash,
+                embedding=embedding_vec,
+                embedding_model=embedding_model_name,
             )
             db.add(memory)
             await db.commit()

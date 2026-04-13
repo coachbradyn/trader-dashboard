@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     ai_routing_mode: str = "dual"  # "dual", "claude_only", "gemini_only"
 
+    # Embeddings (semantic memory retrieval)
+    voyage_api_key: str = ""  # Voyage AI key for text embeddings
+    embedding_model: str = "voyage-3-lite"  # 512-dim, cheap; swap to voyage-3 (1024-dim) for quality
+    embedding_enabled: bool = True  # Kill switch — when False, falls back to importance-ordered retrieval
+    memory_top_k: int = 8  # Max memories injected per system prompt (semantic retrieval)
+    memory_top_k_fallback: int = 10  # Max memories when no query_text (importance-ordered)
+    prompt_cache_enabled: bool = True  # Toggle Anthropic cache_control on system prompt
+
     # Financial data
     fmp_api_key: str = ""  # Financial Modeling Prep API key
 
