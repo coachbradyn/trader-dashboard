@@ -458,6 +458,95 @@ def invalidate_cache() -> None:
     _CACHE.invalidate()
 
 
+async def relabel_existing_clusters(db) -> Optional[dict]:
+    """
+    Run only the LLM labeling pass on the most recent fit, without
+    refitting the GMM. Useful when:
+      - the labeling code shipped after the most recent fit (current
+        situation: clusters created before Sprint A1 have label=None)
+      - GEMINI_API_KEY changed
+      - you want to retry labels that previously rejected as too long
+        or too garbled
+
+    Mutates the cluster_stats row in place. Returns a summary dict
+    {labeled: N, attempted: K, by_id: {cid: label}} or None when
+    there's no fit to relabel.
+    """
+    from sqlalchemy import select, update
+    from app.models import HenryStats, HenryMemory
+
+    # Load the most recent cluster fit
+    row = (
+        await db.execute(
+            select(HenryStats)
+            .where(HenryStats.stat_type == "memory_clusters")
+            .order_by(HenryStats.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not row or not row.data:
+        return None
+
+    data = dict(row.data)  # mutable copy
+    clusters = data.get("clusters") or []
+    if not clusters:
+        return None
+    model_name = data.get("model_name")
+
+    # Reconstruct (assignments, ids) from current memories — labeling only
+    # needs the per-cluster member list, not the full GMM matrices.
+    mem_rows = list(
+        (
+            await db.execute(
+                select(HenryMemory.id, HenryMemory.cluster_id)
+                .where(HenryMemory.cluster_id.is_not(None))
+                .where(HenryMemory.embedding_model == model_name)
+            )
+        ).all()
+    )
+    if not mem_rows:
+        return None
+
+    ids = [r.id for r in mem_rows]
+    assignments = [int(r.cluster_id) for r in mem_rows]
+    prototype_ids = {
+        int(c.get("id")): c.get("prototype_memory_id")
+        for c in clusters
+        if c.get("prototype_memory_id")
+    }
+
+    labels = await _generate_cluster_labels(db, prototype_ids, assignments, ids)
+
+    # Patch the cluster payload
+    new_clusters = []
+    for c in clusters:
+        cid = int(c.get("id"))
+        new_c = dict(c)
+        if cid in labels:
+            new_c["label"] = labels[cid]
+        new_clusters.append(new_c)
+    data["clusters"] = new_clusters
+    data["relabeled_at"] = utcnow_iso()
+
+    # Persist by replacing the row's data dict
+    await db.execute(
+        update(HenryStats)
+        .where(HenryStats.id == row.id)
+        .values(data=data)
+    )
+    invalidate_cache()
+    return {
+        "attempted": len(clusters),
+        "labeled": sum(1 for v in labels.values() if v),
+        "by_id": labels,
+    }
+
+
+def utcnow_iso() -> str:
+    from app.utils.utc import utcnow
+    return utcnow().isoformat() + "Z"
+
+
 # ─── LLM-backed cluster labeling (Gemini Flash, ~$0.001 per refit) ──────────
 
 
@@ -512,6 +601,54 @@ async def _generate_cluster_labels(
 
     labels: dict[int, str] = {}
 
+    # Sentinel substrings the router returns when the LLM fails — never
+    # treat these as real labels.
+    _FAIL_SUBSTRINGS = (
+        "ai analysis temporarily unavailable",
+        "ai analysis unavailable",
+        "ai unavailable",
+    )
+
+    def _clean_label(text: str) -> Optional[str]:
+        """Aggressive cleanup for LLM-returned label strings."""
+        if not text:
+            return None
+        clean = text.strip()
+        # First line only — Gemini sometimes adds explanation prose below.
+        clean = clean.split("\n", 1)[0].strip()
+        # Strip surrounding markdown bold/italic, quotes, brackets,
+        # backticks. Repeat a few times in case of nested wrappers.
+        for _ in range(3):
+            for ch in ('"', "'", "`", "*", "_", "[", "]", "(", ")"):
+                if clean.startswith(ch):
+                    clean = clean[1:]
+                if clean.endswith(ch):
+                    clean = clean[:-1]
+            clean = clean.strip()
+        # Some models prefix "Label:" / "Theme:" — drop common preludes.
+        for prefix in ("label:", "theme:", "title:", "summary:", "topic:"):
+            if clean.lower().startswith(prefix):
+                clean = clean[len(prefix):].strip()
+        # Trailing punctuation.
+        clean = clean.rstrip(".,;:!?")
+        if not clean:
+            return None
+        # Reject failure sentinels regardless of length
+        if any(s in clean.lower() for s in _FAIL_SUBSTRINGS):
+            return None
+        # Length cap: 100 chars (≈15 words). Was 60 — too tight; valid
+        # 5-word labels with longer words ("Tech earnings momentum
+        # patterns" = 32 chars OK, but "Pre-market gap-up momentum
+        # continuation setups" = 50, then add markdown wrappers that
+        # weren't fully stripped → 60+).
+        if len(clean) > 100:
+            return None
+        # Sanity: must contain at least one alpha char (reject pure
+        # punctuation / digits).
+        if not any(c.isalpha() for c in clean):
+            return None
+        return clean
+
     async def label_one(cid: int, mids: list[str]) -> tuple[int, Optional[str]]:
         # Build a compact bulleted preview list (160 chars each to keep
         # input token count low — per-cluster cost is dominated by input).
@@ -523,38 +660,53 @@ async def _generate_cluster_labels(
             preview = (row.content or "")[:160].strip().replace("\n", " ")
             lines.append(f"- [{row.memory_type}] {preview}")
         if not lines:
+            logger.warning(f"Cluster {cid}: no member previews available — skipping label")
             return cid, None
 
         prompt = (
-            "The following are memories of a trading AI that clustered together in embedding space. "
-            "Produce a 3-5 word label that captures their common theme. "
-            "Return ONLY the label text — no quotes, no periods, no explanation.\n\n"
+            "The following are memories of a trading AI that clustered together "
+            "in embedding space. Produce a 3-5 word label that captures their "
+            "common theme.\n\n"
+            "RULES:\n"
+            "- Return ONLY the label text. No quotes, no markdown, no punctuation.\n"
+            "- 3-5 words. Concrete trading vocabulary preferred (e.g. "
+            "\"NVDA earnings momentum\", \"S3 mean-reversion fades\").\n"
+            "- Avoid generic phrases like \"trading observations\" or "
+            "\"market analysis\".\n\n"
             + "\n".join(lines)
         )
         system = (
-            "You produce extremely terse labels for clusters of trading memories. "
-            "Output a single label of 3-5 words, plain text, no punctuation at end."
+            "You produce extremely terse labels for clusters of trading "
+            "memories. Output ONLY a 3-5 word label as plain text — no quotes, "
+            "no markdown, no punctuation, no preamble."
         )
+        # max_tokens raised 20 → 60 to give the model headroom; we cap
+        # length post-clean instead of choking on it mid-generation.
         try:
             text = await call_ai(
                 system=system,
                 prompt=prompt,
-                function_name="memory_extraction",  # already Gemini-routed
-                max_tokens=20,
+                function_name="memory_extraction",  # Gemini-routed
+                max_tokens=60,
             )
-            if not text:
-                return cid, None
-            # Strip quotes, trailing punctuation, and any accidental newlines.
-            clean = text.strip().strip('"').strip("'").strip()
-            # First line only
-            clean = clean.split("\n", 1)[0].strip()
-            # Reject obvious failure sentinels
-            if not clean or len(clean) > 60:
-                return cid, None
-            return cid, clean
         except Exception as e:
-            logger.debug(f"Cluster {cid} label failed: {e}")
+            logger.warning(f"Cluster {cid} label call_ai failed: {e}")
             return cid, None
+
+        if not text:
+            logger.warning(f"Cluster {cid} label: empty response from LLM")
+            return cid, None
+
+        clean = _clean_label(text)
+        if not clean:
+            # Logged so users can see WHY a cluster ended up unlabeled.
+            logger.warning(
+                f"Cluster {cid} label rejected after cleanup. "
+                f"Raw response: {text[:120]!r}"
+            )
+            return cid, None
+        logger.info(f"Cluster {cid} labeled: {clean!r}")
+        return cid, clean
 
     # Run all clusters in parallel — capped at 15 clusters by MAX_K so
     # this is at most 15 concurrent Gemini calls. Fine.

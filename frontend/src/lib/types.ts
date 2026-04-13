@@ -1008,6 +1008,35 @@ export interface ForgetCandidate {
   content_preview: string;
 }
 
+export interface ConsolidateMember {
+  id: string;
+  importance: number;
+  reference_count: number;
+  memory_type: string;
+  content_preview: string;
+}
+
+export interface ConsolidateGroup {
+  member_ids: string[];
+  n: number;
+  anchor_id: string;
+  ticker: string | null;
+  strategy_id: string | null;
+  memory_type: string;
+  avg_similarity: number;
+  proposed_content: string;
+  proposed_importance: number;
+  members: ConsolidateMember[];
+}
+
+export interface ConsolidatePreviewResponse {
+  groups: ConsolidateGroup[];
+  n_compared: number;
+  n_groups_found?: number;
+  n_groups_with_proposal?: number;
+  threshold: number;
+}
+
 export interface ForgetCandidatesResponse {
   criteria: Record<string, unknown>;
   count: number;

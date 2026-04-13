@@ -965,6 +965,32 @@ export function MemoryMap3D() {
     }
   };
 
+  // Relabel-only — runs the LLM labeling pass on the existing fit
+  // without refitting. Use when clusters show as "cluster 1/2/3" because
+  // they were created before the labeling code shipped, or after a
+  // GEMINI_API_KEY change.
+  const runRelabelClusters = async () => {
+    const secret = promptSecret();
+    if (!secret) return;
+    setAdminBusy("relabel");
+    setAdminMsg("Relabeling…");
+    try {
+      const res = await api.adminRelabelClusters(secret);
+      if (res.ok && res.summary) {
+        setAdminMsg(
+          `Relabeled ${res.summary.labeled}/${res.summary.attempted} clusters. Refresh the projection to see the new labels.`
+        );
+        await load(true);
+      } else {
+        setAdminMsg(`Relabel failed: ${res.reason || "unknown"}`);
+      }
+    } catch (e) {
+      setAdminMsg(`Relabel request failed: ${(e as Error).message}`);
+    } finally {
+      setAdminBusy(null);
+    }
+  };
+
   const renderAdminPanel = () => (
     <div className="rounded-lg border border-border bg-[#1f2937]/30 p-4 space-y-2">
       <p className="text-[11px] text-gray-400 uppercase tracking-wide">
@@ -997,6 +1023,14 @@ export function MemoryMap3D() {
           className="text-xs px-3 py-1.5 rounded bg-[#10b981]/15 text-[#10b981] hover:bg-[#10b981]/25 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {adminBusy === "fit" ? "Fitting…" : "2. Fit clusters"}
+        </button>
+        <button
+          onClick={runRelabelClusters}
+          disabled={adminBusy !== null}
+          className="text-xs px-3 py-1.5 rounded bg-[#a855f7]/15 text-[#a855f7] hover:bg-[#a855f7]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Re-run only the LLM labeling pass on the existing GMM fit (no refit). Use when clusters show as 'cluster 1/2/3'."
+        >
+          {adminBusy === "relabel" ? "Relabeling…" : "Relabel clusters"}
         </button>
         <button
           onClick={() => {

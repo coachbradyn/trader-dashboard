@@ -410,6 +410,313 @@ def _serialize_curation_row(r) -> dict:
     }
 
 
+class ConsolidatePreviewRequest(BaseModel):
+    threshold: float = 0.93   # cosine — looser than dup detection's 0.92
+    min_group_size: int = 2   # need at least N candidates to consolidate
+    max_groups: int = 10      # cap LLM calls per preview
+    same_cluster_only: bool = True
+
+
+@router.post("/curation/consolidate-preview")
+async def curation_consolidate_preview(
+    body: ConsolidatePreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Find groups of near-duplicate memories and use Gemini to draft a
+    single consolidated lesson per group. Returns the proposals WITHOUT
+    committing — caller reviews and posts to /admin/consolidate-commit
+    to actually replace the originals.
+
+    Gated behind a preview-then-commit flow per the user's earlier
+    instruction: "I'd want to ship it gated behind a preview UI step,
+    never as an unattended cron, until you've watched it merge ~10
+    times and trust the LLM's groupings."
+
+    Per group: pulls up to 8 member previews, asks Gemini to write one
+    unified observation that captures their common pattern. Returns
+    that draft + the member IDs so the UI can render side-by-side and
+    the user can edit before commit.
+    """
+    from app.services.embeddings import cosine_similarity
+    from app.services.ai_provider import call_ai
+    from collections import Counter, defaultdict
+
+    rows = list(
+        (
+            await db.execute(
+                select(
+                    HenryMemory.id,
+                    HenryMemory.embedding,
+                    HenryMemory.embedding_model,
+                    HenryMemory.cluster_id,
+                    HenryMemory.importance,
+                    HenryMemory.reference_count,
+                    HenryMemory.memory_type,
+                    HenryMemory.ticker,
+                    HenryMemory.strategy_id,
+                    HenryMemory.content,
+                ).where(HenryMemory.embedding.is_not(None))
+            )
+        ).all()
+    )
+    if not rows:
+        return {"groups": [], "n_compared": 0}
+
+    model_counts = Counter(r.embedding_model for r in rows if r.embedding_model)
+    if not model_counts:
+        return {"groups": [], "n_compared": 0}
+    dominant_model, _ = model_counts.most_common(1)[0]
+    rows = [r for r in rows if r.embedding_model == dominant_model]
+    dims_counter = Counter(len(r.embedding) for r in rows)
+    if not dims_counter:
+        return {"groups": [], "n_compared": 0}
+    dims, _ = dims_counter.most_common(1)[0]
+    rows = [r for r in rows if len(r.embedding) == dims]
+
+    # Build similarity-graph buckets via simple union-find on edges above
+    # threshold. O(N²) fine at our scale; can scope to same-cluster.
+    buckets: list[list] = []
+    if body.same_cluster_only:
+        by_cluster: dict[object, list] = defaultdict(list)
+        for r in rows:
+            by_cluster[r.cluster_id].append(r)
+        for c_id, lst in by_cluster.items():
+            if c_id is None or len(lst) < 2:
+                continue
+            buckets.append(lst)
+    else:
+        buckets.append(rows)
+
+    n_compared = 0
+    parents: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parents.get(x, x) != x:
+            parents[x] = parents.get(parents[x], parents[x])
+            x = parents[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parents[ra] = rb
+
+    id_to_row = {r.id: r for r in rows}
+    for bucket in buckets:
+        for i in range(len(bucket)):
+            ri = bucket[i]
+            for j in range(i + 1, len(bucket)):
+                rj = bucket[j]
+                n_compared += 1
+                if cosine_similarity(ri.embedding, rj.embedding) >= body.threshold:
+                    parents.setdefault(ri.id, ri.id)
+                    parents.setdefault(rj.id, rj.id)
+                    union(ri.id, rj.id)
+
+    # Group by root
+    groups_map: dict[str, list[str]] = defaultdict(list)
+    for member_id in parents:
+        groups_map[find(member_id)].append(member_id)
+    groups = [
+        sorted(g) for g in groups_map.values() if len(g) >= body.min_group_size
+    ]
+    # Sort groups by largest first, cap at max_groups
+    groups.sort(key=len, reverse=True)
+    groups = groups[: body.max_groups]
+
+    if not groups:
+        return {
+            "groups": [],
+            "n_compared": n_compared,
+            "threshold": body.threshold,
+        }
+
+    # Gemini: one consolidation call per group (parallel), capped above
+    import asyncio as _asyncio
+
+    async def consolidate_one(member_ids: list[str]) -> dict:
+        members = [id_to_row[mid] for mid in member_ids if mid in id_to_row]
+        if not members:
+            return {}
+        # Pick the "anchor" member: highest importance, then most refs
+        anchor = max(members, key=lambda m: (int(m.importance or 0), int(m.reference_count or 0)))
+        ticker = anchor.ticker
+        strategy_id = anchor.strategy_id
+        memory_type = anchor.memory_type
+
+        previews = "\n".join(
+            f"- [{m.memory_type}] (imp {m.importance}, refs {m.reference_count}): "
+            f"{(m.content or '')[:240].strip().replace(chr(10), ' ')}"
+            for m in members
+        )
+        system = (
+            "You consolidate near-duplicate trading memories into a single "
+            "unified observation that preserves the strongest quantitative "
+            "signal across them. Output ONLY the consolidated content text "
+            "(1-2 sentences). No preamble, no markdown."
+        )
+        prompt = (
+            f"Below are {len(members)} near-duplicate memories about the "
+            f"same trading pattern. Write ONE unified memory that:\n"
+            "- Combines the strongest evidence from all of them\n"
+            "- Preserves the most specific numbers (prices, %s, ADX, VIX, "
+            "win rates, sample sizes)\n"
+            "- Reads as a single coherent observation, not a bulleted list\n"
+            "- Stays in the same style as the originals\n\n"
+            f"Memories:\n{previews}"
+        )
+
+        try:
+            text = await call_ai(
+                system=system,
+                prompt=prompt,
+                function_name="memory_extraction",  # Gemini-routed
+                max_tokens=300,
+            )
+        except Exception as e:
+            text = ""
+            logger.warning(f"Consolidation Gemini call failed: {e}")
+
+        proposed = (text or "").strip()
+        # Strip surrounding markdown/quotes
+        for ch in ('"', "'", "*", "`"):
+            if proposed.startswith(ch):
+                proposed = proposed[1:]
+            if proposed.endswith(ch):
+                proposed = proposed[:-1]
+        proposed = proposed.strip()
+
+        # Compute average pairwise similarity for the UI
+        sims = []
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                sims.append(cosine_similarity(members[i].embedding, members[j].embedding))
+        avg_sim = float(sum(sims) / len(sims)) if sims else 0.0
+
+        return {
+            "member_ids": [m.id for m in members],
+            "n": len(members),
+            "anchor_id": anchor.id,
+            "ticker": ticker,
+            "strategy_id": strategy_id,
+            "memory_type": memory_type,
+            "avg_similarity": round(avg_sim, 4),
+            "proposed_content": proposed if proposed else None,
+            "proposed_importance": min(10, max(1, int(anchor.importance or 5) + 1)),
+            "members": [
+                {
+                    "id": m.id,
+                    "importance": int(m.importance or 5),
+                    "reference_count": int(m.reference_count or 0),
+                    "memory_type": m.memory_type,
+                    "content_preview": (m.content or "")[:200].strip(),
+                }
+                for m in members
+            ],
+        }
+
+    consolidations = await _asyncio.gather(
+        *(consolidate_one(g) for g in groups), return_exceptions=True
+    )
+    valid_groups = [c for c in consolidations if isinstance(c, dict) and c.get("proposed_content")]
+
+    return {
+        "groups": valid_groups,
+        "n_compared": n_compared,
+        "n_groups_found": len(groups),
+        "n_groups_with_proposal": len(valid_groups),
+        "threshold": body.threshold,
+    }
+
+
+class ConsolidateCommitRequest(BaseModel):
+    member_ids: list[str]
+    content: str
+    importance: int = 7
+    memory_type: str = "lesson"
+    ticker: str | None = None
+    strategy_id: str | None = None
+
+
+@router.post("/admin/consolidate-commit")
+async def admin_consolidate_commit(
+    body: ConsolidateCommitRequest,
+    secret: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Commit a single consolidation: create a new memory from `content`
+    + `importance` + scope, then delete the original `member_ids`.
+
+    The new memory inherits the combined reference_count of its
+    members so retrieval ranking history isn't lost.
+    """
+    _require_admin(secret)
+    from sqlalchemy import select, delete as sql_delete
+    from app.services.ai_service import save_memory
+
+    if not body.member_ids or not body.content.strip():
+        return {"ok": False, "reason": "Need member_ids and non-empty content."}
+    if len(body.member_ids) < 2:
+        return {"ok": False, "reason": "Need ≥2 member_ids to consolidate."}
+
+    # Sum reference counts before deletion
+    members = list(
+        (
+            await db.execute(
+                select(HenryMemory).where(HenryMemory.id.in_(body.member_ids))
+            )
+        ).scalars().all()
+    )
+    if len(members) != len(body.member_ids):
+        missing = set(body.member_ids) - {m.id for m in members}
+        return {
+            "ok": False,
+            "reason": f"Some member_ids not found: {sorted(missing)[:5]}",
+        }
+
+    combined_refs = sum(int(m.reference_count or 0) for m in members)
+    importance = max(1, min(10, int(body.importance)))
+    mtype = body.memory_type if body.memory_type in {
+        "observation", "lesson", "decision", "preference", "strategy_note"
+    } else "lesson"
+
+    # Save the consolidated memory (gets embedded inline by save_memory)
+    await save_memory(
+        content=body.content.strip(),
+        memory_type=mtype,
+        ticker=body.ticker,
+        strategy_id=body.strategy_id,
+        importance=importance,
+        source="auto_consolidated",
+    )
+
+    # Bump the new memory's reference count via direct SQL (save_memory
+    # doesn't expose this). Match by content_hash + freshly-set source.
+    from app.services.ai_service import _memory_fingerprint as _fp
+    fp = _fp(body.ticker, body.strategy_id, body.content.strip())
+    if combined_refs > 0:
+        from sqlalchemy import update as sql_update
+        await db.execute(
+            sql_update(HenryMemory)
+            .where(HenryMemory.content_hash == fp)
+            .where(HenryMemory.source == "auto_consolidated")
+            .values(reference_count=combined_refs)
+        )
+
+    # Delete the originals
+    await db.execute(
+        sql_delete(HenryMemory).where(HenryMemory.id.in_(body.member_ids))
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "deleted": len(body.member_ids),
+        "consolidated_reference_count": combined_refs,
+    }
+
+
 @router.get("/curation/orphans")
 async def curation_orphans(
     threshold: float = Query(
@@ -1110,6 +1417,46 @@ async def admin_backfill_status(secret: str = Query(...)):
     """Returns the current backfill job state."""
     _require_admin(secret)
     return _backfill_state
+
+
+@router.post("/admin/relabel-clusters")
+async def admin_relabel_clusters(
+    secret: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Re-run only the LLM labeling pass on the latest cluster fit. Used
+    when:
+      - clusters were fit before the labeling code shipped (existing
+        rows show as 'cluster N' instead of human labels)
+      - GEMINI_API_KEY just got configured
+      - prior labeling rejected too aggressively
+
+    Does NOT refit the GMM. Mutates the existing memory_clusters
+    HenryStats row's `clusters[].label` field in place. Cheap (~$0.001
+    per refit, max 15 Gemini calls in parallel).
+    """
+    _require_admin(secret)
+    from app.services.memory_clustering import (
+        relabel_existing_clusters,
+        invalidate_cache as invalidate_clusters,
+    )
+    from app.services.memory_projection import invalidate_cache as invalidate_projection
+
+    try:
+        summary = await relabel_existing_clusters(db)
+        if summary is None:
+            return {
+                "ok": False,
+                "reason": "No cluster fit found, or no embedded memories assigned to clusters. Run Fit Clusters first.",
+            }
+        await db.commit()
+        invalidate_clusters()
+        invalidate_projection()
+        return {"ok": True, "summary": summary}
+    except Exception as e:
+        logger.exception("admin_relabel_clusters failed")
+        return {"ok": False, "reason": f"{type(e).__name__}: {str(e)[:300]}"}
 
 
 @router.post("/admin/fit-clusters")

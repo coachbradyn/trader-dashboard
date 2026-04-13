@@ -458,6 +458,49 @@ export const api = {
     fetchApi<import("./types").OrphansResponse>(
       "/memory/curation/orphans?threshold=" + threshold + "&limit=" + limit
     ),
+  curationConsolidatePreview: (body: {
+    threshold?: number;
+    min_group_size?: number;
+    max_groups?: number;
+    same_cluster_only?: boolean;
+  }) =>
+    fetchApi<import("./types").ConsolidatePreviewResponse>(
+      "/memory/curation/consolidate-preview",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          threshold: body.threshold ?? 0.93,
+          min_group_size: body.min_group_size ?? 2,
+          max_groups: body.max_groups ?? 10,
+          same_cluster_only: body.same_cluster_only ?? true,
+        }),
+      }
+    ),
+  adminConsolidateCommit: (
+    secret: string,
+    body: {
+      member_ids: string[];
+      content: string;
+      importance?: number;
+      memory_type?: string;
+      ticker?: string | null;
+      strategy_id?: string | null;
+    }
+  ) =>
+    fetchApi<{ ok: boolean; reason?: string; deleted?: number; consolidated_reference_count?: number }>(
+      "/memory/admin/consolidate-commit?secret=" + encodeURIComponent(secret),
+      {
+        method: "POST",
+        body: JSON.stringify({
+          member_ids: body.member_ids,
+          content: body.content,
+          importance: body.importance ?? 7,
+          memory_type: body.memory_type ?? "lesson",
+          ticker: body.ticker ?? null,
+          strategy_id: body.strategy_id ?? null,
+        }),
+      }
+    ),
   curationForgetCandidates: (body: {
     max_importance?: number;
     max_reference_count?: number;
@@ -552,6 +595,15 @@ export const api = {
       error: string | null;
     }>(
       "/memory/admin/backfill-status?secret=" + encodeURIComponent(secret)
+    ),
+  adminRelabelClusters: (secret: string) =>
+    fetchApi<{
+      ok: boolean;
+      reason?: string;
+      summary?: { attempted: number; labeled: number; by_id: Record<string, string> };
+    }>(
+      "/memory/admin/relabel-clusters?secret=" + encodeURIComponent(secret),
+      { method: "POST" }
     ),
   adminFitClusters: (secret: string) =>
     fetchApi<{

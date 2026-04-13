@@ -25,6 +25,7 @@ import type {
   DuplicatePair,
   OrphanMemory,
   ForgetCandidate,
+  ConsolidateGroup,
 } from "@/lib/types";
 
 interface Props {
@@ -33,7 +34,7 @@ interface Props {
   onChanged?: () => void;
 }
 
-type Tab = "duplicates" | "orphans" | "forget";
+type Tab = "duplicates" | "orphans" | "forget" | "consolidate";
 
 function promptSecret(): string | null {
   const cached = sessionStorage.getItem("memory_admin_secret");
@@ -52,7 +53,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
     <div className="rounded-lg border border-border bg-[#1f2937]/30">
       {/* Tabs */}
       <div className="flex gap-1 p-1.5 border-b border-border">
-        {(["duplicates", "orphans", "forget"] as Tab[]).map((t) => (
+        {(["duplicates", "orphans", "forget", "consolidate"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -66,6 +67,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
             {t === "duplicates" && "Duplicates"}
             {t === "orphans" && "Orphans"}
             {t === "forget" && "Forget"}
+            {t === "consolidate" && "Auto-consolidate"}
           </button>
         ))}
       </div>
@@ -74,6 +76,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
         {tab === "duplicates" && <DuplicatesTab onChanged={onChanged} />}
         {tab === "orphans" && <OrphansTab onChanged={onChanged} />}
         {tab === "forget" && <ForgetTab onChanged={onChanged} />}
+        {tab === "consolidate" && <ConsolidateTab onChanged={onChanged} />}
       </div>
     </div>
   );
@@ -601,6 +604,230 @@ function ForgetTab({ onChanged }: { onChanged?: () => void }) {
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Auto-consolidate ───────────────────────────────────────────────────────
+
+function ConsolidateTab({ onChanged }: { onChanged?: () => void }) {
+  const [groups, setGroups] = useState<ConsolidateGroup[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [threshold, setThreshold] = useState(0.93);
+  const [sameClusterOnly, setSameClusterOnly] = useState(true);
+  // Per-group editable proposed content. Keyed by anchor_id (stable
+  // within one preview pass).
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [committingId, setCommittingId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await api.curationConsolidatePreview({
+        threshold,
+        same_cluster_only: sameClusterOnly,
+        max_groups: 10,
+      });
+      setGroups(res.groups);
+      setEdits(
+        Object.fromEntries(
+          res.groups.map((g) => [g.anchor_id, g.proposed_content])
+        )
+      );
+      setMsg(
+        `Compared ${res.n_compared} pairs · ${res.n_groups_found ?? res.groups.length} ` +
+          `group${(res.n_groups_found ?? res.groups.length) === 1 ? "" : "s"} found · ` +
+          `${res.groups.length} draft${res.groups.length === 1 ? "" : "s"} ready`
+      );
+    } catch (e) {
+      setMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const commit = async (g: ConsolidateGroup) => {
+    const content = (edits[g.anchor_id] || g.proposed_content || "").trim();
+    if (!content) {
+      alert("Consolidated content is empty.");
+      return;
+    }
+    if (
+      !confirm(
+        `Replace ${g.n} memories with this single consolidated lesson?\n\n${content.slice(0, 200)}…\n\nThis cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    const secret = promptSecret();
+    if (!secret) return;
+    setCommittingId(g.anchor_id);
+    try {
+      const res = await api.adminConsolidateCommit(secret, {
+        member_ids: g.member_ids,
+        content,
+        importance: g.proposed_importance,
+        memory_type: g.memory_type,
+        ticker: g.ticker,
+        strategy_id: g.strategy_id,
+      });
+      if (!res.ok) {
+        setMsg(`Commit failed: ${res.reason || "unknown"}`);
+      } else {
+        setMsg(
+          `Consolidated ${res.deleted} memories → 1 (carried ${res.consolidated_reference_count} refs).`
+        );
+        setGroups((cur) =>
+          (cur || []).filter((x) => x.anchor_id !== g.anchor_id)
+        );
+        onChanged?.();
+      }
+    } catch (e) {
+      setMsg(`Commit request failed: ${(e as Error).message}`);
+    } finally {
+      setCommittingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-400">
+        Find groups of near-duplicate memories and let Gemini draft a
+        single consolidated lesson per group. Review &amp; edit each
+        proposal before committing — this replaces the originals
+        permanently.
+      </p>
+
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <label className="flex items-center gap-1.5 text-gray-400">
+          Threshold
+          <input
+            type="number"
+            min={0.5}
+            max={1}
+            step={0.01}
+            value={threshold}
+            onChange={(e) => setThreshold(parseFloat(e.target.value) || 0.93)}
+            className="w-16 bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 text-gray-400">
+          <input
+            type="checkbox"
+            checked={sameClusterOnly}
+            onChange={(e) => setSameClusterOnly(e.target.checked)}
+            className="accent-[#6366f1]"
+          />
+          same cluster only (faster)
+        </label>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/15 text-[#6366f1] hover:bg-[#6366f1]/25 disabled:opacity-40"
+        >
+          {loading ? "Drafting…" : "Find groups + draft"}
+        </button>
+      </div>
+
+      {msg && <p className="text-[11px] text-gray-400 font-mono">{msg}</p>}
+
+      {groups && groups.length > 0 && (
+        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+          {groups.map((g) => (
+            <div
+              key={g.anchor_id}
+              className="rounded border border-border bg-[#0b0f19] p-3 text-xs space-y-2"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] uppercase tracking-wide text-amber-400">
+                  {g.n} memories · avg sim {(g.avg_similarity * 100).toFixed(1)}%
+                </span>
+                {g.ticker && (
+                  <span className="text-[10px] font-mono text-gray-400">
+                    [{g.ticker}]
+                  </span>
+                )}
+                {g.strategy_id && (
+                  <span className="text-[10px] text-gray-500">
+                    ({g.strategy_id})
+                  </span>
+                )}
+                <span className="text-[10px] text-gray-500 ml-auto">
+                  type: {g.memory_type} · target imp {g.proposed_importance}
+                </span>
+              </div>
+
+              {/* Editable proposal */}
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">
+                  Proposed consolidated content (editable)
+                </p>
+                <textarea
+                  value={edits[g.anchor_id] ?? g.proposed_content}
+                  onChange={(e) =>
+                    setEdits((prev) => ({
+                      ...prev,
+                      [g.anchor_id]: e.target.value,
+                    }))
+                  }
+                  rows={4}
+                  className="w-full text-[11px] bg-[#1f2937]/60 border border-border rounded p-2 text-gray-200 font-mono leading-relaxed focus:border-[#6366f1] focus:outline-none"
+                />
+              </div>
+
+              {/* Originals — collapsed by default */}
+              <details>
+                <summary className="text-[10px] text-gray-500 cursor-pointer hover:text-gray-300">
+                  Show {g.members.length} original memories
+                </summary>
+                <div className="mt-1.5 space-y-1.5">
+                  {g.members.map((m) => (
+                    <div
+                      key={m.id}
+                      className="rounded p-1.5 border border-border bg-[#1f2937]/40"
+                    >
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span className="text-[9px] uppercase text-gray-500">
+                          {m.memory_type}
+                        </span>
+                        <span className="text-[9px] text-gray-500">
+                          imp {m.importance} · refs {m.reference_count}
+                        </span>
+                        <span className="text-[9px] font-mono text-gray-600 ml-auto">
+                          {m.id.slice(0, 8)}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-300 leading-snug">
+                        {m.content_preview}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+
+              <div className="flex justify-end gap-1.5">
+                <button
+                  onClick={() => commit(g)}
+                  disabled={committingId !== null}
+                  className="text-[11px] px-3 py-1 rounded bg-[#10b981]/15 text-[#10b981] hover:bg-[#10b981]/25 disabled:opacity-40"
+                >
+                  {committingId === g.anchor_id
+                    ? "Committing…"
+                    : `Replace ${g.n} → 1`}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {groups && groups.length === 0 && !loading && (
+        <p className="text-xs text-gray-500 italic">
+          No consolidation candidates above {threshold}.
+        </p>
       )}
     </div>
   );
