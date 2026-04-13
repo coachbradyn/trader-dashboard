@@ -126,7 +126,113 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
     from app.services.watchlist_ai import check_and_regenerate_if_stale
     asyncio.create_task(check_and_regenerate_if_stale(alert.ticker))
 
+    # Screener-to-memory bridge (intelligence upgrade Phase 2, System 3):
+    # if N+ distinct indicators have fired on this ticker in the last 48h,
+    # save a confluence memory so semantic retrieval surfaces it on any
+    # future signal evaluation for this ticker. Fire-and-forget — we don't
+    # want a slow memory save to delay the webhook ACK.
+    asyncio.create_task(_maybe_save_screener_confluence(alert.ticker))
+
     return {"status": "ok", "alert_id": alert.id, "ticker": alert.ticker}
+
+
+# Confluence threshold and lookback — kept module-level so they're easy to
+# tune without touching the webhook handler.
+CONFLUENCE_LOOKBACK_HOURS = 48
+CONFLUENCE_MIN_INDICATORS = 3
+
+
+async def _maybe_save_screener_confluence(ticker: str) -> None:
+    """
+    Count distinct indicators that fired on `ticker` in the last
+    CONFLUENCE_LOOKBACK_HOURS. If at or above CONFLUENCE_MIN_INDICATORS,
+    build a confluence summary and save it as a HenryMemory.
+
+    Idempotent at the memory layer — save_memory's content-hash dedup
+    skips identical summaries within 30 days. New indicator firing on the
+    same ticker → new content → new memory.
+    """
+    import logging
+    from datetime import timedelta
+    from sqlalchemy import select, func
+    from app.database import async_session
+    from app.models import IndicatorAlert
+    from app.services.ai_service import save_memory
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        cutoff = utcnow() - timedelta(hours=CONFLUENCE_LOOKBACK_HOURS)
+        async with async_session() as db:
+            # Pull distinct indicator names + their bullish/bearish/neutral
+            # signal so we can characterize the confluence direction.
+            result = await db.execute(
+                select(
+                    IndicatorAlert.indicator,
+                    IndicatorAlert.signal,
+                    func.count(IndicatorAlert.id).label("n"),
+                )
+                .where(
+                    IndicatorAlert.ticker == ticker.upper(),
+                    IndicatorAlert.created_at >= cutoff,
+                )
+                .group_by(IndicatorAlert.indicator, IndicatorAlert.signal)
+            )
+            rows = result.all()
+            distinct_indicators = {r.indicator for r in rows}
+            if len(distinct_indicators) < CONFLUENCE_MIN_INDICATORS:
+                return
+
+            # Direction: count alert frequencies by signal across all rows.
+            signal_counts = {"bullish": 0, "bearish": 0, "neutral": 0}
+            for r in rows:
+                sig = (r.signal or "neutral").lower()
+                if sig not in signal_counts:
+                    sig = "neutral"
+                signal_counts[sig] += int(r.n or 0)
+            total = sum(signal_counts.values()) or 1
+            bullish_pct = signal_counts["bullish"] / total
+            bearish_pct = signal_counts["bearish"] / total
+            if bullish_pct > 0.7:
+                direction = "bullish"
+            elif bearish_pct > 0.7:
+                direction = "bearish"
+            else:
+                direction = "mixed"
+
+            # Importance scaled to alert breadth: 3 indicators = 5,
+            # 5+ = 7. Caps at 8 to leave headroom above for trade-outcome
+            # memories that have actual P&L attached.
+            n_indicators = len(distinct_indicators)
+            importance = min(8, 4 + (n_indicators - 2))
+
+            indicator_list = sorted(distinct_indicators)
+            today = utcnow().date().isoformat()
+            content = (
+                f"Screener confluence on {ticker.upper()} "
+                f"({today}, last {CONFLUENCE_LOOKBACK_HOURS}h): "
+                f"{n_indicators} distinct indicators fired "
+                f"({signal_counts['bullish']} bullish / "
+                f"{signal_counts['bearish']} bearish / "
+                f"{signal_counts['neutral']} neutral signals). "
+                f"Direction: {direction}. "
+                f"Indicators: {', '.join(indicator_list)}."
+            )
+
+            await save_memory(
+                content=content,
+                memory_type="observation",
+                ticker=ticker.upper(),
+                strategy_id=None,
+                importance=importance,
+                source="screener_confluence",
+            )
+            logger.info(
+                f"Screener confluence memory saved: {ticker.upper()} "
+                f"({n_indicators} indicators, {direction})"
+            )
+    except Exception as e:
+        logger.debug(f"_maybe_save_screener_confluence({ticker}) failed: {e}")
 
 
 @router.get("/alerts", response_model=list[AlertResponse])

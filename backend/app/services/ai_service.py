@@ -490,6 +490,32 @@ async def _build_system_prompt(
         except Exception:
             pass
 
+    # Trade warnings (intelligence upgrade Phase 2, System 6) — only
+    # injected for ticker-scoped calls (signal_eval, ask_henry on a
+    # specific symbol, conflict resolution). The util computes
+    # concentration + correlation checks against current holdings; if
+    # nothing's at risk the warning section is omitted entirely.
+    # Wrapped separately from the other ticker-scoped queries so a slow
+    # check doesn't block fundamentals/research from rendering.
+    if ticker:
+        try:
+            from app.services.trade_warnings import compute_trade_warnings
+            async with async_session() as db:
+                warnings = await compute_trade_warnings(
+                    db,
+                    ticker=ticker,
+                    direction=None,           # Direction unknown at prompt-build time
+                    strategy_id=strategy,
+                    proposed_value_dollars=None,
+                )
+            if warnings:
+                sections.append(
+                    "TRADE WARNINGS (concentration / correlation checks):\n  "
+                    + "\n  ".join(warnings)
+                )
+        except Exception:
+            pass  # Warnings are advisory — never block the prompt build
+
     # Add web search guidance if enabled
     if enable_web_search:
         sections.append(WEB_SEARCH_GUIDANCE.strip())

@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timedelta
 
 import anthropic
+from app.utils.utc import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +456,37 @@ Rules:
         raw = await call_ai(system, prompt, function_name="screener_analysis", max_tokens=2500)
         clean = raw.strip().replace("```json", "").replace("```", "").strip()
         result = json.loads(clean)
+
+        # Bridge to the memory layer (intelligence upgrade Phase 2,
+        # System 3): synthesize a structured-text view of the analysis
+        # and route it through extract_and_save_memories so any
+        # quantitative observations get persisted as scoped memories.
+        # Fire-and-forget — analysis returns immediately; memory writes
+        # happen in the background with their own try/except guard.
+        try:
+            import asyncio as _asyncio
+            from app.services.ai_service import extract_and_save_memories
+
+            mem_text_lines = [
+                f"Screener analysis for {ticker} ({utcnow().date().isoformat()}):",
+                f"Direction: {result.get('direction', '?')}, "
+                f"confidence: {result.get('confidence', '?')}/100, "
+                f"play_type: {result.get('play_type', heuristic_play)}.",
+                f"Indicator signals: {bullish} bullish / {bearish} bearish / "
+                f"{neutral} neutral; dominant: {dominant}. "
+                f"Indicators firing: {', '.join(indicators_firing[:10])}.",
+                f"Entry zone: {result.get('entry_zone', 'N/A')}, "
+                f"target: {result.get('price_target', 'N/A')}, "
+                f"stop: {result.get('stop_loss', 'N/A')}, "
+                f"R:R: {result.get('risk_reward', 'N/A')}.",
+                f"Thesis: {result.get('thesis', '')}",
+            ]
+            mem_text = "\n".join(mem_text_lines)
+            _asyncio.create_task(
+                extract_and_save_memories(mem_text, source="screener_analysis")
+            )
+        except Exception:
+            pass  # Non-blocking — memory extraction must never break analysis
 
         return {
             "play_type": result.get("play_type", heuristic_play),
