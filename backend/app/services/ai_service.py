@@ -179,8 +179,11 @@ async def _build_system_prompt(
     try:
         from app.models import HenryMemory
         from app.config import get_settings as _get_settings
+        from app.services import runtime_config as _rc
         _s = _get_settings()
-        top_k = max(1, int(_s.memory_top_k))
+        # Phase 7 — runtime_config can override env defaults if Bayesian
+        # adopted a tuned value. Falls back to settings on cache miss.
+        top_k = max(1, int(await _rc.get_async("memory_top_k") or _s.memory_top_k))
         top_k_fallback = max(1, int(_s.memory_top_k_fallback))
 
         # Try semantic retrieval first
@@ -238,7 +241,10 @@ async def _build_system_prompt(
                 # {cluster_id: P(cluster | query)}. Empty dict if clustering
                 # hasn't run yet or is stale — score degrades to pure cosine.
                 cluster_probs: dict[int, float] = {}
-                cluster_weight = float(getattr(_s, "memory_cluster_weight", 0.3))
+                cluster_weight = float(
+                    await _rc.get_async("memory_cluster_weight")
+                    or getattr(_s, "memory_cluster_weight", 0.3)
+                )
                 if getattr(_s, "memory_clustering_enabled", True) and cluster_weight > 0:
                     try:
                         from app.services.memory_clustering import score_query_clusters
@@ -252,7 +258,12 @@ async def _build_system_prompt(
                 for m in candidates:
                     sim = cosine_similarity(query_vec, m.embedding or [])
                     # importance 1-10 → 0-0.2 nudge
-                    importance_nudge = max(0, int(m.importance or 5)) / 50.0
+                    # Divisor sourced from runtime_config so System 10
+                    # can tune how much importance influences ranking.
+                    importance_nudge = (
+                        max(0, float(m.importance or 5))
+                        / max(1.0, float(await _rc.get_async("importance_nudge_divisor") or 50.0))
+                    )
                     # Cluster boost: P(memory's cluster | query) ∈ [0, 1].
                     # Memories in the same gaussian neighborhood as the query
                     # get a scaled bump. Unclustered memories → 0 bump.

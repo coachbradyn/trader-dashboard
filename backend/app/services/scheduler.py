@@ -840,6 +840,31 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Bayesian hyperparameter optimization (intelligence upgrade
+    # Phase 7, System 10). Sundays at 22:00 ET — runs BEFORE the Kelly
+    # weekly job so any newly-adopted Kelly thresholds take effect on
+    # the next stats cycle. Pure observation + suggestion; never
+    # auto-applies.
+    async def _run_bayesian_weekly():
+        from app.database import async_session
+        from app.services.bayesian_optimizer import run_weekly_cycle
+        try:
+            async with async_session() as db:
+                summary = await run_weekly_cycle(db)
+                logger.info(
+                    f"bayesian weekly: decision={summary.get('decision')} "
+                    f"obs={summary.get('observation_count', '?')}"
+                )
+        except Exception as e:
+            logger.error(f"bayesian_weekly failed: {e}")
+
+    scheduler.add_job(
+        _run_bayesian_weekly,
+        CronTrigger(day_of_week="sun", hour=22, minute=0, timezone=ET),
+        id="bayesian_weekly",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "

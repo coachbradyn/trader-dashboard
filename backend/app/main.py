@@ -563,6 +563,11 @@ app.include_router(news_router.router, prefix="/api", tags=["news"])
 
 from app.api import memory as memory_router
 app.include_router(memory_router.router, prefix="/api", tags=["memory"])
+
+# Phase 7 — Bayesian hyperparameter optimization (System 10)
+from app.api import optimization as optimization_router
+app.include_router(optimization_router.router, prefix="/api", tags=["optimization"])
+
 app.include_router(execution_router.router, prefix="/api", tags=["execution"])
 app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"])
 

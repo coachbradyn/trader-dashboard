@@ -629,19 +629,27 @@ IMPORTANCE_FLOOR = 1.0
 async def _compute_memory_decay(db):
     """
     Time-based importance decay for memories that haven't been retrieved
-    recently. Multiplicative ×DECAY_MULTIPLIER per cycle on any memory
-    where last_retrieved_at < now - DECAY_INACTIVITY_DAYS (or null).
+    recently. Multiplicative ×decay_multiplier per cycle on any memory
+    where last_retrieved_at < now - decay_inactivity_days (or null).
 
     Then identify pruning candidates: importance ≤ PRUNE_IMPORTANCE_THRESHOLD
-    AND age > PRUNE_AGE_DAYS. Logged via HenryStats but NOT auto-deleted
+    AND age > prune_age_days. Logged via HenryStats but NOT auto-deleted
     in this implementation — auto-delete activates after the decay rate
     is calibrated against real data (via System 10 Bayesian).
+
+    Phase 7: decay_multiplier, decay_inactivity_days, prune_age_days now
+    sourced from runtime_config so System 10 can tune them.
     """
     from datetime import timedelta
     from sqlalchemy import select, update, or_, func as _func, and_
     from app.models import HenryMemory
+    from app.services import runtime_config as _rc
 
-    cutoff = utcnow() - timedelta(days=DECAY_INACTIVITY_DAYS)
+    decay_multiplier = float(await _rc.get_async("decay_multiplier") or DECAY_MULTIPLIER)
+    decay_inactivity_days = int(await _rc.get_async("decay_inactivity_days") or DECAY_INACTIVITY_DAYS)
+    prune_age_days = int(await _rc.get_async("prune_age_days") or PRUNE_AGE_DAYS)
+
+    cutoff = utcnow() - timedelta(days=decay_inactivity_days)
 
     # Single SQL UPDATE for the time-based decay — no Python loop, no
     # per-row reads. Floor at IMPORTANCE_FLOOR so memories never drop
@@ -657,7 +665,7 @@ async def _compute_memory_decay(db):
         .where(HenryMemory.importance > IMPORTANCE_FLOOR)
         .values(
             importance=_func.greatest(
-                HenryMemory.importance * DECAY_MULTIPLIER,
+                HenryMemory.importance * decay_multiplier,
                 IMPORTANCE_FLOOR,
             )
         )
@@ -666,7 +674,7 @@ async def _compute_memory_decay(db):
     decayed_count = decay_result.rowcount or 0
 
     # Count pruning candidates (don't delete yet — observability first).
-    prune_age_cutoff = utcnow() - timedelta(days=PRUNE_AGE_DAYS)
+    prune_age_cutoff = utcnow() - timedelta(days=prune_age_days)
     candidates_q = await db.execute(
         select(_func.count(HenryMemory.id)).where(
             and_(
@@ -693,9 +701,9 @@ async def _compute_memory_decay(db):
         db,
         "memory_decay",
         {
-            "decay_multiplier": DECAY_MULTIPLIER,
-            "inactivity_days": DECAY_INACTIVITY_DAYS,
-            "prune_age_days": PRUNE_AGE_DAYS,
+            "decay_multiplier": decay_multiplier,
+            "inactivity_days": decay_inactivity_days,
+            "prune_age_days": prune_age_days,
             "prune_importance_threshold": PRUNE_IMPORTANCE_THRESHOLD,
             "decayed_this_cycle": int(decayed_count),
             "prune_candidates": prune_candidates,
@@ -864,8 +872,16 @@ async def compute_adaptive_kelly_weekly(db):
     from collections import defaultdict
     from sqlalchemy import select
     from app.models import PortfolioAction, HenryStats
+    from app.services import runtime_config as _rc
 
-    # Pull most recent f_base; default to initial.
+    # Phase 7 — runtime_config wins over the module-level constants
+    # so System 10 can tune the adaptive thresholds and the cap.
+    initial = float(await _rc.get_async("kelly_base_initial") or KELLY_BASE_INITIAL)
+    base_cap = float(await _rc.get_async("kelly_base_cap") or KELLY_BASE_CAP)
+    tighten_thr = float(await _rc.get_async("kelly_error_tighten_threshold") or KELLY_ERROR_TIGHTEN)
+    widen_thr = float(await _rc.get_async("kelly_error_widen_threshold") or KELLY_ERROR_WIDEN)
+
+    # Pull most recent f_base; default to runtime-config initial.
     prior_row = (
         await db.execute(
             select(HenryStats)
@@ -876,7 +892,7 @@ async def compute_adaptive_kelly_weekly(db):
     ).scalar_one_or_none()
     f_base = (prior_row.data or {}).get("f_base") if prior_row else None
     if f_base is None:
-        f_base = KELLY_BASE_INITIAL
+        f_base = initial
 
     # Pull resolved actions in chronological order so EMA decays correctly.
     rows = list(
@@ -920,11 +936,11 @@ async def compute_adaptive_kelly_weekly(db):
 
     decision = "held"
     new_f_base = f_base
-    if rolling_error > KELLY_ERROR_TIGHTEN:
+    if rolling_error > tighten_thr:
         new_f_base = max(KELLY_BASE_FLOOR, f_base * (1.0 - KELLY_TIGHTEN_PCT))
         decision = "tightened"
-    elif rolling_error < KELLY_ERROR_WIDEN:
-        new_f_base = min(KELLY_BASE_CAP, f_base * (1.0 + KELLY_WIDEN_PCT))
+    elif rolling_error < widen_thr:
+        new_f_base = min(base_cap, f_base * (1.0 + KELLY_WIDEN_PCT))
         decision = "widened"
 
     history = (prior_row.data or {}).get("history", []) if prior_row else []
@@ -948,10 +964,10 @@ async def compute_adaptive_kelly_weekly(db):
             "n_resolved": len(rows),
             "decision": decision,
             "thresholds": {
-                "tighten_above": KELLY_ERROR_TIGHTEN,
-                "widen_below": KELLY_ERROR_WIDEN,
+                "tighten_above": tighten_thr,
+                "widen_below": widen_thr,
                 "floor": KELLY_BASE_FLOOR,
-                "cap": KELLY_BASE_CAP,
+                "cap": base_cap,
             },
             "history": history,
             "ran_at": utcnow().isoformat() + "Z",
