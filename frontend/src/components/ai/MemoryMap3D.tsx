@@ -18,6 +18,7 @@ import { Canvas, useFrame, useThree, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Text, Billboard } from "@react-three/drei";
 import * as THREE from "three";
 import { api } from "@/lib/api";
+import { MemoryCurationPanel } from "./MemoryCurationPanel";
 import type {
   MemoryProjection,
   MemoryProjectionPoint,
@@ -1337,6 +1338,19 @@ export function MemoryMap3D() {
                   ★ prototype
                 </span>
               )}
+              {/* Orphan indicator — silhouette below 0 means this memory
+                  doesn't fit its assigned cluster well. Surfaces dupes,
+                  mis-categorizations, and one-offs that don't belong to
+                  any recurring theme. */}
+              {hovered.silhouette !== null &&
+                hovered.silhouette < -0.05 && (
+                  <span
+                    className="text-[10px] text-amber-300"
+                    title={`Orphan — silhouette ${hovered.silhouette.toFixed(2)}. Doesn't fit its cluster well.`}
+                  >
+                    ⚠ orphan
+                  </span>
+                )}
               {/* Cluster label if available */}
               {hovered.cluster_id !== null &&
                 (() => {
@@ -1479,6 +1493,23 @@ export function MemoryMap3D() {
         size = memory importance; translucent orbs = gaussian cluster
         centroids. Drag to rotate · scroll to zoom · right-click drag to pan.
       </p>
+
+      {/* Curation panel — duplicate detection, orphan flagging, forget
+          selector. Refresh projection + health on any change so the viz
+          stays in sync. */}
+      <details className="pt-2" open>
+        <summary className="text-[11px] text-gray-500 cursor-pointer hover:text-gray-400">
+          Curation
+        </summary>
+        <div className="pt-2">
+          <MemoryCurationPanel
+            onChanged={() => {
+              load(true);
+              loadHealth();
+            }}
+          />
+        </div>
+      </details>
 
       {/* Admin actions available from the loaded view too — lets you rerun
           backfill / refit clusters after adding new memories. */}

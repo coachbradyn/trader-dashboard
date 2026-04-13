@@ -290,6 +290,321 @@ async def delete_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": memory_id}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# CURATION ENDPOINTS — duplicate detection, orphan flagging, forget selector
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/curation/duplicates")
+async def curation_duplicates(
+    threshold: float = Query(0.92, ge=0.5, le=1.0),
+    limit: int = Query(50, ge=1, le=500),
+    same_cluster_only: bool = Query(
+        True,
+        description=(
+            "When true, only compare memories within the same cluster — "
+            "much faster on large stores and catches the same-topic dupes. "
+            "Set false for an exhaustive cross-cluster scan (O(N²))."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return memory pairs whose embeddings cosine-similarity ≥ threshold.
+
+    Sorted by similarity descending. Pairs are unordered (a, b == b, a) and
+    de-duplicated. Each side of the pair returns id + content_preview +
+    importance + reference_count so the UI can render a side-by-side merge
+    candidate without an extra round-trip.
+    """
+    from app.services.embeddings import cosine_similarity
+    from collections import defaultdict
+
+    rows = list(
+        (
+            await db.execute(
+                select(
+                    HenryMemory.id,
+                    HenryMemory.embedding,
+                    HenryMemory.embedding_model,
+                    HenryMemory.cluster_id,
+                    HenryMemory.importance,
+                    HenryMemory.reference_count,
+                    HenryMemory.memory_type,
+                    HenryMemory.ticker,
+                    HenryMemory.content,
+                ).where(HenryMemory.embedding.is_not(None))
+            )
+        ).all()
+    )
+
+    if not rows:
+        return {"pairs": [], "n_compared": 0, "threshold": threshold}
+
+    # Filter to dominant model + consistent dim — same convention as
+    # clustering / projection.
+    from collections import Counter
+    model_counts = Counter(r.embedding_model for r in rows if r.embedding_model)
+    if not model_counts:
+        return {"pairs": [], "n_compared": 0, "threshold": threshold}
+    dominant_model, _ = model_counts.most_common(1)[0]
+    rows = [r for r in rows if r.embedding_model == dominant_model]
+
+    dims_counter = Counter(len(r.embedding) for r in rows)
+    if not dims_counter:
+        return {"pairs": [], "n_compared": 0, "threshold": threshold}
+    dims, _ = dims_counter.most_common(1)[0]
+    rows = [r for r in rows if len(r.embedding) == dims]
+
+    # Group by cluster if scoped, else single bucket.
+    buckets: dict[object, list] = defaultdict(list)
+    if same_cluster_only:
+        for r in rows:
+            buckets[r.cluster_id].append(r)
+    else:
+        buckets[None] = rows
+
+    pairs: list[dict] = []
+    n_compared = 0
+    # Stop early if we hit the cap — duplicates are usually clustered, so
+    # most useful pairs surface in the first few buckets.
+    for bucket in buckets.values():
+        if len(bucket) < 2:
+            continue
+        for i in range(len(bucket)):
+            ri = bucket[i]
+            for j in range(i + 1, len(bucket)):
+                rj = bucket[j]
+                n_compared += 1
+                sim = cosine_similarity(ri.embedding, rj.embedding)
+                if sim >= threshold:
+                    # Order so the higher-importance side is "keep" by default.
+                    a, b = (ri, rj) if (ri.importance or 5) >= (rj.importance or 5) else (rj, ri)
+                    pairs.append({
+                        "similarity": float(sim),
+                        "keep": _serialize_curation_row(a),
+                        "drop": _serialize_curation_row(b),
+                    })
+        if len(pairs) >= limit:
+            break
+
+    pairs.sort(key=lambda p: p["similarity"], reverse=True)
+    return {
+        "pairs": pairs[:limit],
+        "n_compared": n_compared,
+        "threshold": threshold,
+        "same_cluster_only": same_cluster_only,
+    }
+
+
+def _serialize_curation_row(r) -> dict:
+    """Compact memory snapshot for curation panels."""
+    return {
+        "id": r.id,
+        "memory_type": r.memory_type,
+        "ticker": r.ticker,
+        "importance": int(r.importance or 5),
+        "reference_count": int(r.reference_count or 0),
+        "cluster_id": r.cluster_id,
+        "content_preview": (r.content or "")[:200].strip(),
+    }
+
+
+@router.get("/curation/orphans")
+async def curation_orphans(
+    threshold: float = Query(
+        -0.05,
+        ge=-1.0,
+        le=1.0,
+        description="Memories with cluster_silhouette < threshold are orphans.",
+    ),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Memories whose silhouette is below threshold — i.e. they don't fit
+    their assigned cluster well. Candidates for re-categorization or
+    deletion.
+    """
+    result = await db.execute(
+        select(HenryMemory)
+        .where(HenryMemory.cluster_silhouette.isnot(None))
+        .where(HenryMemory.cluster_silhouette < threshold)
+        .order_by(HenryMemory.cluster_silhouette.asc())
+        .limit(limit)
+    )
+    rows = list(result.scalars().all())
+    return {
+        "threshold": threshold,
+        "count": len(rows),
+        "orphans": [
+            {
+                "id": r.id,
+                "silhouette": float(r.cluster_silhouette) if r.cluster_silhouette is not None else None,
+                "cluster_id": r.cluster_id,
+                "memory_type": r.memory_type,
+                "ticker": r.ticker,
+                "importance": int(r.importance or 5),
+                "reference_count": int(r.reference_count or 0),
+                "content_preview": (r.content or "")[:200].strip(),
+            }
+            for r in rows
+        ],
+    }
+
+
+class ForgetCandidatesRequest(BaseModel):
+    max_importance: int = 4
+    max_reference_count: int = 0
+    min_age_days: int = 30
+    require_unvalidated: bool = True
+    limit: int = 200
+
+
+@router.post("/curation/forget-candidates")
+async def curation_forget_candidates(
+    body: ForgetCandidatesRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Preview candidates for the "forget" bulk delete: low importance, low
+    reference count, old, and (optionally) not validated. Returns IDs +
+    previews. The UI shows count + samples and asks for confirmation
+    before invoking /admin/bulk-delete.
+    """
+    from datetime import timedelta
+
+    cutoff = utcnow() - timedelta(days=max(0, body.min_age_days))
+    stmt = (
+        select(HenryMemory)
+        .where(HenryMemory.importance <= body.max_importance)
+        .where(HenryMemory.reference_count <= body.max_reference_count)
+        .where(HenryMemory.created_at <= cutoff)
+    )
+    if body.require_unvalidated:
+        # validated IS NULL OR validated = false — rejects only confirmed-correct.
+        from sqlalchemy import or_ as _or
+        stmt = stmt.where(
+            _or(
+                HenryMemory.validated.is_(None),
+                HenryMemory.validated.is_(False),
+            )
+        )
+    stmt = stmt.order_by(
+        HenryMemory.importance.asc(),
+        HenryMemory.reference_count.asc(),
+        HenryMemory.created_at.asc(),
+    ).limit(max(1, min(1000, body.limit)))
+
+    rows = list((await db.execute(stmt)).scalars().all())
+    return {
+        "criteria": body.dict(),
+        "count": len(rows),
+        "candidates": [
+            {
+                "id": r.id,
+                "importance": int(r.importance or 5),
+                "reference_count": int(r.reference_count or 0),
+                "memory_type": r.memory_type,
+                "ticker": r.ticker,
+                "validated": r.validated,
+                "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+                "content_preview": (r.content or "")[:160].strip(),
+            }
+            for r in rows
+        ],
+    }
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list[str]
+
+
+@router.post("/admin/bulk-delete")
+async def admin_bulk_delete(
+    body: BulkDeleteRequest,
+    secret: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin-gated bulk delete by ID list. Returns how many actually got
+    removed (some IDs may not exist). Caps at 1000 per call as a safety
+    measure — the forget UI batches if it needs more.
+    """
+    _require_admin(secret)
+    from sqlalchemy import delete as sql_delete
+
+    ids = list({i for i in (body.ids or []) if i})
+    if not ids:
+        return {"ok": True, "deleted": 0, "requested": 0}
+    if len(ids) > 1000:
+        return {
+            "ok": False,
+            "reason": f"Refusing to bulk-delete {len(ids)} memories in one call. Cap is 1000.",
+        }
+
+    # Count first so we can report accurately even if some IDs were stale.
+    found_count_result = await db.execute(
+        select(func.count(HenryMemory.id)).where(HenryMemory.id.in_(ids))
+    )
+    found = int(found_count_result.scalar() or 0)
+
+    await db.execute(sql_delete(HenryMemory).where(HenryMemory.id.in_(ids)))
+    await db.commit()
+    return {"ok": True, "deleted": found, "requested": len(ids)}
+
+
+class MergeMemoryRequest(BaseModel):
+    keep_id: str
+    drop_id: str
+    # If true, bump the kept memory's importance by min(10, kept.importance + 1)
+    # to reflect the consolidation.
+    bump_importance: bool = True
+
+
+@router.post("/admin/merge")
+async def admin_merge_memory(
+    body: MergeMemoryRequest,
+    secret: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin-gated merge of two memories: drop one, optionally bump the
+    other's importance + add its reference count. Used by the duplicate
+    detection panel's "Merge" action.
+    """
+    _require_admin(secret)
+    from sqlalchemy import delete as sql_delete
+
+    if body.keep_id == body.drop_id:
+        return {"ok": False, "reason": "keep_id and drop_id are identical."}
+
+    keep = (await db.execute(select(HenryMemory).where(HenryMemory.id == body.keep_id))).scalar_one_or_none()
+    drop = (await db.execute(select(HenryMemory).where(HenryMemory.id == body.drop_id))).scalar_one_or_none()
+    if not keep:
+        return {"ok": False, "reason": f"keep_id {body.keep_id} not found."}
+    if not drop:
+        return {"ok": False, "reason": f"drop_id {body.drop_id} not found."}
+
+    # Merge the reference counts so we don't lose the dropped memory's history.
+    keep.reference_count = (keep.reference_count or 0) + (drop.reference_count or 0)
+    if body.bump_importance:
+        keep.importance = max(1, min(10, (keep.importance or 5) + 1))
+    keep.updated_at = utcnow()
+
+    await db.execute(sql_delete(HenryMemory).where(HenryMemory.id == body.drop_id))
+    await db.commit()
+    return {
+        "ok": True,
+        "kept": {
+            "id": keep.id,
+            "importance": int(keep.importance),
+            "reference_count": int(keep.reference_count),
+        },
+        "dropped_id": body.drop_id,
+    }
+
+
 @router.get("/retrieval-events")
 async def retrieval_events(since: float = Query(0.0, ge=0.0)):
     """

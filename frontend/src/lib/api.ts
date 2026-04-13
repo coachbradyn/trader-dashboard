@@ -444,6 +444,65 @@ export const api = {
     fetchApi<import("./types").MemoryEmbeddingsHealth>(
       "/memory/embeddings/health"
     ),
+  // ─── Curation ──────────────────────────────────────────────────
+  curationDuplicates: (threshold = 0.92, limit = 50, sameClusterOnly = true) =>
+    fetchApi<import("./types").DuplicatesResponse>(
+      "/memory/curation/duplicates?threshold=" +
+        threshold +
+        "&limit=" +
+        limit +
+        "&same_cluster_only=" +
+        sameClusterOnly
+    ),
+  curationOrphans: (threshold = -0.05, limit = 100) =>
+    fetchApi<import("./types").OrphansResponse>(
+      "/memory/curation/orphans?threshold=" + threshold + "&limit=" + limit
+    ),
+  curationForgetCandidates: (body: {
+    max_importance?: number;
+    max_reference_count?: number;
+    min_age_days?: number;
+    require_unvalidated?: boolean;
+    limit?: number;
+  }) =>
+    fetchApi<import("./types").ForgetCandidatesResponse>(
+      "/memory/curation/forget-candidates",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          max_importance: body.max_importance ?? 4,
+          max_reference_count: body.max_reference_count ?? 0,
+          min_age_days: body.min_age_days ?? 30,
+          require_unvalidated: body.require_unvalidated ?? true,
+          limit: body.limit ?? 200,
+        }),
+      }
+    ),
+  adminBulkDelete: (secret: string, ids: string[]) =>
+    fetchApi<{ ok: boolean; deleted?: number; requested?: number; reason?: string }>(
+      "/memory/admin/bulk-delete?secret=" + encodeURIComponent(secret),
+      { method: "POST", body: JSON.stringify({ ids }) }
+    ),
+  adminMergeMemory: (
+    secret: string,
+    body: { keep_id: string; drop_id: string; bump_importance?: boolean }
+  ) =>
+    fetchApi<{
+      ok: boolean;
+      kept?: { id: string; importance: number; reference_count: number };
+      dropped_id?: string;
+      reason?: string;
+    }>(
+      "/memory/admin/merge?secret=" + encodeURIComponent(secret),
+      {
+        method: "POST",
+        body: JSON.stringify({
+          keep_id: body.keep_id,
+          drop_id: body.drop_id,
+          bump_importance: body.bump_importance ?? true,
+        }),
+      }
+    ),
   getRetrievalEvents: (since: number) =>
     fetchApi<import("./types").RetrievalEventsResponse>(
       "/memory/retrieval-events?since=" + encodeURIComponent(String(since))

@@ -957,6 +957,63 @@ export type MemoryClusters =
     }
   | { available: false; reason: string };
 
+export interface CurationMemorySnapshot {
+  id: string;
+  memory_type: string;
+  ticker: string | null;
+  importance: number;
+  reference_count: number;
+  cluster_id: number | null;
+  content_preview: string;
+}
+
+export interface DuplicatePair {
+  similarity: number;
+  keep: CurationMemorySnapshot;
+  drop: CurationMemorySnapshot;
+}
+
+export interface DuplicatesResponse {
+  pairs: DuplicatePair[];
+  n_compared: number;
+  threshold: number;
+  same_cluster_only?: boolean;
+}
+
+export interface OrphanMemory {
+  id: string;
+  silhouette: number | null;
+  cluster_id: number | null;
+  memory_type: string;
+  ticker: string | null;
+  importance: number;
+  reference_count: number;
+  content_preview: string;
+}
+
+export interface OrphansResponse {
+  threshold: number;
+  count: number;
+  orphans: OrphanMemory[];
+}
+
+export interface ForgetCandidate {
+  id: string;
+  importance: number;
+  reference_count: number;
+  memory_type: string;
+  ticker: string | null;
+  validated: boolean | null;
+  created_at: string | null;
+  content_preview: string;
+}
+
+export interface ForgetCandidatesResponse {
+  criteria: Record<string, unknown>;
+  count: number;
+  candidates: ForgetCandidate[];
+}
+
 export interface RetrievalEvent {
   ts: number; // epoch seconds
   function_name: string;
