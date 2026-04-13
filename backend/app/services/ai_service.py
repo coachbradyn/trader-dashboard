@@ -17,9 +17,30 @@ Four features:
 import os
 from app.utils.utc import utcnow
 import json
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import anthropic
+
+# Per-task record of which memory IDs were injected into the most recent
+# _build_system_prompt run. Action-creation paths read this via
+# `get_last_injected_memory_ids()` to populate
+# PortfolioAction.injected_memory_ids — closes the memory→outcome loop
+# for System 7's importance nudge on trade resolution.
+#
+# ContextVar-scoped so concurrent AI calls (different webhooks racing
+# through evaluate_signal in parallel) don't cross-link each other's
+# memories. Each asyncio task gets its own copy.
+_INJECTED_MEMORY_IDS: ContextVar[list[str]] = ContextVar(
+    "injected_memory_ids", default=[]
+)
+
+
+def get_last_injected_memory_ids() -> list[str]:
+    """Returns the memory IDs injected by the most recent
+    _build_system_prompt call in the current task. Empty list if none
+    or if called outside an AI-call task."""
+    return list(_INJECTED_MEMORY_IDS.get())
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 
@@ -311,15 +332,26 @@ async def _build_system_prompt(
                     "that appear in this list."
                 )
 
-                # Atomic reference_count increment — avoids read-modify-write race
+                # Atomic bookkeeping bump — reference_count (legacy) +
+                # retrieval_count + last_retrieved_at (Phase 6, System 7
+                # decay). Single UPDATE stays race-free for all three.
                 if mem_ids:
                     from sqlalchemy import update
                     await db.execute(
                         update(HenryMemory)
                         .where(HenryMemory.id.in_(mem_ids))
-                        .values(reference_count=HenryMemory.reference_count + 1)
+                        .values(
+                            reference_count=HenryMemory.reference_count + 1,
+                            retrieval_count=HenryMemory.retrieval_count + 1,
+                            last_retrieved_at=utcnow(),
+                        )
                     )
                     await db.commit()
+
+                    # Stash on the per-task ContextVar so PortfolioAction
+                    # creation sites can populate injected_memory_ids
+                    # for outcome linkage (Phase 6, System 7).
+                    _INJECTED_MEMORY_IDS.set(list(mem_ids))
 
                 # Record this retrieval as a live event so the 3D viz can
                 # pulse the surfaced memories. Only fires when memories
@@ -630,6 +662,57 @@ async def _build_system_prompt(
                 )
         except Exception:
             pass  # Pure-data lookup; missing data → no section
+
+    # Confidence calibration (intelligence upgrade Phase 6, System 8) —
+    # injected for any decision context (signal eval / portfolio / ask).
+    # Skipped silently when sufficient_for_prompt is false (fewer than
+    # 10 resolved actions in the rolling window). Order in the prompt:
+    # probability tables → calibration → trade warnings, per the brief.
+    try:
+        from app.models import HenryStats as _HS_cal
+        async with async_session() as db:
+            cal_row = (
+                await db.execute(
+                    select(_HS_cal)
+                    .where(_HS_cal.stat_type == "confidence_calibration")
+                    .order_by(_HS_cal.computed_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if cal_row and cal_row.data and cal_row.data.get("sufficient_for_prompt"):
+            tiers = cal_row.data.get("tiers", {}) or {}
+
+            def _tier_line(label: str, t: dict | None) -> str | None:
+                if not t or not t.get("n"):
+                    return None
+                actual_pct = (t.get("actual_win_rate") or 0) * 100
+                pred_pct = (t.get("predicted_win_rate") or 0) * 100
+                ratio = t.get("calibration_ratio") or 0
+                if ratio < 0.85:
+                    verdict = "overconfident — consider downgrading 1-2 points"
+                elif ratio > 1.15:
+                    verdict = "underconfident — consider upgrading"
+                else:
+                    verdict = "well calibrated"
+                return (
+                    f"{label}: predicted ~{pred_pct:.0f}%, actual {actual_pct:.0f}% "
+                    f"over {t['n']} trades → {verdict}."
+                )
+
+            lines = []
+            for label_key in ("high (8-10)", "medium (5-7)", "low (1-4)"):
+                line = _tier_line(label_key, tiers.get(label_key))
+                if line:
+                    lines.append(line)
+            if lines:
+                sections.append(
+                    "CONFIDENCE CALIBRATION (last "
+                    f"{cal_row.data.get('window_days', 30)} days):\n  "
+                    + "\n  ".join(lines)
+                    + "\n  Adjust your future confidence scores based on this feedback."
+                )
+    except Exception:
+        pass  # Calibration is advisory; missing data → no section
 
     # Add web search guidance if enabled
     if enable_web_search:

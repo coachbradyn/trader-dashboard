@@ -137,6 +137,42 @@ async def embeddings_health(db: AsyncSession = Depends(get_db)):
         .where(HenryMemory.cluster_id.is_not(None))
         .group_by(HenryMemory.cluster_id)
     )
+    # Phase 6, System 7 — surface decay status, prune candidates, and
+    # the live importance distribution so the user can monitor whether
+    # decay is calibrated correctly. Pulls from the latest memory_decay
+    # stat row (written by the nightly stats engine).
+    from app.models import HenryStats as _HS_h
+    decay_row = (
+        await db.execute(
+            select(_HS_h)
+            .where(_HS_h.stat_type == "memory_decay")
+            .order_by(_HS_h.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    decay_summary = decay_row.data if (decay_row and decay_row.data) else None
+
+    # Live importance distribution + retrieval activity at request time.
+    # Cheap aggregate queries.
+    importance_dist = await db.execute(
+        select(
+            func.count(HenryMemory.id).filter(HenryMemory.importance < 3),
+            func.count(HenryMemory.id).filter(
+                HenryMemory.importance >= 3
+            ).filter(HenryMemory.importance < 6),
+            func.count(HenryMemory.id).filter(HenryMemory.importance >= 6),
+        )
+    )
+    imp_low, imp_mid, imp_high = importance_dist.one()
+
+    never_retrieved = (
+        await db.execute(
+            select(func.count(HenryMemory.id))
+            .where(HenryMemory.last_retrieved_at.is_(None))
+        )
+    ).scalar() or 0
+    retrieved_at_least_once = total - never_retrieved
+
     return {
         "total": total,
         "with_embedding": with_emb,
@@ -144,6 +180,16 @@ async def embeddings_health(db: AsyncSession = Depends(get_db)):
         "coverage_pct": round(with_emb / total * 100, 1) if total else 0.0,
         "model_distribution": {row[0]: row[1] for row in model_dist_result.all()},
         "cluster_distribution": {int(row[0]): row[1] for row in cluster_dist_result.all()},
+        "importance_distribution": {
+            "low (<3)": int(imp_low or 0),
+            "mid (3-6)": int(imp_mid or 0),
+            "high (>=6)": int(imp_high or 0),
+        },
+        "retrieval_activity": {
+            "never_retrieved": int(never_retrieved),
+            "retrieved_at_least_once": int(retrieved_at_least_once),
+        },
+        "decay_summary": decay_summary,  # null when stats engine hasn't run yet
     }
 
 
@@ -1201,6 +1247,40 @@ async def admin_ensure_schema(
             "add_action_sizing_method",
             "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS sizing_method VARCHAR(30)",
         ),
+        # Phase 6 — System 7 (decay) on henry_memory + Systems 7/9 audit
+        # fields on portfolio_actions.
+        (
+            "add_memory_last_retrieved_at",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS last_retrieved_at TIMESTAMP",
+        ),
+        (
+            "add_memory_retrieval_count",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS retrieval_count INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "add_action_kelly_f_base",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS kelly_f_base FLOAT",
+        ),
+        (
+            "add_action_kelly_f_effective",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS kelly_f_effective FLOAT",
+        ),
+        (
+            "add_action_injected_memory_ids",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS injected_memory_ids JSON",
+        ),
+        # Promote importance to DOUBLE PRECISION so System 7 nudges
+        # (+0.3 / -0.15) and decay (×0.85) can accumulate. Idempotent
+        # on Postgres — if it's already DOUBLE/REAL the cast is a no-op.
+        # USING importance::double precision handles existing INTEGER values.
+        (
+            "promote_importance_to_double",
+            (
+                "ALTER TABLE henry_memory "
+                "ALTER COLUMN importance TYPE DOUBLE PRECISION "
+                "USING importance::double precision"
+            ),
+        ),
     ]
 
     # Check which columns exist before attempting the DDL so we can report
@@ -1228,13 +1308,19 @@ async def admin_ensure_schema(
     )
     trade_cols = {row[0] for row in trade_cols_q.all()}
 
-    target_cols = {"embedding", "embedding_model", "cluster_id", "cluster_silhouette"}
+    target_cols = {
+        "embedding", "embedding_model", "cluster_id", "cluster_silhouette",
+        "last_retrieved_at", "retrieval_count",
+    }
     target_trade_cols = {"entry_vix", "entry_spy_close", "entry_spy_20ema", "entry_spy_adx"}
     target_action_cols = {
         "recommended_shares",
         "recommended_dollar_amount",
         "recommended_pct_of_equity",
         "sizing_method",
+        "kelly_f_base",
+        "kelly_f_effective",
+        "injected_memory_ids",
     }
 
     action_cols_q = await db.execute(
@@ -1270,7 +1356,7 @@ async def admin_ensure_schema(
         # Bump alembic_version to the latest head so future deploys don't
         # try to re-apply these migrations (and fail on already-existing
         # columns without IF NOT EXISTS).
-        latest_head = "n485960718i0"
+        latest_head = "o596071829j1"
         try:
             version_result = await db.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")

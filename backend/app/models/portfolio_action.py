@@ -2,7 +2,7 @@ import uuid
 from app.utils.utc import utcnow
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, Integer, Boolean, Text, ForeignKey
+from sqlalchemy import String, Float, Integer, Boolean, Text, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -50,6 +50,19 @@ class PortfolioAction(Base):
     recommended_dollar_amount: Mapped[float | None] = mapped_column(Float)
     recommended_pct_of_equity: Mapped[float | None] = mapped_column(Float)
     sizing_method: Mapped[str | None] = mapped_column(String(30))  # kelly | fixed | insufficient_data | negative_ev
+
+    # Adaptive Kelly bookkeeping (Phase 6, System 9). Records the f_base in
+    # effect at decision time + the f_effective after calibration scaling
+    # so System 10 (Bayesian) can audit whether the adaptive logic helps.
+    kelly_f_base: Mapped[float | None] = mapped_column(Float)
+    kelly_f_effective: Mapped[float | None] = mapped_column(Float)
+
+    # Outcome linkage for memory decay (Phase 6, System 7). List of
+    # HenryMemory.id values that were injected into the system prompt of
+    # the AI call that generated this action. When the action's outcome
+    # resolves (outcome_correct flips), each linked memory's importance
+    # gets nudged up (win) or down (loss).
+    injected_memory_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 

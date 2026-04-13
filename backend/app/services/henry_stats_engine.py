@@ -42,6 +42,8 @@ async def compute_all_stats():
             _compute_portfolio_risk,
             _compute_strategy_correlation,
             _compute_conditional_probability,
+            _compute_memory_decay,            # Phase 6, System 7
+            _compute_confidence_calibration,  # Phase 6, System 8
         ]:
             try:
                 await fn(db)
@@ -609,3 +611,353 @@ async def _compute_conditional_probability(db):
             strategy=strategy_id,
             ticker=ticker,
         )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Memory Importance Decay (Phase 6, System 7)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+# Hyperparameters — System 10 (Bayesian) will tune these eventually.
+DECAY_MULTIPLIER = 0.85
+DECAY_INACTIVITY_DAYS = 30
+PRUNE_AGE_DAYS = 90
+PRUNE_IMPORTANCE_THRESHOLD = 2.0
+IMPORTANCE_FLOOR = 1.0
+
+
+async def _compute_memory_decay(db):
+    """
+    Time-based importance decay for memories that haven't been retrieved
+    recently. Multiplicative ×DECAY_MULTIPLIER per cycle on any memory
+    where last_retrieved_at < now - DECAY_INACTIVITY_DAYS (or null).
+
+    Then identify pruning candidates: importance ≤ PRUNE_IMPORTANCE_THRESHOLD
+    AND age > PRUNE_AGE_DAYS. Logged via HenryStats but NOT auto-deleted
+    in this implementation — auto-delete activates after the decay rate
+    is calibrated against real data (via System 10 Bayesian).
+    """
+    from datetime import timedelta
+    from sqlalchemy import select, update, or_, func as _func, and_
+    from app.models import HenryMemory
+
+    cutoff = utcnow() - timedelta(days=DECAY_INACTIVITY_DAYS)
+
+    # Single SQL UPDATE for the time-based decay — no Python loop, no
+    # per-row reads. Floor at IMPORTANCE_FLOOR so memories never drop
+    # below 1.0. Postgres GREATEST handles the floor cleanly.
+    decay_stmt = (
+        update(HenryMemory)
+        .where(
+            or_(
+                HenryMemory.last_retrieved_at.is_(None),
+                HenryMemory.last_retrieved_at < cutoff,
+            )
+        )
+        .where(HenryMemory.importance > IMPORTANCE_FLOOR)
+        .values(
+            importance=_func.greatest(
+                HenryMemory.importance * DECAY_MULTIPLIER,
+                IMPORTANCE_FLOOR,
+            )
+        )
+    )
+    decay_result = await db.execute(decay_stmt)
+    decayed_count = decay_result.rowcount or 0
+
+    # Count pruning candidates (don't delete yet — observability first).
+    prune_age_cutoff = utcnow() - timedelta(days=PRUNE_AGE_DAYS)
+    candidates_q = await db.execute(
+        select(_func.count(HenryMemory.id)).where(
+            and_(
+                HenryMemory.importance <= PRUNE_IMPORTANCE_THRESHOLD,
+                HenryMemory.created_at <= prune_age_cutoff,
+            )
+        )
+    )
+    prune_candidates = int(candidates_q.scalar() or 0)
+
+    # Quick distribution histogram for observability.
+    dist_q = await db.execute(
+        select(
+            _func.count(HenryMemory.id).filter(HenryMemory.importance < 3),
+            _func.count(HenryMemory.id).filter(
+                and_(HenryMemory.importance >= 3, HenryMemory.importance < 6)
+            ),
+            _func.count(HenryMemory.id).filter(HenryMemory.importance >= 6),
+        )
+    )
+    dist_low, dist_mid, dist_high = dist_q.one()
+
+    await _upsert_stat(
+        db,
+        "memory_decay",
+        {
+            "decay_multiplier": DECAY_MULTIPLIER,
+            "inactivity_days": DECAY_INACTIVITY_DAYS,
+            "prune_age_days": PRUNE_AGE_DAYS,
+            "prune_importance_threshold": PRUNE_IMPORTANCE_THRESHOLD,
+            "decayed_this_cycle": int(decayed_count),
+            "prune_candidates": prune_candidates,
+            "distribution": {
+                "low (<3)": int(dist_low or 0),
+                "mid (3-6)": int(dist_mid or 0),
+                "high (>=6)": int(dist_high or 0),
+            },
+            "ran_at": utcnow().isoformat() + "Z",
+        },
+        period_days=DECAY_INACTIVITY_DAYS,
+    )
+    logger.info(
+        f"Memory decay: {decayed_count} memories decayed; "
+        f"{prune_candidates} prune candidates; "
+        f"distribution L/M/H = {dist_low}/{dist_mid}/{dist_high}"
+    )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Confidence Calibration (Phase 6, System 8)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+CALIBRATION_WINDOW_DAYS = 30
+CALIBRATION_MIN_BUCKET = 3
+CALIBRATION_MIN_TOTAL = 10  # below this, skip prompt injection entirely
+
+
+async def _compute_confidence_calibration(db):
+    """
+    For each confidence bucket (1-10), compute:
+      - n: resolved actions in bucket within CALIBRATION_WINDOW_DAYS
+      - actual_win_rate: wins / n (when outcome_correct is set)
+      - predicted_win_rate: stated confidence / 10 as a proxy
+      - calibration_ratio: actual / predicted (>1 = underconfident,
+                                               <1 = overconfident)
+
+    Also stores aggregated 3-tier rollup (high/medium/low) for the
+    prompt-injection helper to read directly. System 9 (Adaptive Kelly)
+    consumes the per-bucket calibration_ratio.
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models import PortfolioAction
+
+    cutoff = utcnow() - timedelta(days=CALIBRATION_WINDOW_DAYS)
+    rows = list(
+        (
+            await db.execute(
+                select(PortfolioAction)
+                .where(PortfolioAction.outcome_correct.is_not(None))
+                .where(PortfolioAction.outcome_resolved_at >= cutoff)
+            )
+        ).scalars().all()
+    )
+    if not rows:
+        # Erase any stale stat row so the prompt builder knows to skip
+        # the calibration section instead of injecting outdated data.
+        from sqlalchemy import delete
+        from app.models import HenryStats as _HS
+        await db.execute(
+            delete(_HS).where(_HS.stat_type == "confidence_calibration")
+        )
+        return
+
+    by_bucket: dict[int, list] = defaultdict(list)
+    for r in rows:
+        c = max(1, min(10, int(r.confidence or 5)))
+        by_bucket[c].append(r)
+
+    per_bucket: dict[str, dict] = {}
+    for bucket, items in by_bucket.items():
+        if len(items) < CALIBRATION_MIN_BUCKET:
+            continue
+        wins = sum(1 for x in items if x.outcome_correct)
+        n = len(items)
+        actual = wins / n
+        predicted = bucket / 10.0
+        ratio = actual / predicted if predicted > 0 else 0.0
+        per_bucket[str(bucket)] = {
+            "n": n,
+            "wins": wins,
+            "actual_win_rate": round(actual, 3),
+            "predicted_win_rate": round(predicted, 3),
+            "calibration_ratio": round(ratio, 3),
+        }
+
+    # Three-tier aggregation for prompt readability.
+    def _tier(items):
+        if not items:
+            return None
+        wins = sum(1 for x in items if x.outcome_correct)
+        n = len(items)
+        avg_conf = sum(int(x.confidence or 5) for x in items) / n
+        actual = wins / n
+        predicted = avg_conf / 10.0
+        return {
+            "n": n,
+            "avg_confidence": round(avg_conf, 1),
+            "actual_win_rate": round(actual, 3),
+            "predicted_win_rate": round(predicted, 3),
+            "calibration_ratio": round(actual / predicted, 3) if predicted > 0 else 0.0,
+        }
+
+    high_items = [r for b in range(8, 11) for r in by_bucket.get(b, [])]
+    mid_items = [r for b in range(5, 8) for r in by_bucket.get(b, [])]
+    low_items = [r for b in range(1, 5) for r in by_bucket.get(b, [])]
+
+    total_n = sum(len(v) for v in by_bucket.values())
+
+    await _upsert_stat(
+        db,
+        "confidence_calibration",
+        {
+            "window_days": CALIBRATION_WINDOW_DAYS,
+            "n_total": total_n,
+            "sufficient_for_prompt": total_n >= CALIBRATION_MIN_TOTAL,
+            "per_bucket": per_bucket,
+            "tiers": {
+                "high (8-10)": _tier(high_items),
+                "medium (5-7)": _tier(mid_items),
+                "low (1-4)": _tier(low_items),
+            },
+            "ran_at": utcnow().isoformat() + "Z",
+        },
+        period_days=CALIBRATION_WINDOW_DAYS,
+    )
+    logger.info(
+        f"Confidence calibration: n={total_n} resolved actions; "
+        f"buckets with data = {sorted(per_bucket.keys())}"
+    )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Adaptive Kelly Fraction (Phase 6, System 9)
+# ───────────────────────────────────────────────────────────────────────────
+
+
+KELLY_BASE_INITIAL = 0.25
+KELLY_BASE_FLOOR = 0.10
+KELLY_BASE_CAP = 0.50
+KELLY_ERROR_TIGHTEN = 0.30   # error > this → tighten f_base
+KELLY_ERROR_WIDEN = 0.15     # error < this → widen f_base
+KELLY_TIGHTEN_PCT = 0.10     # downward adjustment magnitude
+KELLY_WIDEN_PCT = 0.05       # upward adjustment magnitude
+KELLY_EMA_ALPHA = 0.1
+KELLY_MIN_TRADES_FOR_ADJUST = 8
+
+
+async def compute_adaptive_kelly_weekly(db):
+    """
+    Weekly self-adjustment of f_base. Standalone async function (not a
+    `_compute_*` stats stage) so it can be scheduled separately at
+    Sunday 11pm ET. Daily would be too noisy.
+
+    Reads resolved PortfolioActions with both outcome_correct AND
+    kelly_f_effective set. Computes EMA of |predicted - actual| where
+    `predicted` is win_rate from the conditional probability table at
+    decision time and `actual` is 1 (win) or 0 (loss).
+
+    If we don't have the predicted value stored on the action (older
+    actions), we use `confidence / 10` as a proxy.
+    """
+    from collections import defaultdict
+    from sqlalchemy import select
+    from app.models import PortfolioAction, HenryStats
+
+    # Pull most recent f_base; default to initial.
+    prior_row = (
+        await db.execute(
+            select(HenryStats)
+            .where(HenryStats.stat_type == "adaptive_kelly")
+            .order_by(HenryStats.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    f_base = (prior_row.data or {}).get("f_base") if prior_row else None
+    if f_base is None:
+        f_base = KELLY_BASE_INITIAL
+
+    # Pull resolved actions in chronological order so EMA decays correctly.
+    rows = list(
+        (
+            await db.execute(
+                select(PortfolioAction)
+                .where(PortfolioAction.outcome_correct.is_not(None))
+                .where(PortfolioAction.kelly_f_effective.is_not(None))
+                .order_by(PortfolioAction.outcome_resolved_at.asc())
+                .limit(200)
+            )
+        ).scalars().all()
+    )
+
+    if len(rows) < KELLY_MIN_TRADES_FOR_ADJUST:
+        # Persist the unchanged f_base so the sizing utility can still
+        # find a row to read on its next call.
+        await _upsert_stat(
+            db,
+            "adaptive_kelly",
+            {
+                "f_base": f_base,
+                "rolling_error": None,
+                "n_resolved": len(rows),
+                "decision": "insufficient_data",
+                "ran_at": utcnow().isoformat() + "Z",
+            },
+        )
+        return
+
+    # EMA of absolute prediction error
+    ema = None
+    for r in rows:
+        actual = 1.0 if r.outcome_correct else 0.0
+        # `predicted` proxy = stated confidence / 10 (best we have
+        # without a historical-prediction column).
+        predicted = max(1, min(10, int(r.confidence or 5))) / 10.0
+        err = abs(predicted - actual)
+        ema = err if ema is None else (KELLY_EMA_ALPHA * err + (1 - KELLY_EMA_ALPHA) * ema)
+    rolling_error = float(ema)
+
+    decision = "held"
+    new_f_base = f_base
+    if rolling_error > KELLY_ERROR_TIGHTEN:
+        new_f_base = max(KELLY_BASE_FLOOR, f_base * (1.0 - KELLY_TIGHTEN_PCT))
+        decision = "tightened"
+    elif rolling_error < KELLY_ERROR_WIDEN:
+        new_f_base = min(KELLY_BASE_CAP, f_base * (1.0 + KELLY_WIDEN_PCT))
+        decision = "widened"
+
+    history = (prior_row.data or {}).get("history", []) if prior_row else []
+    history = (history + [
+        {
+            "ts": utcnow().isoformat() + "Z",
+            "from": round(f_base, 4),
+            "to": round(new_f_base, 4),
+            "rolling_error": round(rolling_error, 4),
+            "decision": decision,
+        }
+    ])[-26:]  # keep ~6 months of weekly entries
+
+    await _upsert_stat(
+        db,
+        "adaptive_kelly",
+        {
+            "f_base": round(new_f_base, 4),
+            "previous_f_base": round(f_base, 4),
+            "rolling_error": round(rolling_error, 4),
+            "n_resolved": len(rows),
+            "decision": decision,
+            "thresholds": {
+                "tighten_above": KELLY_ERROR_TIGHTEN,
+                "widen_below": KELLY_ERROR_WIDEN,
+                "floor": KELLY_BASE_FLOOR,
+                "cap": KELLY_BASE_CAP,
+            },
+            "history": history,
+            "ran_at": utcnow().isoformat() + "Z",
+        },
+    )
+    logger.info(
+        f"Adaptive Kelly: f_base {f_base:.3f} → {new_f_base:.3f} "
+        f"({decision}); rolling_error={rolling_error:.3f} over {len(rows)} trades"
+    )

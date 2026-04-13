@@ -678,6 +678,41 @@ async def track_action_outcome(trade: Trade, db: AsyncSession):
             action.outcome_correct = (trade.pnl_dollars or 0) > 0
             action.outcome_resolved_at = utcnow()
 
+            # Phase 6, System 7: nudge importance on every memory that
+            # was injected into the AI call that generated this action.
+            # Asymmetric — wins bump +0.3, losses nudge -0.15. Asymmetry
+            # is intentional: a memory that contributed to one loss isn't
+            # necessarily bad (may have driven 5 wins too); decay should
+            # be gradual, not punitive.
+            try:
+                injected = action.injected_memory_ids or []
+                if injected:
+                    from app.models import HenryMemory as _HM
+                    from sqlalchemy import update as _update, case
+                    delta = 0.3 if action.outcome_correct else -0.15
+                    # Floor at 1, ceiling at 10. Importance is integer in
+                    # the schema, so we round after applying the nudge.
+                    # Multi-action outcomes accumulate over time.
+                    await db.execute(
+                        _update(_HM)
+                        .where(_HM.id.in_(injected))
+                        .values(
+                            importance=case(
+                                (
+                                    _HM.importance + delta > 10,
+                                    10,
+                                ),
+                                (
+                                    _HM.importance + delta < 1,
+                                    1,
+                                ),
+                                else_=_HM.importance + delta,
+                            )
+                        )
+                    )
+            except Exception:
+                pass  # Outcome linkage is best-effort
+
         # Best-effort: validate related HenryMemory rows based on trade outcome
         try:
             from app.models import HenryMemory

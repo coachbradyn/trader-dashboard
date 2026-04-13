@@ -30,11 +30,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-KELLY_MULTIPLIER = 0.25            # Quarter Kelly default
+KELLY_MULTIPLIER_DEFAULT = 0.25    # Quarter Kelly fallback before System 9 calibrates
 LOW_CONFIDENCE_MULTIPLIER = 0.5    # Confidence <5 gets extra damping
 LOW_CONFIDENCE_THRESHOLD = 5
 FALLBACK_PCT_OF_EQUITY = 2.0       # When no probability table available
 NEGATIVE_EV_PCT_OF_EQUITY = 0.5    # Min sizing for thesis-testing negative-EV trades
+MIN_SIZING_FLOOR_PCT = 0.5         # Floor for any non-zero sizing recommendation
 
 
 @dataclass
@@ -46,6 +47,11 @@ class SizingResult:
     recommended_pct_of_equity: float
     sizing_method: str  # kelly | fixed | insufficient_data | negative_ev | capped
     notes: str          # Human-readable explanation suitable for prompt context
+    # Adaptive Kelly audit trail (Phase 6, System 9). f_base = the
+    # current adaptive base fraction (System 9 weekly stat); f_effective
+    # = f_full × f_base × calibration_ratio × confidence_scale.
+    kelly_f_base: Optional[float] = None
+    kelly_f_effective: Optional[float] = None
 
     def to_db_dict(self) -> dict:
         return {
@@ -53,6 +59,8 @@ class SizingResult:
             "recommended_dollar_amount": round(self.recommended_dollar_amount, 2),
             "recommended_pct_of_equity": round(self.recommended_pct_of_equity, 2),
             "sizing_method": self.sizing_method,
+            "kelly_f_base": round(self.kelly_f_base, 4) if self.kelly_f_base is not None else None,
+            "kelly_f_effective": round(self.kelly_f_effective, 4) if self.kelly_f_effective is not None else None,
         }
 
 
@@ -79,6 +87,56 @@ def _compute_kelly_fraction(
     return (p / avg_loss) - (q / avg_gain)
 
 
+async def _resolve_kelly_base(db) -> float:
+    """Pull the current adaptive f_base from the latest HenryStats row of
+    type adaptive_kelly. Falls back to KELLY_MULTIPLIER_DEFAULT if no
+    row exists (system 9 hasn't run yet)."""
+    try:
+        from sqlalchemy import select
+        from app.models import HenryStats
+        row = (
+            await db.execute(
+                select(HenryStats)
+                .where(HenryStats.stat_type == "adaptive_kelly")
+                .order_by(HenryStats.computed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row and row.data:
+            f_base = row.data.get("f_base")
+            if isinstance(f_base, (int, float)) and f_base > 0:
+                return float(f_base)
+    except Exception as e:
+        logger.debug(f"_resolve_kelly_base failed: {e}")
+    return KELLY_MULTIPLIER_DEFAULT
+
+
+async def _resolve_calibration_ratio(db, confidence: int) -> float:
+    """Look up the calibration ratio for this confidence bucket from
+    the latest confidence_calibration HenryStats row. Default 1.0 when
+    no calibration data exists yet (System 8 hasn't run, or insufficient
+    resolved actions in this bucket)."""
+    try:
+        from sqlalchemy import select
+        from app.models import HenryStats
+        row = (
+            await db.execute(
+                select(HenryStats)
+                .where(HenryStats.stat_type == "confidence_calibration")
+                .order_by(HenryStats.computed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row and row.data:
+            per_bucket = (row.data or {}).get("per_bucket") or {}
+            entry = per_bucket.get(str(int(confidence)))
+            if entry and entry.get("calibration_ratio"):
+                return float(entry["calibration_ratio"])
+    except Exception as e:
+        logger.debug(f"_resolve_calibration_ratio failed: {e}")
+    return 1.0
+
+
 async def compute_size(
     db,
     portfolio,
@@ -89,10 +147,15 @@ async def compute_size(
     current_price: Optional[float] = None,
 ) -> SizingResult:
     """
-    Compute recommended size for a proposed trade.
+    Compute recommended size for a proposed trade. As of Phase 6
+    System 9, this is fully adaptive — the multiplier on the full Kelly
+    fraction comes from the weekly-tuned f_base, scaled by the
+    per-confidence-bucket calibration_ratio from System 8. Falls back
+    to the original 0.25 quarter-Kelly when neither stat row exists.
 
     Args:
-        db: AsyncSession (used to look up conditional probability + holdings)
+        db: AsyncSession (used to look up conditional probability,
+            adaptive_kelly stat, calibration stat, holdings)
         portfolio: Portfolio model instance (needs .id, .cash,
                    .initial_capital, .max_pct_per_trade)
         ticker, direction, strategy_id: the proposed trade
@@ -100,7 +163,8 @@ async def compute_size(
         current_price: optional override; if None, falls back to
                        price_service then to portfolio's average entry
 
-    Returns SizingResult with all fields populated.
+    Returns SizingResult with all fields populated, including
+    kelly_f_base + kelly_f_effective for audit/display.
     """
     from sqlalchemy import select
     from app.models import HenryStats, PortfolioHolding
@@ -220,13 +284,17 @@ async def compute_size(
             ),
         )
 
-    # Apply quarter Kelly + low-confidence damping
-    multiplier = KELLY_MULTIPLIER
+    # Adaptive Kelly multiplier (Phase 6, System 9):
+    #   f_effective = f_full × f_base × calibration_ratio × confidence_scale
+    # Each of the three modifiers comes from a stats row; sensible
+    # defaults make this work even before Systems 8/9 have run.
     confidence = max(1, min(10, int(confidence or 5)))
-    if confidence < LOW_CONFIDENCE_THRESHOLD:
-        multiplier *= LOW_CONFIDENCE_MULTIPLIER
+    f_base = await _resolve_kelly_base(db)
+    calibration_ratio = await _resolve_calibration_ratio(db, confidence)
+    confidence_scale = LOW_CONFIDENCE_MULTIPLIER if confidence < LOW_CONFIDENCE_THRESHOLD else 1.0
 
-    raw_pct = kelly * multiplier * 100.0  # convert fraction → percent of equity
+    f_effective = kelly * f_base * calibration_ratio * confidence_scale
+    raw_pct = f_effective * 100.0
     capped_pct = min(raw_pct, cap_pct)
     method = "kelly" if capped_pct == raw_pct else "capped"
 
@@ -234,6 +302,11 @@ async def compute_size(
     existing_value = await _existing_ticker_value(db, ticker)
     existing_pct = (existing_value / equity) * 100.0 if equity > 0 else 0.0
     incremental_pct = max(0.0, capped_pct - existing_pct)
+
+    # Floor: any non-zero recommendation should be at least 0.5% of
+    # equity (avoids share counts that round to 0 on small portfolios).
+    if 0 < incremental_pct < MIN_SIZING_FLOOR_PCT:
+        incremental_pct = MIN_SIZING_FLOOR_PCT
 
     if incremental_pct <= 0:
         return _build_result(
@@ -246,13 +319,16 @@ async def compute_size(
                 f"Kelly target {capped_pct:.1f}% of equity already met by "
                 f"existing {ticker} exposure ({existing_pct:.1f}%). No add."
             ),
+            kelly_f_base=f_base,
+            kelly_f_effective=f_effective,
         )
 
     notes = (
-        f"Quarter-Kelly sizing: f*={kelly:.3f}, multiplier={multiplier:.2f} "
-        f"(confidence {confidence}/10) → {raw_pct:.1f}% target, "
-        f"capped at {capped_pct:.1f}% (limit {cap_pct:.1f}%). "
-        f"Incremental {incremental_pct:.1f}% after existing {existing_pct:.1f}%. "
+        f"Adaptive Kelly: f*={kelly:.3f} × f_base={f_base:.2f} × "
+        f"calibration={calibration_ratio:.2f} × conf_scale={confidence_scale:.2f} "
+        f"→ {raw_pct:.2f}% target, capped at {capped_pct:.2f}% "
+        f"(limit {cap_pct:.1f}%). "
+        f"Incremental {incremental_pct:.2f}% after existing {existing_pct:.2f}%. "
         f"Based on {strategy_id}×{ticker}: {win_rate:.1f}% win, "
         f"+{avg_gain:.2f}% / {avg_loss:.2f}% over {n_trades} trades."
     )
@@ -263,6 +339,8 @@ async def compute_size(
         price=price,
         sizing_method=method,
         notes=notes,
+        kelly_f_base=f_base,
+        kelly_f_effective=f_effective,
     )
 
 
@@ -297,6 +375,8 @@ def _build_result(
     price: float,
     sizing_method: str,
     notes: str,
+    kelly_f_base: Optional[float] = None,
+    kelly_f_effective: Optional[float] = None,
 ) -> SizingResult:
     target_pct = max(0.0, target_pct)
     dollar = equity * (target_pct / 100.0)
@@ -307,6 +387,8 @@ def _build_result(
         recommended_pct_of_equity=target_pct,
         sizing_method=sizing_method,
         notes=notes,
+        kelly_f_base=kelly_f_base,
+        kelly_f_effective=kelly_f_effective,
     )
 
 
@@ -324,8 +406,13 @@ async def apply_sizing_to_action(
 ) -> Optional[SizingResult]:
     """
     Look up the portfolio for an action, compute size via compute_size,
-    and write the result onto the action's recommended_* + sizing_method
-    fields. No-op for SELL/TRIM/CLOSE/REBALANCE.
+    write the result onto the action's recommended_* + sizing_method +
+    kelly_f_* fields, AND populate injected_memory_ids from the current
+    task's ContextVar (Phase 6, System 7 outcome linkage).
+
+    Sizing is no-op for SELL/TRIM/CLOSE/REBALANCE, but the
+    injected_memory_ids capture happens unconditionally — every action
+    benefits from outcome linkage when its trade resolves.
 
     Returns the SizingResult so the caller can include `notes` in
     Henry's reasoning if desired. None when sizing was skipped or
@@ -333,6 +420,17 @@ async def apply_sizing_to_action(
     """
     if not action or not getattr(action, "action_type", None):
         return None
+
+    # Always capture the injected memory IDs so outcome resolution can
+    # nudge importance later — independent of whether sizing applies.
+    try:
+        from app.services.ai_service import get_last_injected_memory_ids
+        ids = get_last_injected_memory_ids()
+        if ids:
+            action.injected_memory_ids = ids
+    except Exception:
+        pass
+
     if action.action_type.upper() not in SIZE_ACTION_TYPES:
         return None
 

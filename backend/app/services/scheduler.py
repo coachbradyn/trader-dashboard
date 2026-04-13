@@ -819,6 +819,27 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Adaptive Kelly weekly self-adjustment (intelligence upgrade
+    # Phase 6, System 9). Sundays at 11pm ET — runs after the trading
+    # week is fully resolved but before Monday open. Weekly rather than
+    # daily because daily adjustment is too noisy at our trade frequency.
+    async def _run_adaptive_kelly_weekly():
+        from app.database import async_session
+        from app.services.henry_stats_engine import compute_adaptive_kelly_weekly
+        try:
+            async with async_session() as db:
+                await compute_adaptive_kelly_weekly(db)
+                await db.commit()
+        except Exception as e:
+            logger.error(f"adaptive_kelly_weekly failed: {e}")
+
+    scheduler.add_job(
+        _run_adaptive_kelly_weekly,
+        CronTrigger(day_of_week="sun", hour=23, minute=0, timezone=ET),
+        id="adaptive_kelly_weekly",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started (all times US Eastern): morning (9:30 AM), nightly (4:15 PM), "

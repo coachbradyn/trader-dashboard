@@ -30,8 +30,12 @@ class HenryMemory(Base):
     ticker: Mapped[str | None] = mapped_column(String(10), index=True)
     # The actual memory content
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # How confident/important this memory is (1-10)
-    importance: Mapped[int] = mapped_column(Integer, default=5)
+    # How confident/important this memory is (1-10). Stored as Float so
+    # System 7's outcome-driven nudges (+0.3 on win, -0.15 on loss) and
+    # the nightly multiplicative decay (×0.85) can accumulate without
+    # rounding artifacts. Read sites still treat it as a 1-10 number;
+    # the underlying type just allows finer-grained drift.
+    importance: Mapped[float] = mapped_column(Float, default=5.0)
     # How many times this memory has been referenced in analysis
     reference_count: Mapped[int] = mapped_column(Integer, default=0)
     # Was this memory validated by outcomes? (null = not yet validated)
@@ -56,6 +60,12 @@ class HenryMemory(Base):
     # cluster vs the next-nearest one. Populated by fit_memory_clusters.
     # Drives the "silhouette coloring" viz mode (outliers desaturated).
     cluster_silhouette: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    # Decay bookkeeping (intelligence upgrade Phase 6, System 7).
+    # Updated whenever a memory is selected by Top-K retrieval. The nightly
+    # _compute_memory_decay stage uses last_retrieved_at to decide which
+    # memories to decay and which to mark as pruning candidates.
+    last_retrieved_at: Mapped[datetime | None] = mapped_column(nullable=True, default=None)
+    retrieval_count: Mapped[int] = mapped_column(Integer, default=0)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     updated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), onupdate=lambda: utcnow())
