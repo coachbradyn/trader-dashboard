@@ -290,6 +290,150 @@ async def delete_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": memory_id}
 
 
+@router.post("/admin/ensure-schema")
+async def admin_ensure_schema(
+    secret: str = Query(..., description="ADMIN_SECRET"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Idempotently ensure the memory-related columns and indexes exist.
+
+    This is a belt-and-suspenders recovery path for when Alembic migrations
+    don't run at deploy (the railway.toml startCommand uses `|| true` on
+    alembic upgrade head, so a failing migration is silent). The endpoint
+    issues `ADD COLUMN IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` so
+    it's safe to run any number of times — it just reports what it did.
+
+    After success, also bumps the alembic_version row to the latest head
+    so subsequent `alembic upgrade head` invocations see a clean state
+    and don't try to re-apply migrations we already satisfied here.
+
+    Postgres-only (uses IF NOT EXISTS on ALTER TABLE). SQLite dev DBs
+    don't need this — alembic works fine locally.
+    """
+    _require_admin(secret)
+
+    from sqlalchemy import text
+
+    changes: list[str] = []
+
+    # Detect dialect — we need Postgres. On SQLite, alembic should just work.
+    dialect = db.bind.dialect.name if db.bind else None
+    if dialect != "postgresql":
+        return {
+            "ok": False,
+            "reason": f"ensure-schema is Postgres-only (detected dialect: {dialect}). Run `alembic upgrade head` locally instead.",
+        }
+
+    # All statements below are idempotent.
+    ddl_statements: list[tuple[str, str]] = [
+        (
+            "add_embedding_column",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS embedding JSON",
+        ),
+        (
+            "add_embedding_model_column",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(50)",
+        ),
+        (
+            "add_cluster_id_column",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
+        ),
+        (
+            "create_cluster_id_index",
+            "CREATE INDEX IF NOT EXISTS ix_henry_memory_cluster_id ON henry_memory (cluster_id)",
+        ),
+    ]
+
+    # Check which columns exist before attempting the DDL so we can report
+    # precisely what was added versus already-present.
+    existing_cols_result = await db.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'henry_memory'"
+        )
+    )
+    existing_cols = {row[0] for row in existing_cols_result.all()}
+
+    target_cols = {"embedding", "embedding_model", "cluster_id"}
+    missing_before = target_cols - existing_cols
+
+    try:
+        for name, stmt in ddl_statements:
+            try:
+                await db.execute(text(stmt))
+                changes.append(f"executed:{name}")
+            except Exception as e:
+                # ADD COLUMN IF NOT EXISTS is Postgres 9.6+; if an older
+                # Postgres complains, fall back to a try/except around a
+                # plain ADD COLUMN and swallow "already exists" errors.
+                err_msg = str(e).lower()
+                if "already exists" in err_msg or "duplicate" in err_msg:
+                    changes.append(f"skipped:{name} (already exists)")
+                else:
+                    changes.append(f"failed:{name} — {str(e)[:200]}")
+                    raise
+
+        # Bump alembic_version to the latest head so future deploys don't
+        # try to re-apply these migrations (and fail on already-existing
+        # columns without IF NOT EXISTS).
+        latest_head = "k152637485f7"
+        try:
+            version_result = await db.execute(
+                text("SELECT version_num FROM alembic_version LIMIT 1")
+            )
+            current_version = version_result.scalar_one_or_none()
+            if current_version != latest_head:
+                if current_version is None:
+                    await db.execute(
+                        text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+                        {"v": latest_head},
+                    )
+                    changes.append(f"alembic_version: set → {latest_head}")
+                else:
+                    await db.execute(
+                        text("UPDATE alembic_version SET version_num = :v"),
+                        {"v": latest_head},
+                    )
+                    changes.append(
+                        f"alembic_version: {current_version} → {latest_head}"
+                    )
+            else:
+                changes.append(f"alembic_version: already at {latest_head}")
+        except Exception as e:
+            # alembic_version table might not exist — not fatal.
+            changes.append(f"alembic_version: skipped ({str(e)[:120]})")
+
+        await db.commit()
+
+        existing_cols_after_result = await db.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'henry_memory'"
+            )
+        )
+        existing_cols_after = {row[0] for row in existing_cols_after_result.all()}
+        missing_after = target_cols - existing_cols_after
+
+        return {
+            "ok": len(missing_after) == 0,
+            "missing_before": sorted(missing_before),
+            "missing_after": sorted(missing_after),
+            "changes": changes,
+        }
+    except Exception as e:
+        logger.exception("ensure-schema failed")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "reason": f"{type(e).__name__}: {str(e)[:300]}",
+            "changes": changes,
+        }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # ADMIN ENDPOINTS — backfill embeddings + fit clusters without shell access
 # ══════════════════════════════════════════════════════════════════════════

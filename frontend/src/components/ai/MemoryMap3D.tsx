@@ -244,6 +244,37 @@ export function MemoryMap3D() {
     return entered;
   };
 
+  const runEnsureSchema = async () => {
+    const secret = promptSecret();
+    if (!secret) return;
+    setAdminBusy("schema");
+    setAdminMsg("Ensuring schema…");
+    try {
+      const res = await api.adminEnsureSchema(secret);
+      const missingBefore = res.missing_before ?? [];
+      const changesLine =
+        res.changes && res.changes.length
+          ? ` — ${res.changes.join(" · ")}`
+          : "";
+      if (res.ok) {
+        if (missingBefore.length === 0) {
+          setAdminMsg(`Schema was already complete${changesLine}`);
+        } else {
+          setAdminMsg(
+            `Schema updated — added ${missingBefore.join(", ")}${changesLine}`
+          );
+        }
+        await loadHealth();
+      } else {
+        setAdminMsg(`Schema ensure failed: ${res.reason || "unknown"}${changesLine}`);
+      }
+    } catch (e) {
+      setAdminMsg(`Schema request failed: ${(e as Error).message}`);
+    } finally {
+      setAdminBusy(null);
+    }
+  };
+
   const runBackfill = async () => {
     const secret = promptSecret();
     if (!secret) return;
@@ -318,11 +349,19 @@ export function MemoryMap3D() {
         Admin — initialize memory system
       </p>
       <p className="text-xs text-gray-500">
-        First-time setup when you can&apos;t run CLI scripts. Embeds every
-        memory that lacks a vector, then fits gaussian clusters. Requires
-        ADMIN_SECRET.
+        First-time setup when you can&apos;t run CLI scripts. Run in order:
+        (0) create missing columns if the migration didn&apos;t land,
+        (1) embed every memory that lacks a vector, (2) fit gaussian
+        clusters. Requires ADMIN_SECRET. All steps are idempotent.
       </p>
       <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          onClick={runEnsureSchema}
+          disabled={adminBusy !== null}
+          className="text-xs px-3 py-1.5 rounded bg-[#f59e0b]/15 text-[#f59e0b] hover:bg-[#f59e0b]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {adminBusy === "schema" ? "Ensuring…" : "0. Ensure schema"}
+        </button>
         <button
           onClick={runBackfill}
           disabled={adminBusy !== null}

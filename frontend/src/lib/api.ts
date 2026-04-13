@@ -444,6 +444,17 @@ export const api = {
     fetchApi<import("./types").MemoryEmbeddingsHealth>(
       "/memory/embeddings/health"
     ),
+  adminEnsureSchema: (secret: string) =>
+    fetchApi<{
+      ok: boolean;
+      reason?: string;
+      missing_before?: string[];
+      missing_after?: string[];
+      changes?: string[];
+    }>(
+      "/memory/admin/ensure-schema?secret=" + encodeURIComponent(secret),
+      { method: "POST" }
+    ),
   adminBackfillEmbeddings: (secret: string) =>
     fetchApi<{ ok: boolean; reason?: string; state: Record<string, unknown> }>(
       "/memory/admin/backfill-embeddings?secret=" + encodeURIComponent(secret),
