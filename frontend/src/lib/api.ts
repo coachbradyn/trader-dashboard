@@ -526,6 +526,30 @@ export const api = {
       "/memory/admin/bulk-delete?secret=" + encodeURIComponent(secret),
       { method: "POST", body: JSON.stringify({ ids }) }
     ),
+  // ─── Phase 7: Bayesian optimization ────────────────────────────────
+  getOptimizationStatus: () =>
+    fetchApi<import("./types").OptimizationStatus>("/optimization/status"),
+  adminOptimizationRunNow: (secret: string) =>
+    fetchApi<{ ok: boolean; reason?: string; summary?: Record<string, unknown> }>(
+      "/optimization/admin/run-now?secret=" + encodeURIComponent(secret),
+      { method: "POST" }
+    ),
+  adminOptimizationAdopt: (
+    secret: string,
+    body: { adopt_latest_suggestion?: boolean; params?: Record<string, number> }
+  ) =>
+    fetchApi<{ ok: boolean; reason?: string; adopted?: Record<string, number>; source?: string }>(
+      "/optimization/admin/adopt?secret=" + encodeURIComponent(secret),
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  adminOptimizationReject: (secret: string, notes?: string) => {
+    const sp = new URLSearchParams({ secret });
+    if (notes) sp.set("notes", notes);
+    return fetchApi<{ ok: boolean; reason?: string }>(
+      "/optimization/admin/reject?" + sp.toString(),
+      { method: "POST" }
+    );
+  },
   adminMergeMemory: (
     secret: string,
     body: { keep_id: string; drop_id: string; bump_importance?: boolean }

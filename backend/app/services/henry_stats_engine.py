@@ -736,7 +736,7 @@ CALIBRATION_MIN_TOTAL = 10  # below this, skip prompt injection entirely
 async def _compute_confidence_calibration(db):
     """
     For each confidence bucket (1-10), compute:
-      - n: resolved actions in bucket within CALIBRATION_WINDOW_DAYS
+      - n: resolved actions in bucket within calibration_window_days
       - actual_win_rate: wins / n (when outcome_correct is set)
       - predicted_win_rate: stated confidence / 10 as a proxy
       - calibration_ratio: actual / predicted (>1 = underconfident,
@@ -745,13 +745,18 @@ async def _compute_confidence_calibration(db):
     Also stores aggregated 3-tier rollup (high/medium/low) for the
     prompt-injection helper to read directly. System 9 (Adaptive Kelly)
     consumes the per-bucket calibration_ratio.
+
+    Phase 7: calibration_window_days sourced from runtime_config so
+    System 10 can tune the rolling window length.
     """
     from collections import defaultdict
     from datetime import timedelta
     from sqlalchemy import select
     from app.models import PortfolioAction
+    from app.services import runtime_config as _rc
 
-    cutoff = utcnow() - timedelta(days=CALIBRATION_WINDOW_DAYS)
+    window_days = int(await _rc.get_async("calibration_window_days") or CALIBRATION_WINDOW_DAYS)
+    cutoff = utcnow() - timedelta(days=window_days)
     rows = list(
         (
             await db.execute(
@@ -820,7 +825,7 @@ async def _compute_confidence_calibration(db):
         db,
         "confidence_calibration",
         {
-            "window_days": CALIBRATION_WINDOW_DAYS,
+            "window_days": window_days,
             "n_total": total_n,
             "sufficient_for_prompt": total_n >= CALIBRATION_MIN_TOTAL,
             "per_bucket": per_bucket,
@@ -831,7 +836,7 @@ async def _compute_confidence_calibration(db):
             },
             "ran_at": utcnow().isoformat() + "Z",
         },
-        period_days=CALIBRATION_WINDOW_DAYS,
+        period_days=window_days,
     )
     logger.info(
         f"Confidence calibration: n={total_n} resolved actions; "

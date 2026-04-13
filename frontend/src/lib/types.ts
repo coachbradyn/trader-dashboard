@@ -1086,3 +1086,62 @@ export interface MemoryEmbeddingsHealth {
   model_distribution: Record<string, number>;
   cluster_distribution: Record<string, number>;
 }
+
+// ─── Phase 7: Bayesian hyperparameter optimization ──────────────────────────
+
+export interface HyperParamSpec {
+  name: string;
+  kind: "int" | "float";
+  low: number;
+  high: number;
+  default: number;
+  consumer: string;
+  notes: string;
+}
+
+export interface BayesianObjective {
+  adjusted_sharpe: number;
+  raw_sharpe: number;
+  mean_daily_return: number;
+  std_daily_return: number;
+  max_drawdown: number;
+  trade_count: number;
+  trading_days_with_activity: number;
+}
+
+export interface BayesianObservation {
+  ts?: string;
+  params: Record<string, number>;
+  objective: BayesianObjective | null;
+  skip_reason?: string | null;
+}
+
+export interface BayesianSuggestion {
+  ts: string;
+  params: Record<string, number>;
+  ei: number;
+  predicted_mean: number;
+  predicted_std: number;
+  current_best_objective: number;
+  n_observations: number;
+  current_config: Record<string, number>;
+  diff_vs_current: Record<string, { from: number; to: number; delta_pct?: number }>;
+  adopted: boolean;
+  adopted_at?: string;
+  rejected: boolean;
+  rejected_at?: string;
+  notes?: string;
+}
+
+export interface OptimizationStatus {
+  search_space: HyperParamSpec[];
+  defaults: Record<string, number>;
+  current_config: Record<string, number>;
+  current_config_source: string;
+  current_config_adopted_at: string | null;
+  n_observations: number;
+  n_observations_with_objective: number;
+  latest_observation: BayesianObservation | null;
+  best_observation: { objective: BayesianObjective; params: Record<string, number>; ts?: string } | null;
+  latest_suggestion: BayesianSuggestion | null;
+}

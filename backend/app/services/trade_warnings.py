@@ -27,10 +27,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# Concentration thresholds — match the brief; tunable here without code
-# changes elsewhere.
-TICKER_EXPOSURE_WARN_PCT = 15.0
-SECTOR_EXPOSURE_WARN_PCT = 35.0
+# Concentration thresholds — defaults only. Phase 7 routes the live
+# values through runtime_config (function-local lookup shadows these).
+TICKER_WARN_PCT_DEFAULT = 15.0
+SECTOR_WARN_PCT_DEFAULT = 35.0
 STRATEGY_CORR_WARN_PCT = 70.0
 
 
@@ -147,12 +147,25 @@ async def compute_trade_warnings(
         correlation matrix against currently-open strategies
       - proposed_value_dollars: if provided, exposure is calculated
         AFTER the proposed trade. Otherwise, current exposure only.
+
+    Phase 7: ticker + sector concentration limits sourced from
+    runtime_config (note the search-space values are FRACTIONS in
+    [0, 1]; the warning thresholds are PERCENTS so we multiply ×100).
     """
     if not ticker:
         return []
     ticker = ticker.upper()
     direction_norm = (direction or "").lower() if direction else None
     warnings: list[str] = []
+
+    # Resolve thresholds from runtime_config (fractions) → percents.
+    from app.services import runtime_config as _rc
+    ticker_warn_pct = float(
+        await _rc.get_async("concentration_limit_ticker") or (TICKER_WARN_PCT_DEFAULT / 100.0)
+    ) * 100.0
+    sector_warn_pct = float(
+        await _rc.get_async("concentration_limit_sector") or (SECTOR_WARN_PCT_DEFAULT / 100.0)
+    ) * 100.0
 
     holdings = await _portfolio_holdings_with_value(db)
     if not holdings:
@@ -167,17 +180,17 @@ async def compute_trade_warnings(
     proposed_ticker_value = ticker_value + (proposed_value_dollars or 0.0)
     proposed_total = total_value + (proposed_value_dollars or 0.0)
     ticker_pct = (proposed_ticker_value / proposed_total) * 100.0 if proposed_total > 0 else 0.0
-    if ticker_pct > TICKER_EXPOSURE_WARN_PCT:
+    if ticker_pct > ticker_warn_pct:
         if proposed_value_dollars:
             warnings.append(
                 f"WARNING: Adding to {ticker} would bring total exposure to "
                 f"{ticker_pct:.1f}% of portfolio (concentration limit "
-                f"{TICKER_EXPOSURE_WARN_PCT:.0f}%)."
+                f"{ticker_warn_pct:.0f}%)."
             )
         else:
             warnings.append(
                 f"WARNING: {ticker} already at {ticker_pct:.1f}% of portfolio "
-                f"(concentration limit {TICKER_EXPOSURE_WARN_PCT:.0f}%). "
+                f"(concentration limit {ticker_warn_pct:.0f}%). "
                 f"Treat any add as breaching guidance."
             )
 
@@ -196,11 +209,11 @@ async def compute_trade_warnings(
                 sector_value += h["value"]
         proposed_sector_value = sector_value + (proposed_value_dollars or 0.0)
         sector_pct = (proposed_sector_value / proposed_total) * 100.0 if proposed_total > 0 else 0.0
-        if sector_pct > SECTOR_EXPOSURE_WARN_PCT:
+        if sector_pct > sector_warn_pct:
             verb = "would reach" if proposed_value_dollars else "is at"
             warnings.append(
                 f"WARNING: {sector} sector exposure {verb} {sector_pct:.1f}% "
-                f"of portfolio (limit {SECTOR_EXPOSURE_WARN_PCT:.0f}%). "
+                f"of portfolio (limit {sector_warn_pct:.0f}%). "
                 f"Consider sector diversification."
             )
 
