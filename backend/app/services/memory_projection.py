@@ -112,6 +112,8 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             HenryMemory.cluster_silhouette,
             HenryMemory.importance,
             HenryMemory.reference_count,
+            HenryMemory.retrieval_count,       # System 7 / #41
+            HenryMemory.last_retrieved_at,     # System 7 / #41
             HenryMemory.memory_type,
             HenryMemory.ticker,
             HenryMemory.strategy_id,
@@ -217,6 +219,11 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             ),
             "importance": int(r.importance or 5),
             "reference_count": int(r.reference_count or 0),
+            "retrieval_count": int(r.retrieval_count or 0),
+            "last_retrieved_at": (
+                r.last_retrieved_at.isoformat() + "Z"
+                if r.last_retrieved_at else None
+            ),
             "memory_type": r.memory_type,
             "ticker": r.ticker,
             "strategy_id": r.strategy_id,
@@ -226,10 +233,58 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             "updated_at": updated_iso,
         })
 
+    # Pre-compute per-cluster aging stats (carryover #41). Each memory
+    # contributes to its effective cluster (override or auto). Stats
+    # attached to each cluster_out entry so the 3D tooltip can show
+    # "hot" vs "stale" at a glance.
+    from collections import defaultdict
+    now_ts = utcnow()
+    cluster_aging: dict[int, dict] = defaultdict(
+        lambda: {
+            "total": 0,
+            "never_retrieved": 0,
+            "decayed": 0,           # importance < 3
+            "recency_days_sum": 0.0,
+            "recency_days_count": 0,
+            "avg_importance_sum": 0.0,
+        }
+    )
+    for r in rows:
+        cid = (
+            r.cluster_id_override
+            if r.cluster_id_override is not None
+            else r.cluster_id
+        )
+        if cid is None:
+            continue
+        bucket = cluster_aging[int(cid)]
+        bucket["total"] += 1
+        bucket["avg_importance_sum"] += float(r.importance or 0.0)
+        if r.importance is not None and float(r.importance) < 3.0:
+            bucket["decayed"] += 1
+        if r.last_retrieved_at is None:
+            bucket["never_retrieved"] += 1
+        else:
+            delta = (now_ts - r.last_retrieved_at).total_seconds() / 86400.0
+            bucket["recency_days_sum"] += delta
+            bucket["recency_days_count"] += 1
+
     clusters_out = []
     for m, xyz in zip(centroid_meta, cen_coords):
+        cid = int(m.get("id"))
+        aging = cluster_aging.get(cid, {})
+        total = aging.get("total", 0) or 0
+        recency_n = aging.get("recency_days_count", 0) or 0
+        avg_recency_days = (
+            round(aging["recency_days_sum"] / recency_n, 1)
+            if recency_n > 0 else None
+        )
+        avg_importance = (
+            round(aging["avg_importance_sum"] / total, 2)
+            if total > 0 else None
+        )
         clusters_out.append({
-            "id": int(m.get("id")),
+            "id": cid,
             "x": float(xyz[0]),
             "y": float(xyz[1]),
             "z": float(xyz[2]),
@@ -237,6 +292,12 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             "weight": float(m.get("weight", 0.0)),
             "label": m.get("label"),
             "prototype_memory_id": m.get("prototype_memory_id"),
+            # Aging metrics — carryover #41. None when cluster has no
+            # retrieved memories yet.
+            "avg_days_since_retrieval": avg_recency_days,
+            "never_retrieved_count": int(aging.get("never_retrieved", 0)),
+            "decayed_count": int(aging.get("decayed", 0)),
+            "avg_importance": avg_importance,
         })
 
     from app.utils.utc import utcnow

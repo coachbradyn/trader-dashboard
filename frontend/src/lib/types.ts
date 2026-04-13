@@ -896,6 +896,8 @@ export interface MemoryProjectionPoint {
   silhouette: number | null;
   importance: number;
   reference_count: number;
+  retrieval_count?: number;            // System 7 bookkeeping
+  last_retrieved_at?: string | null;    // System 7 / #41
   memory_type: string;
   ticker: string | null;
   strategy_id: string | null;
@@ -914,6 +916,12 @@ export interface MemoryProjectionCluster {
   weight: number;
   label: string | null;
   prototype_memory_id: string | null;
+  // Aging metrics (carryover #41) — null when cluster has no
+  // retrieved/scored members yet.
+  avg_days_since_retrieval?: number | null;
+  never_retrieved_count?: number;
+  decayed_count?: number;
+  avg_importance?: number | null;
 }
 
 export interface MemoryClusterQuality {

@@ -114,11 +114,25 @@ function silhouetteColor(sil: number | null | undefined): string {
   return lerpHex("#6b7280", "#10b981", (t - 0.5) * 2);       // gray → emerald
 }
 
+// Retrieval recency (carryover #41) → red (stale / never retrieved) →
+// gray → green (fresh). Time scale: 0d → 30d+. Distinct from "age"
+// (which is created_at) — recency tracks last_retrieved_at so an old
+// memory that's still actively pulled stays green.
+function recencyColor(lastRetrievedAt: string | null | undefined): string {
+  if (!lastRetrievedAt) return "#ef4444"; // never retrieved — stale
+  const days =
+    (Date.now() - new Date(lastRetrievedAt).getTime()) / 86_400_000;
+  const t = Math.max(0, Math.min(1, days / 30)); // 0-30d → 0-1
+  if (t < 0.5) return lerpHex("#10b981", "#6b7280", t * 2); // emerald → gray
+  return lerpHex("#6b7280", "#ef4444", (t - 0.5) * 2);       // gray → red
+}
+
 export type ColorMode =
   | "cluster"
   | "type"
   | "importance"
   | "age"
+  | "recency"
   | "reference"
   | "silhouette";
 
@@ -137,6 +151,8 @@ function colorForPoint(
       return importanceColor(p.importance);
     case "age":
       return ageColor(p.created_at);
+    case "recency":
+      return recencyColor(p.last_retrieved_at);
     case "reference":
       return referenceColor(p.reference_count);
     case "silhouette":
@@ -1401,7 +1417,8 @@ export function MemoryMap3D() {
             <option value="cluster">cluster</option>
             <option value="type">memory type</option>
             <option value="importance">importance</option>
-            <option value="age">age</option>
+            <option value="age">age (created)</option>
+            <option value="recency">recency (last retrieved)</option>
             <option value="reference">reference count</option>
             <option value="silhouette">silhouette</option>
           </select>
@@ -1600,6 +1617,60 @@ export function MemoryMap3D() {
             <p className="text-gray-200 leading-relaxed">
               {hovered.content_preview || "(no preview)"}
             </p>
+            {/* Per-memory recency line — carryover #41. Shows when this
+                memory was last pulled by a retrieval; 'never' for brand-new
+                memories. Paired with the cluster aging block below for
+                context about the neighborhood. */}
+            {hovered.last_retrieved_at !== undefined && (
+              <p className="text-[10px] text-gray-500 mt-1.5 font-mono">
+                Last retrieved:{" "}
+                {hovered.last_retrieved_at
+                  ? (() => {
+                      const d =
+                        (Date.now() -
+                          new Date(hovered.last_retrieved_at).getTime()) /
+                        86_400_000;
+                      if (d < 1) return `${Math.round(d * 24)}h ago`;
+                      return `${d.toFixed(1)}d ago`;
+                    })()
+                  : "never"}
+                {hovered.retrieval_count !== undefined &&
+                  ` · ${hovered.retrieval_count} total pulls`}
+              </p>
+            )}
+            {/* Cluster aging block — carryover #41. Surfaces "hot" vs
+                "stale" status of the hovered memory's cluster so the user
+                can read neighborhood health at a glance. */}
+            {hovered.cluster_id !== null &&
+              (() => {
+                const c = projection.clusters.find(
+                  (x) => x.id === hovered.cluster_id
+                );
+                if (!c) return null;
+                const avgDays = c.avg_days_since_retrieval;
+                const stale = c.never_retrieved_count ?? 0;
+                const decayed = c.decayed_count ?? 0;
+                const avgImp = c.avg_importance;
+                const bits: string[] = [];
+                if (avgDays !== null && avgDays !== undefined) {
+                  bits.push(`avg ${avgDays.toFixed(1)}d since retrieval`);
+                }
+                if (avgImp !== null && avgImp !== undefined) {
+                  bits.push(`avg importance ${avgImp.toFixed(1)}/10`);
+                }
+                if (stale > 0) bits.push(`${stale} never retrieved`);
+                if (decayed > 0) bits.push(`${decayed} decayed`);
+                if (!bits.length) return null;
+                // Loose heuristic for status color
+                const hot = avgDays !== null && avgDays !== undefined && avgDays < 7;
+                const cold = avgDays !== null && avgDays !== undefined && avgDays > 30;
+                const hue = hot ? "text-emerald-400" : cold ? "text-red-400" : "text-amber-400";
+                return (
+                  <p className={"text-[10px] mt-0.5 font-mono " + hue}>
+                    Cluster aging: {bits.join(" · ")}
+                  </p>
+                );
+              })()}
             <p className="text-[10px] text-gray-600 mt-1.5 italic">
               Click to open in Memory tab · Right-click to delete
             </p>
