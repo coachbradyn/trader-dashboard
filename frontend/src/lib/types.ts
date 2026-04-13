@@ -1053,6 +1053,37 @@ export interface ForgetCandidatesResponse {
   candidates: ForgetCandidate[];
 }
 
+// Cross-session memory diff (carryover #42)
+export interface MemoryDiffEntry {
+  id: string;
+  memory_type: string;
+  ticker: string | null;
+  strategy_id: string | null;
+  importance: number | null;
+  reference_count: number;
+  retrieval_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+  last_retrieved_at: string | null;
+  validated: boolean | null;
+  source: string;
+  cluster_id: number | null;
+  content_preview: string;
+}
+
+export interface MemoryDiffResponse {
+  since: string;
+  total_memories: number;
+  summary: {
+    created: number;
+    retrieved: number;
+    updated: number;
+  };
+  created: MemoryDiffEntry[];
+  retrieved: MemoryDiffEntry[];
+  updated: MemoryDiffEntry[];
+}
+
 export interface RetrievalEvent {
   ts: number; // epoch seconds
   function_name: string;

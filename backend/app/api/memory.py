@@ -1569,6 +1569,130 @@ class ReassignClusterRequest(BaseModel):
     cluster_id: int | None  # int → set override; null → clear override
 
 
+@router.get("/diff")
+async def memory_diff(
+    since: str = Query(..., description="ISO timestamp to diff against"),
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cross-session diff (carryover #42). Compare current memory state
+    against a prior point in time. Three dimensions:
+
+      - created  — memories created after `since`
+      - retrieved — memories retrieved after `since` (last_retrieved_at
+                    > since) that existed before
+      - updated  — memories whose updated_at > since but created_at ≤ since
+                   (importance nudges, validation flips, content edits)
+
+    Use cases:
+      - Morning review: since=yesterday's open → what did Henry learn?
+      - Weekly review:  since=last Monday     → what memories moved?
+      - Post-trade:     since=trade entry     → which memories informed it?
+
+    No schema changes — reads existing created_at, updated_at,
+    last_retrieved_at, retrieval_count + importance fields.
+    """
+    from datetime import datetime as _dt
+    try:
+        # Accept ISO with or without trailing Z
+        raw = since.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        cutoff = _dt.fromisoformat(raw)
+        # Strip tz to match the naive utcnow()-derived timestamps on our rows
+        if cutoff.tzinfo is not None:
+            cutoff = cutoff.astimezone(tz=None).replace(tzinfo=None)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(
+            400,
+            f"Invalid `since` timestamp: {e}. Use ISO format like "
+            f"2026-04-13T00:00:00 or 2026-04-13T00:00:00Z.",
+        )
+
+    from sqlalchemy import or_ as _or, and_ as _and
+
+    # Created after cutoff
+    created_rows = list(
+        (
+            await db.execute(
+                select(HenryMemory)
+                .where(HenryMemory.created_at > cutoff)
+                .order_by(HenryMemory.created_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+    # Retrieved after cutoff AND existed before it
+    retrieved_rows = list(
+        (
+            await db.execute(
+                select(HenryMemory)
+                .where(HenryMemory.last_retrieved_at.is_not(None))
+                .where(HenryMemory.last_retrieved_at > cutoff)
+                .where(HenryMemory.created_at <= cutoff)
+                .order_by(HenryMemory.last_retrieved_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+    # Updated (but not freshly created) — probably importance nudges
+    # from outcome resolution or user edits.
+    updated_rows = list(
+        (
+            await db.execute(
+                select(HenryMemory)
+                .where(HenryMemory.updated_at > cutoff)
+                .where(HenryMemory.created_at <= cutoff)
+                .order_by(HenryMemory.updated_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+
+    # Totals for headline counters
+    totals_q = await db.execute(select(func.count(HenryMemory.id)))
+    total_memories = int(totals_q.scalar() or 0)
+
+    def _serialize(m: HenryMemory) -> dict:
+        return {
+            "id": m.id,
+            "memory_type": m.memory_type,
+            "ticker": m.ticker,
+            "strategy_id": m.strategy_id,
+            "importance": float(m.importance) if m.importance is not None else None,
+            "reference_count": int(m.reference_count or 0),
+            "retrieval_count": int(m.retrieval_count or 0),
+            "created_at": m.created_at.isoformat() + "Z" if m.created_at else None,
+            "updated_at": m.updated_at.isoformat() + "Z" if m.updated_at else None,
+            "last_retrieved_at": (
+                m.last_retrieved_at.isoformat() + "Z"
+                if m.last_retrieved_at else None
+            ),
+            "validated": m.validated,
+            "source": m.source,
+            "cluster_id": (
+                m.cluster_id_override
+                if m.cluster_id_override is not None
+                else m.cluster_id
+            ),
+            "content_preview": (m.content or "")[:240].strip(),
+        }
+
+    return {
+        "since": cutoff.isoformat() + "Z",
+        "total_memories": total_memories,
+        "summary": {
+            "created": len(created_rows),
+            "retrieved": len(retrieved_rows),
+            "updated": len(updated_rows),
+        },
+        "created": [_serialize(m) for m in created_rows],
+        "retrieved": [_serialize(m) for m in retrieved_rows],
+        "updated": [_serialize(m) for m in updated_rows],
+    }
+
+
 @router.post("/admin/reassign-cluster")
 async def admin_reassign_cluster(
     body: ReassignClusterRequest,

@@ -26,6 +26,8 @@ import type {
   OrphanMemory,
   ForgetCandidate,
   ConsolidateGroup,
+  MemoryDiffResponse,
+  MemoryDiffEntry,
 } from "@/lib/types";
 
 interface Props {
@@ -34,7 +36,7 @@ interface Props {
   onChanged?: () => void;
 }
 
-type Tab = "duplicates" | "orphans" | "forget" | "consolidate";
+type Tab = "duplicates" | "orphans" | "forget" | "consolidate" | "diff";
 
 function promptSecret(): string | null {
   const cached = sessionStorage.getItem("memory_admin_secret");
@@ -53,7 +55,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
     <div className="rounded-lg border border-border bg-[#1f2937]/30">
       {/* Tabs */}
       <div className="flex gap-1 p-1.5 border-b border-border">
-        {(["duplicates", "orphans", "forget", "consolidate"] as Tab[]).map((t) => (
+        {(["duplicates", "orphans", "forget", "consolidate", "diff"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -68,6 +70,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
             {t === "orphans" && "Orphans"}
             {t === "forget" && "Forget"}
             {t === "consolidate" && "Auto-consolidate"}
+            {t === "diff" && "Diff"}
           </button>
         ))}
       </div>
@@ -77,6 +80,7 @@ export function MemoryCurationPanel({ onChanged }: Props) {
         {tab === "orphans" && <OrphansTab onChanged={onChanged} />}
         {tab === "forget" && <ForgetTab onChanged={onChanged} />}
         {tab === "consolidate" && <ConsolidateTab onChanged={onChanged} />}
+        {tab === "diff" && <DiffTab />}
       </div>
     </div>
   );
@@ -831,6 +835,296 @@ function ConsolidateTab({ onChanged }: { onChanged?: () => void }) {
       )}
     </div>
   );
+}
+
+// ─── Diff tab (carryover #42) ───────────────────────────────────────────────
+
+type DiffPreset = "24h" | "7d" | "30d" | "custom";
+
+function DiffTab() {
+  const [preset, setPreset] = useState<DiffPreset>("24h");
+  const [customIso, setCustomIso] = useState("");
+  const [diff, setDiff] = useState<MemoryDiffResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  // Section default-open flags. Created is the most interesting so
+  // it opens by default; others start collapsed to save scroll.
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    created: true,
+    retrieved: false,
+    updated: false,
+  });
+
+  const resolveSince = (): string | null => {
+    if (preset === "custom") {
+      const trimmed = customIso.trim();
+      if (!trimmed) return null;
+      // Accept plain date (2026-04-13) → assume start of day UTC
+      const hasTime = /\d{2}:\d{2}/.test(trimmed);
+      return hasTime ? trimmed : trimmed + "T00:00:00Z";
+    }
+    const now = Date.now();
+    const hours = preset === "24h" ? 24 : preset === "7d" ? 7 * 24 : 30 * 24;
+    return new Date(now - hours * 3_600_000).toISOString();
+  };
+
+  const load = async () => {
+    const since = resolveSince();
+    if (!since) {
+      setMsg("Enter a valid ISO timestamp for custom mode.");
+      return;
+    }
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await api.memoryDiff(since, 100);
+      setDiff(res);
+      setMsg(
+        `Since ${new Date(res.since).toLocaleString()} — ${res.summary.created} created · ` +
+          `${res.summary.retrieved} retrieved · ${res.summary.updated} updated ` +
+          `(${res.total_memories} total in store)`
+      );
+    } catch (e) {
+      setMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-400">
+        See what&apos;s changed in the memory store since a reference point.
+        Three buckets: newly created, retrieved (existed before, pulled by
+        Henry since), and updated (importance nudges from outcome resolution
+        or user edits). Useful for morning or post-session review.
+      </p>
+
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <label className="flex items-center gap-1.5 text-gray-400">
+          Since
+          <select
+            value={preset}
+            onChange={(e) => setPreset(e.target.value as DiffPreset)}
+            className="bg-[#0b0f19] border border-border rounded px-1.5 py-1 text-gray-200"
+          >
+            <option value="24h">last 24h</option>
+            <option value="7d">last 7 days</option>
+            <option value="30d">last 30 days</option>
+            <option value="custom">custom…</option>
+          </select>
+        </label>
+        {preset === "custom" && (
+          <input
+            type="text"
+            value={customIso}
+            onChange={(e) => setCustomIso(e.target.value)}
+            placeholder="2026-04-13 or 2026-04-13T14:30:00Z"
+            className="flex-1 min-w-[240px] bg-[#0b0f19] border border-border rounded px-2 py-1 text-gray-200 focus:border-[#6366f1] focus:outline-none"
+          />
+        )}
+        <button
+          onClick={load}
+          disabled={loading}
+          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/15 text-[#6366f1] hover:bg-[#6366f1]/25 disabled:opacity-40"
+        >
+          {loading ? "Loading…" : "Show diff"}
+        </button>
+      </div>
+
+      {msg && (
+        <p className="text-[11px] text-gray-400 font-mono break-words">{msg}</p>
+      )}
+
+      {diff && (
+        <div className="space-y-2">
+          {/* Summary pill row */}
+          <div className="flex flex-wrap gap-2">
+            <SummaryPill label="Created" count={diff.summary.created} color="#10b981" />
+            <SummaryPill label="Retrieved" count={diff.summary.retrieved} color="#6366f1" />
+            <SummaryPill label="Updated" count={diff.summary.updated} color="#f59e0b" />
+          </div>
+
+          <DiffSection
+            title="Newly created"
+            color="#10b981"
+            entries={diff.created}
+            open={openSections.created}
+            onToggle={() =>
+              setOpenSections((s) => ({ ...s, created: !s.created }))
+            }
+            hint="Memories saved after the reference point. Shows what Henry learned."
+          />
+          <DiffSection
+            title="Retrieved (pre-existing)"
+            color="#6366f1"
+            entries={diff.retrieved}
+            open={openSections.retrieved}
+            onToggle={() =>
+              setOpenSections((s) => ({ ...s, retrieved: !s.retrieved }))
+            }
+            hint="Older memories that Henry pulled into at least one AI call since then."
+            showRetrievalInfo
+          />
+          <DiffSection
+            title="Importance / outcome updated"
+            color="#f59e0b"
+            entries={diff.updated}
+            open={openSections.updated}
+            onToggle={() =>
+              setOpenSections((s) => ({ ...s, updated: !s.updated }))
+            }
+            hint="Memories nudged by outcome resolution (System 7) or edited by the user."
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryPill({
+  label,
+  count,
+  color,
+}: {
+  label: string;
+  count: number;
+  color: string;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] bg-[#1f2937]/40 border border-border"
+    >
+      <span
+        className="inline-block w-2 h-2 rounded-full"
+        style={{ backgroundColor: color }}
+      />
+      <span className="text-gray-400">{label}</span>
+      <span className="font-mono text-gray-200">{count}</span>
+    </div>
+  );
+}
+
+function DiffSection({
+  title,
+  color,
+  entries,
+  open,
+  onToggle,
+  hint,
+  showRetrievalInfo,
+}: {
+  title: string;
+  color: string;
+  entries: MemoryDiffEntry[];
+  open: boolean;
+  onToggle: () => void;
+  hint: string;
+  showRetrievalInfo?: boolean;
+}) {
+  return (
+    <div className="rounded border border-border bg-[#0b0f19]">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#1f2937]/40"
+      >
+        <span
+          className="inline-block w-2 h-2 rounded-full"
+          style={{ backgroundColor: color }}
+        />
+        <span className="text-xs text-gray-200">{title}</span>
+        <span className="text-[10px] text-gray-500 font-mono">
+          {entries.length}
+        </span>
+        <span className="ml-auto text-[10px] text-gray-500">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border max-h-[40vh] overflow-y-auto">
+          {entries.length === 0 ? (
+            <p className="text-[11px] text-gray-500 italic p-3">
+              None. {hint}
+            </p>
+          ) : (
+            <>
+              <p className="text-[10px] text-gray-500 px-3 pt-2 pb-1 italic">
+                {hint}
+              </p>
+              <div className="space-y-1 p-2">
+                {entries.map((m) => (
+                  <DiffEntryCard
+                    key={m.id}
+                    entry={m}
+                    showRetrievalInfo={showRetrievalInfo}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiffEntryCard({
+  entry,
+  showRetrievalInfo,
+}: {
+  entry: MemoryDiffEntry;
+  showRetrievalInfo?: boolean;
+}) {
+  const ts = showRetrievalInfo
+    ? entry.last_retrieved_at
+    : entry.updated_at || entry.created_at;
+  const tsRel = ts
+    ? relativeTime(new Date(ts).getTime())
+    : null;
+  return (
+    <div className="rounded border border-border bg-[#1f2937]/40 p-1.5 text-xs">
+      <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+        <span className="text-[9px] uppercase text-gray-500">
+          {entry.memory_type}
+        </span>
+        {entry.ticker && (
+          <span className="text-[9px] font-mono text-gray-400">
+            [{entry.ticker}]
+          </span>
+        )}
+        {entry.strategy_id && (
+          <span className="text-[9px] text-gray-500">
+            ({entry.strategy_id})
+          </span>
+        )}
+        {entry.importance !== null && (
+          <span className="text-[9px] text-gray-500">
+            imp {entry.importance.toFixed(1)}
+          </span>
+        )}
+        {showRetrievalInfo && (
+          <span className="text-[9px] text-gray-500">
+            · refs {entry.reference_count} · pulls {entry.retrieval_count}
+          </span>
+        )}
+        {tsRel && (
+          <span className="text-[9px] text-gray-500 ml-auto">{tsRel}</span>
+        )}
+      </div>
+      <p className="text-[11px] text-gray-300 leading-snug line-clamp-2">
+        {entry.content_preview}
+      </p>
+    </div>
+  );
+}
+
+function relativeTime(thenMs: number): string {
+  const d = (Date.now() - thenMs) / 86_400_000;
+  if (d < 0) return "future";
+  if (d < 1 / 24) return `${Math.round(d * 24 * 60)}m ago`;
+  if (d < 1) return `${Math.round(d * 24)}h ago`;
+  if (d < 30) return `${d.toFixed(1)}d ago`;
+  return `${(d / 30).toFixed(1)}mo ago`;
 }
 
 export default MemoryCurationPanel;

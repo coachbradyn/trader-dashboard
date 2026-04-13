@@ -550,6 +550,10 @@ export const api = {
       { method: "POST" }
     );
   },
+  memoryDiff: (sinceIso: string, limit = 50) =>
+    fetchApi<import("./types").MemoryDiffResponse>(
+      "/memory/diff?since=" + encodeURIComponent(sinceIso) + "&limit=" + limit
+    ),
   adminReassignCluster: (
     secret: string,
     body: { memory_id: string; cluster_id: number | null }
