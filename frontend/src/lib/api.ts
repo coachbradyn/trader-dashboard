@@ -14,7 +14,20 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${res.statusText}`);
+    // Surface the response body when available — servers often return
+    // useful diagnostic JSON on 4xx/5xx that's invisible if we only show
+    // the status code. Truncate aggressively; error banners shouldn't
+    // dump HTML pages.
+    let detail = "";
+    try {
+      const text = await res.text();
+      if (text) detail = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `API ${res.status}: ${res.statusText}${detail ? ` — ${detail}` : ""}`
+    );
   }
   return res.json();
 }
@@ -430,6 +443,32 @@ export const api = {
   getMemoryEmbeddingsHealth: () =>
     fetchApi<import("./types").MemoryEmbeddingsHealth>(
       "/memory/embeddings/health"
+    ),
+  adminBackfillEmbeddings: (secret: string) =>
+    fetchApi<{ ok: boolean; reason?: string; state: Record<string, unknown> }>(
+      "/memory/admin/backfill-embeddings?secret=" + encodeURIComponent(secret),
+      { method: "POST" }
+    ),
+  adminBackfillStatus: (secret: string) =>
+    fetchApi<{
+      running: boolean;
+      started_at: string | null;
+      finished_at: string | null;
+      processed: number;
+      updated: number;
+      failed: number;
+      error: string | null;
+    }>(
+      "/memory/admin/backfill-status?secret=" + encodeURIComponent(secret)
+    ),
+  adminFitClusters: (secret: string) =>
+    fetchApi<{
+      ok: boolean;
+      reason?: string;
+      summary?: { n_memories_fit: number; k: number; model: string; log_likelihood: number };
+    }>(
+      "/memory/admin/fit-clusters?secret=" + encodeURIComponent(secret),
+      { method: "POST" }
     ),
 
   // AI Usage

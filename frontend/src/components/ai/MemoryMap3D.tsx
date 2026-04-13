@@ -178,11 +178,37 @@ function Scene({ projection, onHover, hoveredId }: SceneProps) {
 
 // ─── Tab component ───────────────────────────────────────────────────────────
 
+interface HealthSummary {
+  total: number;
+  with_embedding: number;
+  coverage_pct: number;
+  clustered: number;
+}
+
 export function MemoryMap3D() {
   const [projection, setProjection] = useState<MemoryProjection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hovered, setHovered] = useState<MemoryProjectionPoint | null>(null);
+  const [health, setHealth] = useState<HealthSummary | null>(null);
+
+  const loadHealth = async () => {
+    try {
+      const h = await api.getMemoryEmbeddingsHealth();
+      const clustered = Object.values(h.cluster_distribution).reduce(
+        (a, b) => a + b,
+        0
+      );
+      setHealth({
+        total: h.total,
+        with_embedding: h.with_embedding,
+        coverage_pct: h.coverage_pct,
+        clustered,
+      });
+    } catch {
+      setHealth(null);
+    }
+  };
 
   const load = async (force = false) => {
     setLoading(true);
@@ -199,7 +225,136 @@ export function MemoryMap3D() {
 
   useEffect(() => {
     load(false);
+    loadHealth();
   }, []);
+
+  // ─── Admin actions ─────────────────────────────────────────────────────
+
+  const [adminBusy, setAdminBusy] = useState<string | null>(null);
+  const [adminMsg, setAdminMsg] = useState<string | null>(null);
+
+  const promptSecret = (): string | null => {
+    // Read from sessionStorage first so the user types it once per tab.
+    const cached = sessionStorage.getItem("memory_admin_secret");
+    if (cached) return cached;
+    const entered = window.prompt(
+      "Enter ADMIN_SECRET (stored only for this browser tab):"
+    );
+    if (entered) sessionStorage.setItem("memory_admin_secret", entered);
+    return entered;
+  };
+
+  const runBackfill = async () => {
+    const secret = promptSecret();
+    if (!secret) return;
+    setAdminBusy("backfill");
+    setAdminMsg("Starting backfill…");
+    try {
+      const res = await api.adminBackfillEmbeddings(secret);
+      if (!res.ok) {
+        setAdminMsg(`Backfill not started: ${res.reason || "unknown"}`);
+        setAdminBusy(null);
+        return;
+      }
+      // Poll status every 2s until finished.
+      setAdminMsg("Backfill running…");
+      const poll = async () => {
+        try {
+          const status = await api.adminBackfillStatus(secret);
+          if (status.running) {
+            setAdminMsg(
+              `Backfill running — processed ${status.processed}, embedded ${status.updated}, failed ${status.failed}`
+            );
+            setTimeout(poll, 2000);
+          } else {
+            if (status.error) {
+              setAdminMsg(`Backfill error: ${status.error}`);
+            } else {
+              setAdminMsg(
+                `Backfill complete — embedded ${status.updated}, failed ${status.failed}. Now run Fit Clusters.`
+              );
+            }
+            setAdminBusy(null);
+            await loadHealth();
+          }
+        } catch (e) {
+          setAdminMsg(`Status check failed: ${(e as Error).message}`);
+          setAdminBusy(null);
+        }
+      };
+      setTimeout(poll, 2000);
+    } catch (e) {
+      setAdminMsg(`Backfill request failed: ${(e as Error).message}`);
+      setAdminBusy(null);
+    }
+  };
+
+  const runFitClusters = async () => {
+    const secret = promptSecret();
+    if (!secret) return;
+    setAdminBusy("fit");
+    setAdminMsg("Fitting clusters…");
+    try {
+      const res = await api.adminFitClusters(secret);
+      if (res.ok && res.summary) {
+        setAdminMsg(
+          `Fit complete — k=${res.summary.k}, n=${res.summary.n_memories_fit}, model=${res.summary.model}`
+        );
+        await loadHealth();
+        await load(true);
+      } else {
+        setAdminMsg(`Fit failed: ${res.reason || "unknown"}`);
+      }
+    } catch (e) {
+      setAdminMsg(`Fit request failed: ${(e as Error).message}`);
+    } finally {
+      setAdminBusy(null);
+    }
+  };
+
+  const renderAdminPanel = () => (
+    <div className="rounded-lg border border-border bg-[#1f2937]/30 p-4 space-y-2">
+      <p className="text-[11px] text-gray-400 uppercase tracking-wide">
+        Admin — initialize memory system
+      </p>
+      <p className="text-xs text-gray-500">
+        First-time setup when you can&apos;t run CLI scripts. Embeds every
+        memory that lacks a vector, then fits gaussian clusters. Requires
+        ADMIN_SECRET.
+      </p>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          onClick={runBackfill}
+          disabled={adminBusy !== null}
+          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/15 text-[#6366f1] hover:bg-[#6366f1]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {adminBusy === "backfill" ? "Backfilling…" : "1. Backfill embeddings"}
+        </button>
+        <button
+          onClick={runFitClusters}
+          disabled={adminBusy !== null}
+          className="text-xs px-3 py-1.5 rounded bg-[#10b981]/15 text-[#10b981] hover:bg-[#10b981]/25 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {adminBusy === "fit" ? "Fitting…" : "2. Fit clusters"}
+        </button>
+        <button
+          onClick={() => {
+            sessionStorage.removeItem("memory_admin_secret");
+            setAdminMsg("Cleared secret from session.");
+          }}
+          disabled={adminBusy !== null}
+          className="text-xs px-3 py-1.5 rounded bg-[#1f2937]/50 text-gray-400 hover:bg-[#1f2937] border border-border disabled:opacity-40"
+        >
+          Clear secret
+        </button>
+      </div>
+      {adminMsg && (
+        <p className="text-[11px] text-gray-300 font-mono pt-1 break-words">
+          {adminMsg}
+        </p>
+      )}
+    </div>
+  );
 
   // Cluster → count for the legend.
   const clusterStats = useMemo(() => {
@@ -224,10 +379,47 @@ export function MemoryMap3D() {
     );
   }
 
+  const renderHealthSummary = () => {
+    if (!health) return null;
+    return (
+      <div className="text-[11px] text-gray-500 pt-3 border-t border-border/40 mt-3">
+        Diagnostics:{" "}
+        <span className="text-gray-400">
+          {health.with_embedding}/{health.total} memories embedded (
+          {health.coverage_pct}%) · {health.clustered} clustered
+        </span>
+      </div>
+    );
+  };
+
   if (error) {
     return (
-      <div className="p-6 rounded-lg border border-red-500/20 bg-red-500/5 text-red-400 text-sm">
-        Failed to load 3D projection: {error}
+      <div className="space-y-4">
+        <div className="p-6 rounded-lg border border-red-500/20 bg-red-500/5 text-sm">
+          <p className="text-red-400 font-medium mb-2">
+            Failed to load 3D projection
+          </p>
+          <p className="text-red-300/80 text-xs font-mono whitespace-pre-wrap break-words">
+            {error}
+          </p>
+          <p className="text-gray-400 text-xs mt-3">
+            If this says &quot;API 500&quot;, the backend hit an exception.
+            Check Railway logs for &quot;memory_projection failed&quot; — the
+            traceback is logged there. Most common cause: an unrun migration
+            or no embedded memories yet.
+          </p>
+          <button
+            onClick={() => {
+              load(true);
+              loadHealth();
+            }}
+            className="mt-3 text-xs px-3 py-1.5 rounded bg-[#6366f1]/10 text-[#6366f1] hover:bg-[#6366f1]/20"
+          >
+            Retry
+          </button>
+          {renderHealthSummary()}
+        </div>
+        {renderAdminPanel()}
       </div>
     );
   }
@@ -238,14 +430,21 @@ export function MemoryMap3D() {
         ? projection.reason
         : "No projection data available.";
     return (
-      <div className="p-6 rounded-lg border border-border bg-[#1f2937]/30 text-gray-400 text-sm">
-        <p className="mb-3">{reason}</p>
-        <button
-          onClick={() => load(true)}
-          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/10 text-[#6366f1] hover:bg-[#6366f1]/20"
-        >
-          Retry
-        </button>
+      <div className="space-y-4">
+        <div className="p-6 rounded-lg border border-border bg-[#1f2937]/30 text-gray-400 text-sm">
+          <p className="mb-3">{reason}</p>
+          <button
+            onClick={() => {
+              load(true);
+              loadHealth();
+            }}
+            className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/10 text-[#6366f1] hover:bg-[#6366f1]/20"
+          >
+            Retry
+          </button>
+          {renderHealthSummary()}
+        </div>
+        {renderAdminPanel()}
       </div>
     );
   }
@@ -338,6 +537,15 @@ export function MemoryMap3D() {
         size = memory importance; translucent orbs = gaussian cluster
         centroids. Drag to rotate · scroll to zoom · right-click drag to pan.
       </p>
+
+      {/* Admin actions available from the loaded view too — lets you rerun
+          backfill / refit clusters after adding new memories. */}
+      <details className="pt-2">
+        <summary className="text-[11px] text-gray-500 cursor-pointer hover:text-gray-400">
+          Admin actions
+        </summary>
+        <div className="pt-2">{renderAdminPanel()}</div>
+      </details>
     </div>
   );
 }
