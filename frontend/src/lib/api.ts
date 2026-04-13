@@ -419,6 +419,18 @@ export const api = {
     fetchApi("/memory/" + id, { method: "PUT", body: JSON.stringify(data) }),
   deleteMemory: (id: string) =>
     fetchApi("/memory/" + id, { method: "DELETE" }),
+  getMemoryProjection: (force = false) =>
+    fetchApi<import("./types").MemoryProjection>(
+      "/memory/embeddings/projection" + (force ? "?force=true" : "")
+    ),
+  getMemoryClusters: (includeCentroid = false) =>
+    fetchApi<import("./types").MemoryClusters>(
+      "/memory/clusters" + (includeCentroid ? "?include_centroid=true" : "")
+    ),
+  getMemoryEmbeddingsHealth: () =>
+    fetchApi<import("./types").MemoryEmbeddingsHealth>(
+      "/memory/embeddings/health"
+    ),
 
   // AI Usage
   getAIUsage: (days?: number) =>

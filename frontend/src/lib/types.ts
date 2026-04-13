@@ -882,3 +882,70 @@ export interface TickerFundamentals {
   institutional_ownership_pct: number | null;
   updated_at: string;
 }
+
+// ─── Memory embeddings / clustering / projection ────────────────────────────
+
+export interface MemoryProjectionPoint {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  cluster_id: number | null;
+  importance: number;
+  memory_type: string;
+  ticker: string | null;
+  strategy_id: string | null;
+  validated: boolean | null;
+  content_preview: string;
+}
+
+export interface MemoryProjectionCluster {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  member_count: number;
+  weight: number;
+}
+
+export type MemoryProjection =
+  | {
+      available: true;
+      model_name: string;
+      n_memories: number;
+      fit_at: string;
+      projection_method: string;
+      memories: MemoryProjectionPoint[];
+      clusters: MemoryProjectionCluster[];
+    }
+  | { available: false; reason: string };
+
+export interface MemoryClusterSummary {
+  id: number;
+  weight: number;
+  member_count: number;
+  centroid?: number[];
+  variance_diag?: number[];
+}
+
+export type MemoryClusters =
+  | {
+      available: true;
+      fit_at: string;
+      model_name: string;
+      dims: number;
+      n_memories_fit: number;
+      k: number;
+      log_likelihood: number;
+      clusters: MemoryClusterSummary[];
+    }
+  | { available: false; reason: string };
+
+export interface MemoryEmbeddingsHealth {
+  total: number;
+  with_embedding: number;
+  without_embedding: number;
+  coverage_pct: number;
+  model_distribution: Record<string, number>;
+  cluster_distribution: Record<string, number>;
+}

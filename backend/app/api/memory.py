@@ -119,6 +119,33 @@ async def embeddings_health(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/embeddings/projection")
+async def embeddings_projection(
+    force: bool = Query(False, description="Bypass cache and recompute."),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    3D projection of memory embeddings for the visualization tab.
+
+    Returns per-memory (x, y, z) coords in [-1, 1]³ plus cluster centroids
+    in the same frame. Projection uses PCA on L2-normalized embeddings —
+    matches the clustering pipeline so centroids land where their members
+    cluster visually.
+
+    Cached in-process for 10 minutes. Pass `force=true` to refresh
+    immediately (e.g., right after running the backfill / re-fit).
+    """
+    from app.services.memory_projection import compute_projection
+
+    payload = await compute_projection(db, force=force)
+    if payload is None:
+        return {
+            "available": False,
+            "reason": "Need at least 3 embedded memories of the same model. Run the backfill if you haven't.",
+        }
+    return payload
+
+
 @router.get("/clusters")
 async def memory_clusters(
     include_centroid: bool = Query(

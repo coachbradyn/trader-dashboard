@@ -11,6 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import dynamic from "next/dynamic";
+
+// 3D memory map is heavy (three.js) — load lazily so it doesn't block
+// the Chat/Activity tabs on first paint.
+const MemoryMap3D = dynamic(
+  () => import("@/components/ai/MemoryMap3D").then((m) => m.MemoryMap3D),
+  { ssr: false, loading: () => <div className="text-xs text-gray-500 p-6">Loading 3D view…</div> }
+);
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
 const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
@@ -479,6 +487,7 @@ export default function HenryPage() {
           <TabsTrigger value="activity" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">Activity</TabsTrigger>
           <TabsTrigger value="decisions" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">Decisions</TabsTrigger>
           <TabsTrigger value="memory" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">Memory</TabsTrigger>
+          <TabsTrigger value="memory-3d" className="text-xs data-[state=active]:bg-[#6366f1]/20 data-[state=active]:text-[#6366f1]">3D Map</TabsTrigger>
         </TabsList>
 
         <TabsContent value="chat" className="mt-4">
@@ -495,6 +504,10 @@ export default function HenryPage() {
 
         <TabsContent value="memory" className="mt-4">
           <MemoryTab />
+        </TabsContent>
+
+        <TabsContent value="memory-3d" className="mt-4">
+          <MemoryMap3D />
         </TabsContent>
       </Tabs>
     </div>

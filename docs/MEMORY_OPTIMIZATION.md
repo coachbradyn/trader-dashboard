@@ -259,14 +259,57 @@ analyses in one PR.
 - After switching `EMBEDDING_MODEL` — old-model vectors aren't comparable
   to new-model vectors, so existing clusters are invalid.
 
-### Phase 3 — 3D embedding visualization *(not yet)*
-- UMAP projection → 3D coords per memory.
-- Endpoint: `GET /api/memory/embeddings/projection`.
-- Frontend: react-three-fiber component. Nodes sized by `importance`,
-  colored by `memory_type` OR `cluster_id` (Phase 2 now provides this),
-  hover for content preview. Draw cluster centroids as translucent
-  spheres sized by `member_count`. Optional animate-on-retrieval to
-  show which memories got pulled for a query.
+### Phase 3 — 3D embedding visualization *(landed)*
+
+Interactive 3D map of Henry's memory embeddings, accessible as the new
+"3D Map" tab on the Henry page.
+
+**Backend:**
+- `backend/app/services/memory_projection.py` *(new)* — PCA from 512-D
+  (or 1024-D) to 3-D using pure numpy (`eigh` on the d×d covariance,
+  faster than full SVD for our shape). L2-normalizes embeddings before
+  projection so the viz geometry matches the clustering pipeline.
+  Projects memories and cluster centroids together so they share the
+  same PCA basis + normalization box. Cached in-process for 10 minutes.
+- `backend/app/api/memory.py` — new endpoint
+  `GET /api/memory/embeddings/projection?force=false`. Returns
+  `{memories: [{id,x,y,z,cluster_id,importance,memory_type,ticker,...}],
+   clusters: [{id,x,y,z,member_count,weight}]}`.
+
+**Frontend:**
+- `frontend/src/components/ai/MemoryMap3D.tsx` *(new)* — react-three-fiber
+  scene. Each memory is a sphere colored by `cluster_id`, sized by
+  `importance` (1→10 maps to radius 0.008→0.028). Cluster centroids
+  render as translucent spheres sized by `sqrt(weight)` so a 4×-bigger
+  cluster doesn't render 4× as large. Deterministic 15-color palette
+  keyed by `cluster_id % 15` — same cluster always gets the same color
+  across refits. Unclustered memories render gray.
+- Interactions: `OrbitControls` from `@react-three/drei` for drag-to-
+  rotate, scroll-zoom, right-click pan. Hover pulses the node up 60%
+  and shows a tooltip with memory type, ticker, strategy, importance,
+  and content preview (first 160 chars).
+- Legend: all active clusters with member counts.
+- Lazy-loaded via Next `dynamic({ ssr: false })` so three.js isn't
+  shipped to the Chat/Activity tabs.
+- Deps added to `frontend/package.json`: `three`, `@react-three/fiber`,
+  `@react-three/drei`, `@types/three`.
+
+**Why PCA, not UMAP:**
+- Zero new Python dependencies (UMAP needs `umap-learn` + numba + llvmlite
+  — ~200 MB).
+- Honest projection: 3 axes that maximize variance in the original space.
+- UMAP produces visually tighter clusters but can also invent structure
+  that doesn't exist. PCA won't lie to you.
+- If you want UMAP later, swap `_pca_3d` in `memory_projection.py`
+  without changing the endpoint contract.
+
+**How to use:**
+1. After a fresh deploy, wait for or manually run
+   `python -m scripts.fit_memory_clusters` so clusters exist.
+2. Open Henry page → 3D Map tab.
+3. Drag to rotate. Hover any node to see its content.
+4. Click "Refresh projection" after running a backfill or re-fit to
+   bypass the 10-minute cache.
 
 ### Phase 4 — pgvector migration
 - Only when memory count >10k or in-Python ranking latency becomes
