@@ -173,10 +173,20 @@ All three levers are independently toggleable:
 
 ## Follow-ups (not in this commit)
 
-### Phase 1.5 — tighter integration
-- Thread `query_text` through callers that have user input (ask_henry,
-  signal evaluation, trade review) so they hit the semantic path.
-- Backfill script: embed all existing memories where `embedding IS NULL`.
+### Phase 1.5 — tighter integration *(landed)*
+- ✅ `_call_claude_async` defaults `query_text=prompt` so every caller that
+  routes through it (signal evaluation, scheduled review, AI portfolio,
+  autonomous trading, api/ai_portfolio) hits the semantic path automatically.
+- ✅ `query_trades` (ask_henry) passes `query_text=question` — the raw user
+  question is a cleaner retrieval signal than the wrapping prompt template.
+- ✅ Every direct `_build_system_prompt(...)` callsite now passes a
+  `query_text` (nightly_review, morning_briefing, resolve_conflict,
+  price_target analysis).
+- ✅ Backfill script at `backend/scripts/backfill_memory_embeddings.py`.
+  Run with `python -m scripts.backfill_memory_embeddings` from backend/.
+  Idempotent, batched, resumable.
+
+### Phase 1.6 — observability (not yet)
 - Add `/api/memory/embeddings/health` endpoint: reports `total`,
   `with_embedding`, `model_distribution`.
 

@@ -469,10 +469,21 @@ def _call_claude(prompt: str, max_tokens: int = 1500, system_override: str = Non
     return f"AI analysis temporarily unavailable. Both primary and fallback models failed. {last_error or ''}"
 
 
-async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general", enable_web_search: bool = False) -> str:
-    """Async wrapper that builds the dynamic system prompt and routes through the dual AI provider."""
+async def _call_claude_async(prompt: str, max_tokens: int = 1500, ticker: str = None, strategy: str = None, scope: str = "general", function_name: str = "general", enable_web_search: bool = False, query_text: str = None) -> str:
+    """Async wrapper that builds the dynamic system prompt and routes through the dual AI provider.
+
+    `query_text` is used to rank memories semantically in _build_system_prompt.
+    Defaults to `prompt` so every caller automatically hits the semantic path —
+    callers with a better query signal (e.g. the user's raw question) can pass
+    it explicitly.
+    """
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt(ticker=ticker, strategy=strategy, scope=scope)
+    system = await _build_system_prompt(
+        ticker=ticker,
+        strategy=strategy,
+        scope=scope,
+        query_text=query_text if query_text is not None else prompt,
+    )
     return await call_ai(system, prompt, function_name=function_name, max_tokens=max_tokens, enable_web_search=enable_web_search)
 
 
@@ -762,7 +773,7 @@ Keep it under 300 words. Lead with the most important finding."""
 
     import asyncio
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt()
+    system = await _build_system_prompt(query_text=prompt)
     return await call_ai(system, prompt, function_name="trade_review", max_tokens=1500)
 
 
@@ -934,7 +945,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
     import asyncio
     _logger = _log.getLogger(__name__)
 
-    system = await _build_system_prompt(scope="briefing", enable_web_search=True)
+    system = await _build_system_prompt(scope="briefing", enable_web_search=True, query_text=prompt)
 
     result = None
     try:
@@ -1056,7 +1067,9 @@ HOLDINGS: {holdings_text}
 Answer concisely (<200 words). Use tables for comparisons. If data is insufficient, say so."""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt(enable_web_search=True)
+    # Pass the user's raw question as query_text — it's a cleaner semantic
+    # retrieval signal than the synthetic prompt template wrapping it.
+    system = await _build_system_prompt(enable_web_search=True, query_text=question)
     return await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, question_text=question, enable_web_search=True)
 
 
@@ -1138,7 +1151,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 {{"recommendation": "LONG" or "SHORT" or "STAY_FLAT", "confidence": 1-10, "reasoning": "one paragraph max"}}"""
 
     from app.services.ai_provider import call_ai
-    system = await _build_system_prompt(ticker=ticker, scope="signal", enable_web_search=True)
+    system = await _build_system_prompt(ticker=ticker, scope="signal", enable_web_search=True, query_text=prompt)
     raw = await call_ai(system, prompt, function_name="conflict_resolution", max_tokens=500, enable_web_search=True)
 
     # Parse JSON response
@@ -2157,7 +2170,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
         # ── Build enriched prompt ──────────────────────────────────────
 
         from app.services.ai_provider import call_ai
-        system = await _build_system_prompt(ticker=ticker, enable_web_search=True)
+        system = await _build_system_prompt(ticker=ticker, enable_web_search=True, query_text=f"price target analysis {ticker}")
         prompt = f"""Provide a structured price target analysis for {ticker}.
 
 Current price: {f'${current_price:.2f}' if current_price else 'Unknown'}
