@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     memory_top_k_fallback: int = 10  # Max memories when no query_text (importance-ordered)
     prompt_cache_enabled: bool = True  # Toggle Anthropic cache_control on system prompt
 
+    # Memory clustering (Phase 2) — gaussian mixture over embeddings
+    memory_clustering_enabled: bool = True  # Toggle GMM fit + retrieval blending
+    memory_cluster_weight: float = 0.3  # Weight of P(cluster|query) in retrieval score
+    memory_cluster_fit_every_n_runs: int = 3  # Refit every N stats-engine runs
+
     # Financial data
     fmp_api_key: str = ""  # Financial Modeling Prep API key
 

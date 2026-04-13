@@ -87,6 +87,99 @@ async def memory_stats(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/embeddings/health")
+async def embeddings_health(db: AsyncSession = Depends(get_db)):
+    """
+    Report embedding coverage. Drives the Phase 3 viz and also answers
+    "is the backfill done?" without needing a psql shell.
+    """
+    total = (await db.execute(select(func.count(HenryMemory.id)))).scalar() or 0
+    with_emb = (
+        await db.execute(
+            select(func.count(HenryMemory.id)).where(HenryMemory.embedding.is_not(None))
+        )
+    ).scalar() or 0
+    model_dist_result = await db.execute(
+        select(HenryMemory.embedding_model, func.count(HenryMemory.id))
+        .where(HenryMemory.embedding_model.is_not(None))
+        .group_by(HenryMemory.embedding_model)
+    )
+    cluster_dist_result = await db.execute(
+        select(HenryMemory.cluster_id, func.count(HenryMemory.id))
+        .where(HenryMemory.cluster_id.is_not(None))
+        .group_by(HenryMemory.cluster_id)
+    )
+    return {
+        "total": total,
+        "with_embedding": with_emb,
+        "without_embedding": total - with_emb,
+        "coverage_pct": round(with_emb / total * 100, 1) if total else 0.0,
+        "model_distribution": {row[0]: row[1] for row in model_dist_result.all()},
+        "cluster_distribution": {int(row[0]): row[1] for row in cluster_dist_result.all()},
+    }
+
+
+@router.get("/clusters")
+async def memory_clusters(
+    include_centroid: bool = Query(
+        False,
+        description="If true, include the 512-dim centroid and variance vectors. Adds ~40KB to response.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return the current gaussian mixture over memory embeddings.
+
+    Used by:
+      - Phase 3 3D viz (centroids = cluster anchors, member_count = size)
+      - Debugging retrieval ("which cluster owns this ticker's memories?")
+      - Admin panels
+
+    By default centroids are omitted to keep the response small. Pass
+    `include_centroid=true` only when you need the raw vectors.
+    """
+    from app.models import HenryStats
+
+    stats_row = (
+        await db.execute(
+            select(HenryStats)
+            .where(HenryStats.stat_type == "memory_clusters")
+            .order_by(HenryStats.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if not stats_row or not stats_row.data:
+        return {
+            "available": False,
+            "reason": "Clustering has not run yet. Wait for the next stats-engine cycle or run scripts/fit_memory_clusters.py manually.",
+        }
+
+    data = stats_row.data
+    clusters_out = []
+    for c in data.get("clusters", []):
+        entry = {
+            "id": c.get("id"),
+            "weight": c.get("weight"),
+            "member_count": c.get("member_count"),
+        }
+        if include_centroid:
+            entry["centroid"] = c.get("centroid")
+            entry["variance_diag"] = c.get("variance_diag")
+        clusters_out.append(entry)
+
+    return {
+        "available": True,
+        "fit_at": data.get("fit_at"),
+        "model_name": data.get("model_name"),
+        "dims": data.get("dims"),
+        "n_memories_fit": data.get("n_memories_fit"),
+        "k": data.get("k"),
+        "log_likelihood": data.get("log_likelihood"),
+        "clusters": clusters_out,
+    }
+
+
 @router.put("/{memory_id}")
 async def update_memory(memory_id: str, body: MemoryUpdate, db: AsyncSession = Depends(get_db)):
     """Update a memory's importance or content."""

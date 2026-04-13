@@ -16,11 +16,22 @@ from sqlalchemy import select, delete, func, and_
 logger = logging.getLogger(__name__)
 
 
+# Module-level counter tracks how many times the orchestrator has run so
+# we can schedule memory clustering every Nth run (it's heavier than the
+# other stats — embedding matrix + EM). Resets on process restart, which is
+# fine: we'll just fit once extra on boot.
+_RUN_COUNTER = 0
+
+
 async def compute_all_stats():
     """Orchestrator: compute all stat types, each wrapped in try/except."""
+    global _RUN_COUNTER
     from app.database import async_session
+    from app.config import get_settings
 
     logger.info("Computing Henry stats...")
+    _RUN_COUNTER += 1
+    settings = get_settings()
 
     async with async_session() as db:
         for fn in [
@@ -36,9 +47,37 @@ async def compute_all_stats():
             except Exception as e:
                 logger.error(f"Stats computation failed for {fn.__name__}: {e}")
 
+        # Memory clustering — runs every Nth orchestrator invocation since
+        # the embedding matrix + EM are heavier than the simple aggregations
+        # above. Also gated by the config flag.
+        fit_every = max(1, int(getattr(settings, "memory_cluster_fit_every_n_runs", 3)))
+        if (
+            getattr(settings, "memory_clustering_enabled", True)
+            and _RUN_COUNTER % fit_every == 0
+        ):
+            try:
+                await _compute_memory_clusters(db)
+            except Exception as e:
+                logger.error(f"Memory clustering failed: {e}")
+
         await db.commit()
 
     logger.info("Henry stats computation complete")
+
+
+async def _compute_memory_clusters(db):
+    """Fit gaussian mixture over memory embeddings; writes cluster_ids and
+    a HenryStats row. Invalidates the process-local cluster cache so
+    retrieval picks up fresh centroids immediately."""
+    from app.services.memory_clustering import fit_memory_clusters, invalidate_cache
+
+    summary = await fit_memory_clusters(db)
+    if summary:
+        logger.info(
+            f"Memory clusters refit: k={summary['k']} n={summary['n_memories_fit']} "
+            f"model={summary['model']} ll={summary['log_likelihood']:.2f}"
+        )
+        invalidate_cache()
 
 
 async def _upsert_stat(db, stat_type: str, data: dict, strategy: str = None,

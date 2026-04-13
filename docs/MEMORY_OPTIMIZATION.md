@@ -190,19 +190,83 @@ All three levers are independently toggleable:
 - Add `/api/memory/embeddings/health` endpoint: reports `total`,
   `with_embedding`, `model_distribution`.
 
-### Phase 2 — Gaussian cluster scoring
-- Periodic GMM (gaussian mixture model) fit over memory embeddings
-  per cluster in `henry_stats_engine.py`.
-- Retrieval score = `similarity × P(memory | cluster) × importance_weight`.
-- Subsumes the hardcoded confidence buckets in
-  `henry_stats_engine.py:186-188`.
+### Phase 2 — Gaussian cluster scoring *(landed)*
 
-### Phase 3 — 3D embedding visualization
+Retrieval now blends cosine similarity with a gaussian mixture model
+(GMM) posterior over the query — memories in the same gaussian
+"neighborhood" as the query get boosted. Fully backwards-compatible: when
+clustering hasn't run yet, retrieval degrades to pure cosine + importance.
+
+**New files:**
+- `backend/app/services/memory_clustering.py` — pure-numpy diagonal GMM
+  (k-means++ init, EM iterations, variance floors). No sklearn dependency.
+  Includes `fit_memory_clusters()` (write path) and
+  `score_query_clusters()` (read path, 5-min process-local cache).
+- `backend/scripts/fit_memory_clusters.py` — on-demand CLI fit. Run after
+  backfill or model swaps.
+- `backend/alembic/versions/k152637485f7_add_memory_cluster_id.py` —
+  adds `cluster_id` column + index.
+
+**Modified:**
+- `henry_memory.cluster_id` — nullable `Integer`, populated on fit.
+- `henry_stats_engine.compute_all_stats()` — runs
+  `_compute_memory_clusters` every Nth cycle (default 3). Heavy enough
+  that per-run is wasteful; cheap enough that once every ~6h is fine.
+- `_build_system_prompt` retrieval — score becomes
+  `cosine_sim + importance_nudge + cluster_weight × P(cluster | query)`.
+  Unclustered memories → 0 cluster bump (no penalty).
+- `/api/memory/clusters` — returns current GMM (k, weights, member
+  counts, optionally centroids). Used by the Phase 3 viz and for debug.
+- `/api/memory/embeddings/health` — reports coverage + cluster
+  distribution. Quick way to check "is the backfill done, are clusters
+  fit yet."
+
+**Algorithm choices:**
+- **Diagonal covariance only.** Full covariance in 512-D is 262K params
+  per cluster — overfits badly at our memory count (~100–5K) and is 50×
+  slower. Diagonal keeps the model well-conditioned.
+- **L2-normalize embeddings before fit.** Voyage vectors are already
+  unit-norm but we re-normalize defensively. This makes diagonal GMM a
+  reasonable approximation of a von Mises-Fisher mixture (the "proper"
+  distribution on the sphere).
+- **Adaptive K:** `K = clamp(3, round(sqrt(N / 2)), 15)`. 100 memories →
+  7 clusters. 1000 → 15 (capped). Prevents over-splitting at low N.
+- **k-means++ seeding + deterministic RNG** — same fit every time,
+  modulo data changes.
+- **Variance floor at 1e-4** — prevents single-member clusters from
+  collapsing to zero variance.
+- **Stable logsumexp** everywhere E-step touches — no overflow for
+  extreme log-probabilities.
+
+**Config knobs:**
+
+| Key | Default | Purpose |
+|---|---|---|
+| `MEMORY_CLUSTERING_ENABLED` | `true` | Master switch. |
+| `MEMORY_CLUSTER_WEIGHT` | `0.3` | Score weight of P(cluster \| query). Raise to make cluster membership matter more; 0 disables boost without disabling fits. |
+| `MEMORY_CLUSTER_FIT_EVERY_N_RUNS` | `3` | Fit frequency (stats engine runs every ~2h, so default = every ~6h). |
+
+**Subsuming the hardcoded confidence buckets** (noted at the start of
+Phase 2 planning) is *not* part of this commit. Those buckets
+(`henry_stats_engine.py:186-188`) operate on `PortfolioAction.confidence`
+outcomes, not memory embeddings. Replacing them with a gaussian is a
+separate, smaller change — deferred to avoid conflating two unrelated
+analyses in one PR.
+
+**When to run `fit_memory_clusters.py` manually:**
+- Right after `backfill_memory_embeddings.py` — otherwise your first fit
+  only sees newly-written memories.
+- After switching `EMBEDDING_MODEL` — old-model vectors aren't comparable
+  to new-model vectors, so existing clusters are invalid.
+
+### Phase 3 — 3D embedding visualization *(not yet)*
 - UMAP projection → 3D coords per memory.
 - Endpoint: `GET /api/memory/embeddings/projection`.
 - Frontend: react-three-fiber component. Nodes sized by `importance`,
-  colored by `memory_type`, hover for content preview. Optional
-  animate-on-retrieval to show which memories got pulled for a query.
+  colored by `memory_type` OR `cluster_id` (Phase 2 now provides this),
+  hover for content preview. Draw cluster centroids as translucent
+  spheres sized by `member_count`. Optional animate-on-retrieval to
+  show which memories got pulled for a query.
 
 ### Phase 4 — pgvector migration
 - Only when memory count >10k or in-Python ranking latency becomes

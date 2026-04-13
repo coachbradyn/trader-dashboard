@@ -49,6 +49,9 @@ class HenryMemory(Base):
     # Which model produced `embedding`. Vectors from different models are NOT
     # comparable — retrieval must filter to matching model_name before ranking.
     embedding_model: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    # Gaussian mixture cluster assignment from memory_clustering.fit_clusters.
+    # Null when unclustered. Retrieval blends P(cluster | query) into ranking.
+    cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None, index=True)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     updated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), onupdate=lambda: utcnow())

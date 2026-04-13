@@ -148,7 +148,7 @@ async def _build_system_prompt(
             if query_vec is not None and query_model_name is not None:
                 # Semantic path — pull a candidate pool scoped by ticker/strategy
                 # when available, filter to same embedding model, then rank
-                # client-side by cosine similarity.
+                # client-side by cosine similarity + gaussian cluster posterior.
                 from sqlalchemy import or_ as _or
                 from app.services.embeddings import cosine_similarity
 
@@ -177,13 +177,32 @@ async def _build_system_prompt(
                 result = await db.execute(stmt)
                 candidates = list(result.scalars().all())
 
+                # Gaussian cluster posterior over the query — returns
+                # {cluster_id: P(cluster | query)}. Empty dict if clustering
+                # hasn't run yet or is stale — score degrades to pure cosine.
+                cluster_probs: dict[int, float] = {}
+                cluster_weight = float(getattr(_s, "memory_cluster_weight", 0.3))
+                if getattr(_s, "memory_clustering_enabled", True) and cluster_weight > 0:
+                    try:
+                        from app.services.memory_clustering import score_query_clusters
+                        cluster_probs = await score_query_clusters(
+                            db, query_vec, query_model_name
+                        )
+                    except Exception:
+                        cluster_probs = {}
+
                 ranked = []
                 for m in candidates:
                     sim = cosine_similarity(query_vec, m.embedding or [])
-                    # Blend similarity with importance so a wildly relevant
-                    # importance-3 memory can still beat a middling importance-8.
-                    # importance 1-10 scaled into a 0-0.2 nudge.
-                    score = sim + (max(0, int(m.importance or 5)) / 50.0)
+                    # importance 1-10 → 0-0.2 nudge
+                    importance_nudge = max(0, int(m.importance or 5)) / 50.0
+                    # Cluster boost: P(memory's cluster | query) ∈ [0, 1].
+                    # Memories in the same gaussian neighborhood as the query
+                    # get a scaled bump. Unclustered memories → 0 bump.
+                    cluster_boost = 0.0
+                    if cluster_probs and m.cluster_id is not None:
+                        cluster_boost = cluster_weight * cluster_probs.get(int(m.cluster_id), 0.0)
+                    score = sim + importance_nudge + cluster_boost
                     ranked.append((score, m))
                 ranked.sort(key=lambda x: x[0], reverse=True)
                 memories = [m for _, m in ranked[:top_k]]
