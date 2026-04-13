@@ -290,6 +290,154 @@ async def delete_memory(memory_id: str, db: AsyncSession = Depends(get_db)):
     return {"deleted": memory_id}
 
 
+@router.get("/retrieval-events")
+async def retrieval_events(since: float = Query(0.0, ge=0.0)):
+    """
+    Live feed of recent memory retrievals for the 3D viz pulse animation.
+
+    Pass `since` as the epoch-seconds cursor returned by the previous call;
+    we return events with `ts > since` plus the latest cursor value so the
+    client can advance. First call: pass 0 to get the buffered tail.
+
+    No auth — these are anonymized memory IDs only, no content. Single
+    process / in-memory ring buffer (RING_SIZE most recent events).
+    """
+    from app.services.retrieval_events import events_since, latest_ts
+
+    events = events_since(since)
+    return {
+        "events": events,
+        "cursor": latest_ts(),
+    }
+
+
+class PreviewRetrievalRequest(BaseModel):
+    query: str
+    top_k: int = 8
+    ticker: str | None = None
+    strategy_id: str | None = None
+
+
+@router.post("/preview-retrieval")
+async def preview_retrieval(
+    body: PreviewRetrievalRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Run the same semantic + cluster ranking as the system-prompt builder,
+    but return the top-K memory IDs + scores instead of injecting them
+    into a Claude call. Powers the 3D viz "live query playback" input.
+
+    Cheap: one Voyage embedding call (~$0.000005) + cosine over a 200-row
+    candidate pool + softmax over cluster gaussians. No LLM token spend.
+    """
+    from sqlalchemy import or_ as _or
+    from app.services.embeddings import (
+        get_embedding_provider,
+        cosine_similarity,
+    )
+    from app.services.memory_clustering import score_query_clusters
+    from app.config import get_settings
+
+    settings = get_settings()
+    if not settings.embedding_enabled:
+        return {"ok": False, "reason": "Embeddings disabled."}
+
+    q = (body.query or "").strip()
+    if not q:
+        return {"ok": False, "reason": "Empty query."}
+
+    provider = get_embedding_provider()
+    if provider is None:
+        return {"ok": False, "reason": "No embedding provider — set VOYAGE_API_KEY."}
+
+    try:
+        if hasattr(provider, "embed_query"):
+            qvec = await provider.embed_query(q)
+        else:
+            qvec = await provider.embed(q)
+    except Exception as e:
+        return {"ok": False, "reason": f"Embedding failed: {type(e).__name__}: {str(e)[:200]}"}
+
+    if qvec is None:
+        return {"ok": False, "reason": "Embedding returned None."}
+
+    model_name = provider.model_name
+
+    stmt = (
+        select(HenryMemory)
+        .where(HenryMemory.embedding_model == model_name)
+        .where(HenryMemory.embedding.is_not(None))
+    )
+    scope_filters = []
+    if body.ticker:
+        scope_filters.append(HenryMemory.ticker == body.ticker)
+    if body.strategy_id:
+        scope_filters.append(HenryMemory.strategy_id == body.strategy_id)
+    if scope_filters:
+        scope_filters.append(HenryMemory.ticker.is_(None))
+        scope_filters.append(HenryMemory.strategy_id.is_(None))
+        stmt = stmt.where(_or(*scope_filters))
+    stmt = stmt.order_by(
+        HenryMemory.importance.desc(),
+        HenryMemory.updated_at.desc(),
+    ).limit(200)
+
+    candidates = list((await db.execute(stmt)).scalars().all())
+    if not candidates:
+        return {"ok": True, "results": [], "n_candidates": 0, "model_name": model_name}
+
+    cluster_probs: dict[int, float] = {}
+    cluster_weight = float(getattr(settings, "memory_cluster_weight", 0.3))
+    if getattr(settings, "memory_clustering_enabled", True) and cluster_weight > 0:
+        try:
+            cluster_probs = await score_query_clusters(db, qvec, model_name)
+        except Exception:
+            cluster_probs = {}
+
+    ranked = []
+    for m in candidates:
+        sim = cosine_similarity(qvec, m.embedding or [])
+        importance_nudge = max(0, int(m.importance or 5)) / 50.0
+        cluster_boost = 0.0
+        if cluster_probs and m.cluster_id is not None:
+            cluster_boost = cluster_weight * cluster_probs.get(int(m.cluster_id), 0.0)
+        score = sim + importance_nudge + cluster_boost
+        ranked.append({
+            "id": m.id,
+            "score": float(score),
+            "similarity": float(sim),
+            "cluster_boost": float(cluster_boost),
+            "importance": int(m.importance or 5),
+            "cluster_id": m.cluster_id,
+            "memory_type": m.memory_type,
+            "ticker": m.ticker,
+            "content_preview": (m.content or "")[:160].strip(),
+        })
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    top = ranked[: max(1, min(50, body.top_k))]
+
+    # Surface in the live event buffer so the viz pulses these too.
+    try:
+        from app.services.retrieval_events import record_retrieval
+        record_retrieval(
+            memory_ids=[r["id"] for r in top],
+            function_name="preview_retrieval",
+            query_preview=q,
+            scope_ticker=body.ticker,
+            scope_strategy=body.strategy_id,
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "model_name": model_name,
+        "n_candidates": len(candidates),
+        "results": top,
+    }
+
+
 @router.post("/admin/ensure-schema")
 async def admin_ensure_schema(
     secret: str = Query(..., description="ADMIN_SECRET"),

@@ -176,8 +176,11 @@ interface PointProps {
   is2D: boolean;
   // When search is active, non-matching points dim out.
   searchDim: boolean;
-  // Created in the last 24h — drives the glow pulse.
+  // Created in the last 24h — drives the recency glow pulse.
   recent: boolean;
+  // Just retrieved by Henry (or a live preview query). Stronger amplitude
+  // pulse at ~1Hz that decays — pulseStrength in [0, 1] from the parent.
+  pulseStrength: number;
 }
 
 function MemoryPoint({
@@ -192,6 +195,7 @@ function MemoryPoint({
   is2D,
   searchDim,
   recent,
+  pulseStrength,
 }: PointProps) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const matRef = useRef<THREE.MeshStandardMaterial>(null!);
@@ -209,27 +213,42 @@ function MemoryPoint({
     ? [point.x, point.y, 0]
     : [point.x, point.y, point.z];
 
-  // Animated scale on hover + emissive pulse for recency. Computed per-frame
-  // so the fresh-memory glow breathes gently.
+  // Animated scale + emissive pulse. Three layered effects:
+  //   - hover: scale up + bright
+  //   - recent (≤24h old): gentle 0.5 Hz breathing
+  //   - pulseStrength > 0: just retrieved by Henry / live query — a faster,
+  //     stronger pulse that decays as the parent ramps the strength down
+  //     to 0 over PULSE_TTL_MS. Scale also kicks up slightly so the user's
+  //     eye is drawn to it.
   useFrame(({ clock }) => {
     if (!meshRef.current) return;
-    const targetScale = isHovered ? 1.6 : searchDim ? 0.85 : 1.0;
+    const pulseScale = pulseStrength * 0.4;
+    const targetScale = isHovered
+      ? 1.6
+      : searchDim
+      ? 0.85
+      : 1.0 + pulseScale;
     const cur = meshRef.current.scale.x;
     meshRef.current.scale.setScalar(cur + (targetScale - cur) * 0.2);
 
     if (matRef.current) {
       let baseEm = isHovered ? 0.9 : 0.35;
       if (recent) {
-        // 0.2 amplitude pulse at ~0.5 Hz
         baseEm += 0.25 + 0.2 * Math.sin(clock.elapsedTime * Math.PI);
       }
-      // Dim matching if search is active and this point doesn't match.
-      const targetEm = searchDim ? baseEm * 0.25 : baseEm;
+      if (pulseStrength > 0) {
+        // Stronger 1 Hz pulse, scaled by remaining strength.
+        baseEm += pulseStrength * (0.8 + 0.4 * Math.sin(clock.elapsedTime * 2 * Math.PI));
+      }
+      // Dim if search is active and this point doesn't match — but never
+      // dim a pulsed point (current retrieval beats search filter).
+      const dim = searchDim && pulseStrength <= 0.05;
+      const targetEm = dim ? baseEm * 0.25 : baseEm;
       matRef.current.emissiveIntensity =
         matRef.current.emissiveIntensity +
         (targetEm - matRef.current.emissiveIntensity) * 0.2;
 
-      const targetOpacity = searchDim ? 0.2 : 1.0;
+      const targetOpacity = dim ? 0.2 : 1.0;
       matRef.current.opacity =
         matRef.current.opacity + (targetOpacity - matRef.current.opacity) * 0.2;
     }
@@ -371,6 +390,9 @@ interface SceneProps {
   showFog: boolean;
   showRecentGlow: boolean;
   searchMatches: Set<string>; // empty = no filter; populated = only these match
+  // memory_id → pulse strength in [0, 1]. Driven by retrieval-event polling
+  // and the live query playback. Decays in the parent.
+  pulses: Map<string, number>;
 }
 
 function Scene({
@@ -386,6 +408,7 @@ function Scene({
   showFog,
   showRecentGlow,
   searchMatches,
+  pulses,
 }: SceneProps) {
   const maxRef = useMemo(() => {
     let m = 0;
@@ -439,6 +462,7 @@ function Scene({
           is2D={is2D}
           searchDim={searchMatches.size > 0 && !searchMatches.has(p.id)}
           recent={showRecentGlow && isRecent(p.created_at)}
+          pulseStrength={pulses.get(p.id) ?? 0}
         />
       ))}
 
@@ -489,6 +513,120 @@ export function MemoryMap3D() {
   const [showFog, setShowFog] = useState(true);
   const [showRecentGlow, setShowRecentGlow] = useState(true);
   const [search, setSearch] = useState("");
+
+  // ─── Live retrieval pulse ──────────────────────────────────────────
+  // Map of memory_id → strength in [0, 1]. The decay loop ramps each
+  // entry down to 0 over PULSE_TTL_MS, then deletes it. New retrievals
+  // (polled from backend or fired via the live query input) reset the
+  // strength to 1.0.
+  const PULSE_TTL_MS = 8000;
+  const PULSE_POLL_MS = 3000;
+  const [pulses, setPulses] = useState<Map<string, number>>(new Map());
+  // Cursor used by the polling loop — backend returns `cursor` which we
+  // pass back as `since` next request.
+  const pulseCursorRef = useRef<number>(0);
+  // Seed cursor on first successful poll so we don't pulse the entire
+  // ring buffer on first mount (would flood the viz with stale events).
+  const pulseSeededRef = useRef<boolean>(false);
+
+  // Decay loop — runs every 200ms, smoothly ramps down to 0.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPulses((prev) => {
+        if (prev.size === 0) return prev;
+        const next = new Map(prev);
+        // Use forEach to avoid relying on downlevelIteration of Map
+        // (project's tsconfig targets es5, so for-of on Map is rejected).
+        next.forEach((v, k) => {
+          const decayed = v - 200 / PULSE_TTL_MS;
+          if (decayed <= 0) next.delete(k);
+          else next.set(k, decayed);
+        });
+        return next;
+      });
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+
+  // Polling loop — picks up retrieval events from any AI call.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const res = await api.getRetrievalEvents(pulseCursorRef.current);
+        pulseCursorRef.current = res.cursor;
+        if (!pulseSeededRef.current) {
+          // Throw away the first poll's events — they're history we
+          // don't want to replay on mount. Actual live events from now on.
+          pulseSeededRef.current = true;
+        } else if (res.events.length) {
+          setPulses((prev) => {
+            const next = new Map(prev);
+            for (const e of res.events) {
+              for (const id of e.memory_ids) {
+                next.set(id, 1.0);
+              }
+            }
+            return next;
+          });
+        }
+      } catch {
+        // Silent — endpoint might be down or backend redeploying.
+      }
+      if (!cancelled) {
+        timer = setTimeout(tick, PULSE_POLL_MS);
+      }
+    };
+    // Pause polling when the tab is hidden — saves bandwidth + battery.
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !cancelled) {
+        clearTimeout(timer);
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // Live query playback — type a query, fire a preview retrieval, pulse
+  // the top-K returned IDs. Same pulse infrastructure as the live feed.
+  const [liveQuery, setLiveQuery] = useState("");
+  const [liveBusy, setLiveBusy] = useState(false);
+  const [liveMsg, setLiveMsg] = useState<string | null>(null);
+
+  const runLiveQuery = async () => {
+    const q = liveQuery.trim();
+    if (!q || liveBusy) return;
+    setLiveBusy(true);
+    setLiveMsg(null);
+    try {
+      const res = await api.previewRetrieval({ query: q, top_k: 8 });
+      if (!res.ok) {
+        setLiveMsg(res.reason);
+      } else if (res.results.length === 0) {
+        setLiveMsg("No matching memories found.");
+      } else {
+        setPulses((prev) => {
+          const next = new Map(prev);
+          for (const r of res.results) next.set(r.id, 1.0);
+          return next;
+        });
+        setLiveMsg(
+          `Pulsed top ${res.results.length} of ${res.n_candidates} candidates`
+        );
+      }
+    } catch (e) {
+      setLiveMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setLiveBusy(false);
+    }
+  };
 
   // Compute the set of matching memory IDs for search dimming. Empty set
   // means no search active (everything renders at full opacity).
@@ -1091,6 +1229,44 @@ export function MemoryMap3D() {
         </label>
       </div>
 
+      {/* Live query playback — runs the same semantic+cluster ranking as
+          the system-prompt builder and pulses the top-K hits. Pure
+          retrieval, no LLM cost. Pairs with the live retrieval-event
+          polling: every Henry call already pulses memories it pulled. */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">
+          Query
+        </span>
+        <input
+          type="text"
+          value={liveQuery}
+          onChange={(e) => setLiveQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") runLiveQuery();
+          }}
+          placeholder="What memories would Henry retrieve for…"
+          className="flex-1 min-w-[260px] text-xs bg-[#0b0f19] border border-border rounded px-2 py-1.5 text-gray-200 focus:border-[#6366f1] focus:outline-none"
+        />
+        <button
+          onClick={runLiveQuery}
+          disabled={liveBusy || !liveQuery.trim()}
+          className="text-xs px-3 py-1.5 rounded bg-[#6366f1]/20 text-[#6366f1] hover:bg-[#6366f1]/30 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {liveBusy ? "Searching…" : "Pulse top-K"}
+        </button>
+        {pulses.size > 0 && (
+          <button
+            onClick={() => setPulses(new Map())}
+            className="text-[11px] text-gray-500 hover:text-gray-300"
+          >
+            clear pulses ({pulses.size})
+          </button>
+        )}
+        {liveMsg && (
+          <span className="text-[11px] text-gray-400 font-mono">{liveMsg}</span>
+        )}
+      </div>
+
       {/* 3D canvas */}
       <div className="relative w-full h-[60vh] rounded-lg border border-border bg-black/40 overflow-hidden">
         <Canvas
@@ -1123,6 +1299,7 @@ export function MemoryMap3D() {
             showFog={showFog}
             showRecentGlow={showRecentGlow}
             searchMatches={searchMatches}
+            pulses={pulses}
           />
         </Canvas>
 

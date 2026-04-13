@@ -270,6 +270,21 @@ async def _build_system_prompt(
                     )
                     await db.commit()
 
+                # Record this retrieval as a live event so the 3D viz can
+                # pulse the surfaced memories. Only fires when memories
+                # were actually injected — avoids noise from no-op calls.
+                try:
+                    from app.services.retrieval_events import record_retrieval
+                    record_retrieval(
+                        memory_ids=mem_ids,
+                        function_name="build_system_prompt",
+                        query_preview=query_text or "",
+                        scope_ticker=ticker,
+                        scope_strategy=strategy,
+                    )
+                except Exception:
+                    pass  # Live-feed signal — never block on it
+
     except Exception:
         pass  # Memory table may not exist yet — continue without it
 

@@ -444,6 +444,28 @@ export const api = {
     fetchApi<import("./types").MemoryEmbeddingsHealth>(
       "/memory/embeddings/health"
     ),
+  getRetrievalEvents: (since: number) =>
+    fetchApi<import("./types").RetrievalEventsResponse>(
+      "/memory/retrieval-events?since=" + encodeURIComponent(String(since))
+    ),
+  previewRetrieval: (body: {
+    query: string;
+    top_k?: number;
+    ticker?: string | null;
+    strategy_id?: string | null;
+  }) =>
+    fetchApi<import("./types").PreviewRetrievalResponse>(
+      "/memory/preview-retrieval",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          query: body.query,
+          top_k: body.top_k ?? 8,
+          ticker: body.ticker ?? null,
+          strategy_id: body.strategy_id ?? null,
+        }),
+      }
+    ),
   adminEnsureSchema: (secret: string) =>
     fetchApi<{
       ok: boolean;

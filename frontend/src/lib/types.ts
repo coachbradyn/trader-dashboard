@@ -957,6 +957,41 @@ export type MemoryClusters =
     }
   | { available: false; reason: string };
 
+export interface RetrievalEvent {
+  ts: number; // epoch seconds
+  function_name: string;
+  query_preview: string;
+  memory_ids: string[];
+  scope_ticker: string | null;
+  scope_strategy: string | null;
+}
+
+export interface RetrievalEventsResponse {
+  events: RetrievalEvent[];
+  cursor: number;
+}
+
+export interface PreviewRetrievalResult {
+  id: string;
+  score: number;
+  similarity: number;
+  cluster_boost: number;
+  importance: number;
+  cluster_id: number | null;
+  memory_type: string;
+  ticker: string | null;
+  content_preview: string;
+}
+
+export type PreviewRetrievalResponse =
+  | {
+      ok: true;
+      model_name: string;
+      n_candidates: number;
+      results: PreviewRetrievalResult[];
+    }
+  | { ok: false; reason: string };
+
 export interface MemoryEmbeddingsHealth {
   total: number;
   with_embedding: number;
