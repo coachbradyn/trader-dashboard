@@ -340,6 +340,10 @@ async def admin_ensure_schema(
             "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
         ),
         (
+            "add_cluster_silhouette_column",
+            "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS cluster_silhouette FLOAT",
+        ),
+        (
             "create_cluster_id_index",
             "CREATE INDEX IF NOT EXISTS ix_henry_memory_cluster_id ON henry_memory (cluster_id)",
         ),
@@ -355,7 +359,7 @@ async def admin_ensure_schema(
     )
     existing_cols = {row[0] for row in existing_cols_result.all()}
 
-    target_cols = {"embedding", "embedding_model", "cluster_id"}
+    target_cols = {"embedding", "embedding_model", "cluster_id", "cluster_silhouette"}
     missing_before = target_cols - existing_cols
 
     try:
@@ -377,7 +381,7 @@ async def admin_ensure_schema(
         # Bump alembic_version to the latest head so future deploys don't
         # try to re-apply these migrations (and fail on already-existing
         # columns without IF NOT EXISTS).
-        latest_head = "k152637485f7"
+        latest_head = "l263748596g8"
         try:
             version_result = await db.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")

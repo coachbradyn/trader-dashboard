@@ -208,10 +208,49 @@ async def fit_memory_clusters(db) -> Optional[dict]:
     assignments = resp.argmax(axis=1).tolist()
     id_to_cluster = dict(zip(ids, assignments))
 
-    # Write assignments back. Single UPDATE per cluster with IN-list is fast.
-    # Clear existing cluster_ids on rows that weren't in this fit (e.g., new
-    # embeddings added between fit runs) — they'll be re-clustered next run.
+    # ─── Diagnostics ──────────────────────────────────────────────────────
+    # BIC = -2·logL + p·log(n), where p = free parameters.
+    # For diagonal GMM: k*(2*d) + (k-1) weights.
+    n_params = k * (2 * dims) + (k - 1)
+    bic = -2.0 * ll + n_params * math.log(max(n, 2))
+
+    # Per-memory silhouette (in a reduced form): distance to own cluster
+    # mean vs distance to nearest other cluster mean. Cheap proxy for true
+    # silhouette and useful for the viz's "how well does this memory fit"
+    # coloring. Stored per-memory on the row below.
     from collections import defaultdict
+    silhouettes: dict[str, float] = {}
+    for i, mid in enumerate(ids):
+        own = int(assignments[i])
+        x = X[i]
+        own_dist = float(np.sqrt(np.sum((x - means[own]) ** 2)))
+        other_dists = [
+            float(np.sqrt(np.sum((x - means[j]) ** 2)))
+            for j in range(k)
+            if j != own
+        ]
+        nearest_other = min(other_dists) if other_dists else own_dist + 1e-6
+        denom = max(own_dist, nearest_other)
+        sil = (nearest_other - own_dist) / denom if denom > 0 else 0.0
+        silhouettes[mid] = float(max(-1.0, min(1.0, sil)))
+
+    # Per-cluster prototype: the memory closest to each centroid (minimum
+    # Euclidean distance since X is L2-normalized → proportional to cosine).
+    prototype_ids: dict[int, str] = {}
+    for j in range(k):
+        members_idx = [i for i, a in enumerate(assignments) if a == j]
+        if not members_idx:
+            continue
+        dists = [
+            float(np.sqrt(np.sum((X[i] - means[j]) ** 2)))
+            for i in members_idx
+        ]
+        proto_local = int(np.argmin(dists))
+        prototype_ids[j] = ids[members_idx[proto_local]]
+
+    # Write assignments + silhouette back. Single UPDATE per cluster with
+    # IN-list is fast. Clear existing cluster_ids on rows that weren't in
+    # this fit (e.g., new embeddings added between fit runs).
     by_cluster = defaultdict(list)
     for mid, cid in id_to_cluster.items():
         by_cluster[int(cid)].append(mid)
@@ -220,7 +259,7 @@ async def fit_memory_clusters(db) -> Optional[dict]:
     await db.execute(
         update(HenryMemory)
         .where(HenryMemory.embedding_model == dominant_model)
-        .values(cluster_id=None)
+        .values(cluster_id=None, cluster_silhouette=None)
     )
     for cid, mids in by_cluster.items():
         await db.execute(
@@ -228,6 +267,38 @@ async def fit_memory_clusters(db) -> Optional[dict]:
             .where(HenryMemory.id.in_(mids))
             .values(cluster_id=cid)
         )
+    # Silhouette is per-memory — update in batches by approximate quartile
+    # to avoid thousands of single-row UPDATEs. 4 batches is enough
+    # resolution for the viz color gradient and keeps write cost tame.
+    sil_batches: dict[int, list[str]] = {0: [], 1: [], 2: [], 3: []}
+    for mid, sil in silhouettes.items():
+        # Quantize to 4 buckets (-1..-0.5, -0.5..0, 0..0.5, 0.5..1)
+        q = int(min(3, max(0, (sil + 1.0) * 2)))
+        sil_batches[q].append(mid)
+    # Store the real float (not the bucket) on each row for fidelity;
+    # batching by bucket is just to minimize round trips on the quantized
+    # value — but we actually want the real value. Simpler: bulk update in
+    # chunks of 500 with CASE expressions. At our scale, do it in a loop.
+    bulk = list(silhouettes.items())
+    CHUNK = 500
+    for i in range(0, len(bulk), CHUNK):
+        chunk = bulk[i : i + CHUNK]
+        for mid, sil in chunk:
+            await db.execute(
+                update(HenryMemory)
+                .where(HenryMemory.id == mid)
+                .values(cluster_silhouette=sil)
+            )
+
+    # ─── LLM cluster labels (Gemini, ~$0.001/refit) ──────────────────────
+    # Labels run after the DB writes so the fit persists even if labeling
+    # fails. Each cluster gets a 3-5 word label via Gemini Flash — 30×
+    # cheaper than Claude for this kind of short-output task.
+    labels: dict[int, str] = {}
+    try:
+        labels = await _generate_cluster_labels(db, prototype_ids, assignments, ids)
+    except Exception as e:
+        logger.warning(f"Cluster labeling failed (fit still succeeded): {e}")
 
     # Build cluster metadata for HenryStats.data — cast to float32 to halve
     # payload size; retrieval converts back to float64 for scoring.
@@ -239,6 +310,8 @@ async def fit_memory_clusters(db) -> Optional[dict]:
             "member_count": int(np.sum(resp.argmax(axis=1) == j)),
             "centroid": means[j].astype(np.float32).tolist(),
             "variance_diag": vars_[j].astype(np.float32).tolist(),
+            "prototype_memory_id": prototype_ids.get(j),
+            "label": labels.get(j),
         })
 
     data = {
@@ -248,6 +321,8 @@ async def fit_memory_clusters(db) -> Optional[dict]:
         "n_memories_fit": n,
         "k": int(k),
         "log_likelihood": float(ll),
+        "bic": float(bic),
+        "avg_silhouette": float(np.mean(list(silhouettes.values()))) if silhouettes else 0.0,
         "fit_at": utcnow().isoformat() + "Z",
     }
 
@@ -381,3 +456,116 @@ async def score_query_clusters(db, query_vec: list[float], model_name: str) -> d
 def invalidate_cache() -> None:
     """Forces a reload on next scoring call. Invoke after manual re-fits."""
     _CACHE.invalidate()
+
+
+# ─── LLM-backed cluster labeling (Gemini Flash, ~$0.001 per refit) ──────────
+
+
+async def _generate_cluster_labels(
+    db,
+    prototype_ids: dict[int, str],
+    assignments: list[int],
+    memory_ids: list[str],
+) -> dict[int, str]:
+    """
+    Ask Gemini Flash to produce 3-5 word labels per cluster based on up to
+    8 memory previews. Returns {cluster_id: label}. Failures return {} — the
+    fit still persists without labels, just displays as 'cluster N'.
+
+    Gemini is ~30x cheaper than Claude for this short-output task. A full
+    refit with 15 clusters costs <$0.01. Uses the existing ai_provider
+    routing so fallback to Claude happens on Gemini failure.
+    """
+    from sqlalchemy import select
+    from app.models import HenryMemory
+    from app.services.ai_provider import call_ai
+    from collections import defaultdict
+
+    # Group memory IDs by cluster
+    by_cluster: dict[int, list[str]] = defaultdict(list)
+    for mid, cid in zip(memory_ids, assignments):
+        by_cluster[int(cid)].append(mid)
+
+    # Pull content previews (up to 8 per cluster, prioritizing the prototype)
+    all_ids_needed: set[str] = set()
+    for cid, mids in by_cluster.items():
+        proto = prototype_ids.get(cid)
+        picks = [proto] if proto else []
+        # Take first 7 non-proto memories — they're already approximately
+        # ordered by importance/recency from the fetch query upstream.
+        for mid in mids[:8]:
+            if mid not in picks:
+                picks.append(mid)
+            if len(picks) >= 8:
+                break
+        all_ids_needed.update(p for p in picks if p)
+        by_cluster[cid] = [p for p in picks if p]
+
+    if not all_ids_needed:
+        return {}
+
+    result = await db.execute(
+        select(HenryMemory.id, HenryMemory.content, HenryMemory.memory_type)
+        .where(HenryMemory.id.in_(all_ids_needed))
+    )
+    id_to_row = {r.id: r for r in result.all()}
+
+    labels: dict[int, str] = {}
+
+    async def label_one(cid: int, mids: list[str]) -> tuple[int, Optional[str]]:
+        # Build a compact bulleted preview list (160 chars each to keep
+        # input token count low — per-cluster cost is dominated by input).
+        lines = []
+        for mid in mids[:8]:
+            row = id_to_row.get(mid)
+            if not row:
+                continue
+            preview = (row.content or "")[:160].strip().replace("\n", " ")
+            lines.append(f"- [{row.memory_type}] {preview}")
+        if not lines:
+            return cid, None
+
+        prompt = (
+            "The following are memories of a trading AI that clustered together in embedding space. "
+            "Produce a 3-5 word label that captures their common theme. "
+            "Return ONLY the label text — no quotes, no periods, no explanation.\n\n"
+            + "\n".join(lines)
+        )
+        system = (
+            "You produce extremely terse labels for clusters of trading memories. "
+            "Output a single label of 3-5 words, plain text, no punctuation at end."
+        )
+        try:
+            text = await call_ai(
+                system=system,
+                prompt=prompt,
+                function_name="memory_extraction",  # already Gemini-routed
+                max_tokens=20,
+            )
+            if not text:
+                return cid, None
+            # Strip quotes, trailing punctuation, and any accidental newlines.
+            clean = text.strip().strip('"').strip("'").strip()
+            # First line only
+            clean = clean.split("\n", 1)[0].strip()
+            # Reject obvious failure sentinels
+            if not clean or len(clean) > 60:
+                return cid, None
+            return cid, clean
+        except Exception as e:
+            logger.debug(f"Cluster {cid} label failed: {e}")
+            return cid, None
+
+    # Run all clusters in parallel — capped at 15 clusters by MAX_K so
+    # this is at most 15 concurrent Gemini calls. Fine.
+    import asyncio
+    results = await asyncio.gather(
+        *(label_one(cid, mids) for cid, mids in by_cluster.items()),
+        return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, tuple):
+            cid, lbl = r
+            if lbl:
+                labels[cid] = lbl
+    return labels

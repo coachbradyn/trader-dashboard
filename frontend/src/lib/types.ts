@@ -891,12 +891,16 @@ export interface MemoryProjectionPoint {
   y: number;
   z: number;
   cluster_id: number | null;
+  silhouette: number | null;
   importance: number;
+  reference_count: number;
   memory_type: string;
   ticker: string | null;
   strategy_id: string | null;
   validated: boolean | null;
   content_preview: string;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface MemoryProjectionCluster {
@@ -906,6 +910,17 @@ export interface MemoryProjectionCluster {
   z: number;
   member_count: number;
   weight: number;
+  label: string | null;
+  prototype_memory_id: string | null;
+}
+
+export interface MemoryClusterQuality {
+  k: number | null;
+  log_likelihood: number | null;
+  bic: number | null;
+  avg_silhouette: number | null;
+  n_memories_fit: number | null;
+  fit_at: string | null;
 }
 
 export type MemoryProjection =
@@ -917,6 +932,7 @@ export type MemoryProjection =
       projection_method: string;
       memories: MemoryProjectionPoint[];
       clusters: MemoryProjectionCluster[];
+      cluster_quality: MemoryClusterQuality;
     }
   | { available: false; reason: string };
 

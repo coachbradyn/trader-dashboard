@@ -108,12 +108,16 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             HenryMemory.embedding,
             HenryMemory.embedding_model,
             HenryMemory.cluster_id,
+            HenryMemory.cluster_silhouette,
             HenryMemory.importance,
+            HenryMemory.reference_count,
             HenryMemory.memory_type,
             HenryMemory.ticker,
             HenryMemory.strategy_id,
             HenryMemory.validated,
             HenryMemory.content,
+            HenryMemory.created_at,
+            HenryMemory.updated_at,
         )
         .where(HenryMemory.embedding.is_not(None))
     )
@@ -186,18 +190,32 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
     memories_out = []
     for r, xyz in zip(rows, mem_coords):
         preview = (r.content or "")[:160].strip()
+        created_iso = (
+            r.created_at.isoformat() + "Z" if r.created_at else None
+        )
+        updated_iso = (
+            r.updated_at.isoformat() + "Z" if r.updated_at else None
+        )
         memories_out.append({
             "id": r.id,
             "x": float(xyz[0]),
             "y": float(xyz[1]),
             "z": float(xyz[2]),
             "cluster_id": r.cluster_id if r.cluster_id is not None else None,
+            "silhouette": (
+                float(r.cluster_silhouette)
+                if r.cluster_silhouette is not None
+                else None
+            ),
             "importance": int(r.importance or 5),
+            "reference_count": int(r.reference_count or 0),
             "memory_type": r.memory_type,
             "ticker": r.ticker,
             "strategy_id": r.strategy_id,
             "validated": r.validated,
             "content_preview": preview,
+            "created_at": created_iso,
+            "updated_at": updated_iso,
         })
 
     clusters_out = []
@@ -209,9 +227,28 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             "z": float(xyz[2]),
             "member_count": int(m.get("member_count", 0)),
             "weight": float(m.get("weight", 0.0)),
+            "label": m.get("label"),
+            "prototype_memory_id": m.get("prototype_memory_id"),
         })
 
     from app.utils.utc import utcnow
+
+    # Surface fit-quality diagnostics from the cluster_stat row so the
+    # frontend quality panel has what it needs without a second round-trip.
+    cluster_quality = {}
+    try:
+        if cluster_stat and cluster_stat.data:
+            cluster_quality = {
+                "k": cluster_stat.data.get("k"),
+                "log_likelihood": cluster_stat.data.get("log_likelihood"),
+                "bic": cluster_stat.data.get("bic"),
+                "avg_silhouette": cluster_stat.data.get("avg_silhouette"),
+                "n_memories_fit": cluster_stat.data.get("n_memories_fit"),
+                "fit_at": cluster_stat.data.get("fit_at"),
+            }
+    except Exception:
+        pass
+
     payload = {
         "available": True,
         "model_name": dominant_model,
@@ -220,6 +257,7 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
         "projection_method": "pca_3d",
         "memories": memories_out,
         "clusters": clusters_out,
+        "cluster_quality": cluster_quality,
     }
 
     _CACHE["data"] = payload

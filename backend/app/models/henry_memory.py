@@ -52,6 +52,10 @@ class HenryMemory(Base):
     # Gaussian mixture cluster assignment from memory_clustering.fit_clusters.
     # Null when unclustered. Retrieval blends P(cluster | query) into ranking.
     cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None, index=True)
+    # Silhouette-like score in [-1, 1] — how well this memory fits its
+    # cluster vs the next-nearest one. Populated by fit_memory_clusters.
+    # Drives the "silhouette coloring" viz mode (outliers desaturated).
+    cluster_silhouette: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
     updated_at: Mapped[datetime] = mapped_column(default=lambda: utcnow(), onupdate=lambda: utcnow())
