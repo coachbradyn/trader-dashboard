@@ -64,6 +64,15 @@ class PortfolioAction(Base):
     # gets nudged up (win) or down (loss).
     injected_memory_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
+    # Options routing (Step 2C). `instrument_type` is the switch: "equity"
+    # (default, backwards-compatible with every historical row) or "options".
+    # When options, `options_strategy` holds the full recommendation dict
+    # from options_strategy.select_options_strategy — legs, strikes, expiry,
+    # Greeks, max risk/reward — so the executor can submit the multi-leg
+    # order without re-scoring.
+    instrument_type: Mapped[str | None] = mapped_column(String(10), default="equity", nullable=True)
+    options_strategy: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship()

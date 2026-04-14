@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
     ai_routing_mode: str = "dual"  # "dual", "claude_only", "gemini_only"
+    # Gemini model fallback chain — first model is tried, then the next on
+    # NotFound/BadRequest. Kept configurable so a single env flip (no deploy)
+    # can swap the active model when Google deprecates or rate-limits a slug.
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_fallback_models: str = "gemini-2.0-flash,gemini-1.5-flash"
 
     # Embeddings (semantic memory retrieval)
     voyage_api_key: str = ""  # Voyage AI key for text embeddings

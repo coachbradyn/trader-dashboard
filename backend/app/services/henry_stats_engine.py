@@ -44,6 +44,7 @@ async def compute_all_stats():
             _compute_conditional_probability,
             _compute_memory_decay,            # Phase 6, System 7
             _compute_confidence_calibration,  # Phase 6, System 8
+            _compute_options_performance,     # Step 4B
         ]:
             try:
                 await fn(db)
@@ -610,6 +611,202 @@ async def _compute_conditional_probability(db):
             },
             strategy=strategy_id,
             ticker=ticker,
+        )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Options Performance (Step 4B)
+# ───────────────────────────────────────────────────────────────────────────
+
+OPTIONS_MIN_TRADES_FOR_STRATEGY = 3
+OPTIONS_MIN_TRADES_FOR_BUCKETS = 5
+
+
+def _iv_bucket(iv: float | None) -> str | None:
+    if iv is None:
+        return None
+    try:
+        # greeks_at_entry may store iv as raw decimal (0.35) or as rank 0-100.
+        # Treat anything > 3.0 as a rank percentage; else as raw IV.
+        rank = float(iv)
+        if rank <= 3.0:
+            # raw IV — rough map to rank (same approach as the selector)
+            rank = max(0.0, min(100.0, (rank - 0.10) / 0.70 * 100.0))
+        if rank < 20.0:
+            return "iv_low"
+        if rank < 50.0:
+            return "iv_mid"
+        return "iv_high"
+    except (TypeError, ValueError):
+        return None
+
+
+def _dte_bucket(days: int | None) -> str | None:
+    if days is None or days < 0:
+        return None
+    if days < 14:
+        return "dte_short"
+    if days < 30:
+        return "dte_mid"
+    if days < 45:
+        return "dte_long"
+    return "dte_xlong"
+
+
+async def _compute_options_performance(db):
+    """Aggregate closed options_trades by strategy_type.
+
+    For each strategy type with ≥ OPTIONS_MIN_TRADES_FOR_STRATEGY closed
+    trades, compute total trades, win rate, avg P&L %, avg hold days,
+    avg DTE at entry, and avg theta cost per day. With ≥
+    OPTIONS_MIN_TRADES_FOR_BUCKETS, add by-IV-environment and by-DTE
+    conditional breakdowns.
+
+    Stored as HenryStats(stat_type='options_performance', strategy=<type>).
+    One row per strategy_type — the prompt injector reads them in bulk.
+    """
+    from app.models import HenryStats as _HS
+    try:
+        from app.models.options_trade import OptionsTrade
+    except Exception as e:
+        logger.debug(f"options_performance skipped (no OptionsTrade model): {e}")
+        return
+
+    result = await db.execute(
+        select(OptionsTrade).where(OptionsTrade.status.in_(("closed", "expired")))
+    )
+    rows = list(result.scalars().all())
+    if not rows:
+        # Clear stale rows so nothing lingers after all trades are purged.
+        await db.execute(delete(_HS).where(_HS.stat_type == "options_performance"))
+        return
+
+    # Group leg rows by (spread_group_id or leg-id) so multi-leg strategies
+    # count as one trade. Attribute the group to the strategy_type of its
+    # first leg (they should all match for a well-formed spread).
+    groups: dict[str, list] = defaultdict(list)
+    for r in rows:
+        key = r.spread_group_id or r.id
+        groups[key].append(r)
+
+    strat_buckets: dict[str, list[dict]] = defaultdict(list)
+    for _key, legs in groups.items():
+        strategy_type = legs[0].strategy_type or "unknown"
+        entry_time = min((l.entry_time for l in legs if l.entry_time), default=None)
+        exit_time = max((l.exit_time for l in legs if l.exit_time), default=None)
+        exp = min((l.expiration for l in legs if l.expiration), default=None)
+
+        # Net P&L across legs
+        pnl_dollars = sum(float(l.pnl_dollars or 0.0) for l in legs)
+        # Net entry / exit premium (directional — long adds, short subtracts)
+        def _net_prem(field: str) -> float:
+            v = 0.0
+            for l in legs:
+                prem = getattr(l, field, None)
+                if prem is None:
+                    continue
+                sign = 1 if l.direction == "long" else -1
+                v += sign * float(prem) * int(l.quantity or 0) * 100.0
+            return v
+        net_entry = _net_prem("entry_premium")
+        net_exit = _net_prem("exit_premium")
+        # pnl_pct relative to |net entry| — for a debit strategy, entry is
+        # the capital at risk; for a credit strategy it's the collateral.
+        denom = abs(net_entry) if net_entry else (
+            sum(abs(float(l.entry_premium or 0.0)) * int(l.quantity or 0) * 100.0 for l in legs)
+            or 1.0
+        )
+        pnl_pct = (pnl_dollars / denom) * 100.0 if denom else 0.0
+
+        hold_days = None
+        if entry_time and exit_time:
+            hold_days = max((exit_time.date() - entry_time.date()).days, 0)
+        dte_at_entry = None
+        if entry_time and exp:
+            dte_at_entry = max((exp - entry_time.date()).days, 0)
+
+        # Theta cost per day (losing trades only, where time decay likely
+        # dominant). Use absolute theta × hold days, capped at the loss.
+        theta_per_day = None
+        if pnl_dollars < 0 and legs[0].greeks_at_entry and hold_days:
+            theta_entry = legs[0].greeks_at_entry.get("theta") if isinstance(
+                legs[0].greeks_at_entry, dict
+            ) else None
+            if theta_entry is not None and hold_days > 0:
+                theta_per_day = abs(float(theta_entry)) * 100.0  # per-contract per-day
+
+        # Entry IV (for bucketing)
+        entry_iv = None
+        g0 = legs[0].greeks_at_entry
+        if isinstance(g0, dict):
+            entry_iv = g0.get("iv") or g0.get("iv_rank")
+        if entry_iv is None:
+            entry_iv = legs[0].iv_at_entry
+
+        strat_buckets[strategy_type].append({
+            "pnl_dollars": pnl_dollars,
+            "pnl_pct": pnl_pct,
+            "hold_days": hold_days,
+            "dte_at_entry": dte_at_entry,
+            "theta_per_day": theta_per_day,
+            "iv_at_entry": entry_iv,
+        })
+
+    # Clear stale rows — recompute everything
+    await db.execute(delete(_HS).where(_HS.stat_type == "options_performance"))
+
+    def _summary(trades: list[dict]) -> dict:
+        n = len(trades)
+        wins = [t for t in trades if (t["pnl_dollars"] or 0) > 0]
+        return {
+            "n": n,
+            "win_rate": round(len(wins) / n * 100.0, 1) if n else 0.0,
+            "avg_pnl_pct": round(
+                sum(t["pnl_pct"] for t in trades) / n, 2
+            ) if n else 0.0,
+            "avg_hold_days": round(
+                sum(t["hold_days"] for t in trades if t["hold_days"] is not None)
+                / max(1, sum(1 for t in trades if t["hold_days"] is not None)), 1
+            ) if any(t["hold_days"] is not None for t in trades) else None,
+            "avg_dte_at_entry": round(
+                sum(t["dte_at_entry"] for t in trades if t["dte_at_entry"] is not None)
+                / max(1, sum(1 for t in trades if t["dte_at_entry"] is not None)), 1
+            ) if any(t["dte_at_entry"] is not None for t in trades) else None,
+            "avg_theta_cost_per_day": round(
+                sum(t["theta_per_day"] for t in trades if t["theta_per_day"] is not None)
+                / max(1, sum(1 for t in trades if t["theta_per_day"] is not None)), 2
+            ) if any(t["theta_per_day"] is not None for t in trades) else None,
+        }
+
+    for strategy_type, trades in strat_buckets.items():
+        if len(trades) < OPTIONS_MIN_TRADES_FOR_STRATEGY:
+            continue
+        data = {"overall": _summary(trades)}
+
+        if len(trades) >= OPTIONS_MIN_TRADES_FOR_BUCKETS:
+            by_iv: dict[str, list[dict]] = defaultdict(list)
+            by_dte: dict[str, list[dict]] = defaultdict(list)
+            for t in trades:
+                b = _iv_bucket(t["iv_at_entry"])
+                if b:
+                    by_iv[b].append(t)
+                b = _dte_bucket(t["dte_at_entry"])
+                if b:
+                    by_dte[b].append(t)
+            data["by_iv"] = {
+                k: _summary(v) for k, v in by_iv.items()
+                if len(v) >= OPTIONS_MIN_TRADES_FOR_STRATEGY
+            }
+            data["by_dte"] = {
+                k: _summary(v) for k, v in by_dte.items()
+                if len(v) >= OPTIONS_MIN_TRADES_FOR_STRATEGY
+            }
+
+        await _upsert_stat(
+            db,
+            "options_performance",
+            data,
+            strategy=strategy_type,
         )
 
 

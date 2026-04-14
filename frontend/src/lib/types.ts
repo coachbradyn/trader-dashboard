@@ -12,6 +12,10 @@ export interface Portfolio {
   execution_mode?: string;  // "local" | "paper" | "live"
   max_order_amount?: number;
   has_alpaca_credentials?: boolean;
+  options_level?: 0 | 1 | 2 | 3;
+  max_options_risk?: number | null;
+  max_options_daily_trades?: number | null;
+  options_allocation_pct?: number;
   created_at: string;
 }
 
@@ -337,7 +341,7 @@ export interface PortfolioAction {
   portfolio_id: string;
   ticker: string;
   direction: string;
-  action_type: "BUY" | "SELL" | "TRIM" | "ADD" | "CLOSE" | "REBALANCE" | "DCA";
+  action_type: "BUY" | "SELL" | "TRIM" | "ADD" | "CLOSE" | "REBALANCE" | "DCA" | "OPPORTUNITY";
   suggested_qty: number | null;
   suggested_price: number | null;
   current_price: number | null;
@@ -352,6 +356,28 @@ export interface PortfolioAction {
   reject_reason: string | null;
   outcome_pnl: number | null;
   outcome_correct: boolean | null;
+  instrument_type?: "equity" | "options" | null;
+  options_strategy?: {
+    strategy_type: string;
+    expiration: string;
+    dte?: number;
+    legs: Array<{
+      action: "buy" | "sell";
+      type: "call" | "put";
+      strike: number;
+      option_symbol?: string;
+      premium: number;
+      quantity: number;
+    }>;
+    net_debit?: number;
+    net_credit?: number;
+    max_risk?: number | null;
+    max_reward?: number | null;
+    breakeven?: number | null;
+    breakevens?: number[];
+    greeks?: { delta?: number | null; gamma?: number | null; theta?: number | null; vega?: number | null };
+    score?: number;
+  } | null;
   created_at: string;
 }
 
@@ -1212,3 +1238,81 @@ export interface OptimizationStatus {
   best_observation: { objective: BayesianObjective; params: Record<string, number>; ts?: string } | null;
   latest_suggestion: BayesianSuggestion | null;
 }
+
+
+// ── Options ──────────────────────────────────────────────────────────
+export interface OptionsChainRow {
+  option_symbol: string;
+  strike: number;
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  volume: number | null;
+  open_interest: number | null;
+  iv: number | null;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+}
+
+export interface OptionsChain {
+  ticker: string;
+  underlying_price: number | null;
+  expirations: string[];
+  by_expiration: Record<string, { calls: OptionsChainRow[]; puts: OptionsChainRow[] }>;
+  note?: string;
+}
+
+export interface OptionsPosition {
+  id: string;
+  ticker: string;
+  option_symbol: string;
+  option_type: "call" | "put";
+  strike: number;
+  expiration: string;
+  direction: "long" | "short";
+  quantity: number;
+  entry_premium: number;
+  current_premium: number | null;
+  pnl_dollars: number | null;
+  pnl_percent: number | null;
+  strategy_type: string;
+  spread_group_id: string | null;
+  status: string;
+  greeks_at_entry: { delta?: number; gamma?: number; theta?: number; vega?: number } | null;
+  greeks_current: { delta?: number; gamma?: number; theta?: number; vega?: number } | null;
+  dte: number | null;
+}
+
+export interface PortfolioOptionsConfig {
+  portfolio_id: string;
+  options_level: 0 | 1 | 2 | 3;
+  max_options_risk: number | null;
+  max_options_daily_trades: number | null;
+  options_allocation_pct: number;
+}
+
+export interface OptionsDefaults {
+  max_risk_per_trade: number;
+  max_daily_trades: number;
+  min_dte: number;
+  target_dte: number;
+  min_strategy_score: number;
+}
+
+export interface OptionsOrderLeg {
+  option_symbol: string;
+  qty: number;
+  side: "buy" | "sell";
+}
+
+export interface OptionsOrderRequest {
+  portfolio_id: string;
+  strategy_type: string;
+  legs: OptionsOrderLeg[];
+  limit_price?: number | null;
+  max_risk_dollars?: number | null;
+  notes?: string | null;
+}
+

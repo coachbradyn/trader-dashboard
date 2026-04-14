@@ -710,4 +710,42 @@ export const api = {
     if (Array.isArray(data)) return data;
     return data.articles || [];
   },
+
+  // ── Options ─────────────────────────────────────────────────────────
+  getOptionsChain: (ticker: string, expiration?: string) => {
+    const sp = new URLSearchParams();
+    if (expiration) sp.set("expiration_date", expiration);
+    const qs = sp.toString();
+    return fetchApi<import("./types").OptionsChain>(
+      `/options/chain/${encodeURIComponent(ticker.toUpperCase())}${qs ? "?" + qs : ""}`
+    );
+  },
+  getPortfolioOptions: (portfolioId: string) =>
+    fetchApi<import("./types").OptionsPosition[]>(
+      `/portfolios/${portfolioId}/options`
+    ),
+  getPortfolioOptionsConfig: (portfolioId: string) =>
+    fetchApi<import("./types").PortfolioOptionsConfig>(
+      `/portfolios/${portfolioId}/options-config`
+    ),
+  updatePortfolioOptionsConfig: (
+    portfolioId: string,
+    body: Partial<import("./types").PortfolioOptionsConfig>
+  ) =>
+    fetchApi<import("./types").PortfolioOptionsConfig>(
+      `/portfolios/${portfolioId}/options-config`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  getOptionsDefaults: () =>
+    fetchApi<import("./types").OptionsDefaults>("/settings/options/defaults"),
+  updateOptionsDefaults: (body: Partial<import("./types").OptionsDefaults>) =>
+    fetchApi<import("./types").OptionsDefaults>(
+      "/settings/options/defaults",
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  submitOptionsOrder: (body: import("./types").OptionsOrderRequest) =>
+    fetchApi<{ order_id?: string; status: string; message?: string }>(
+      "/execution/options-order",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
 };

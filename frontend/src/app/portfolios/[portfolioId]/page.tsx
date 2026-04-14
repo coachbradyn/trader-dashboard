@@ -17,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { MetricTooltip } from "@/app/layout-shell";
+import { PayoffDiagram } from "@/components/options/PayoffDiagram";
 import type {
   Portfolio, Performance, Position, EquityPoint, DailyStats, Trade,
   BacktestImportData, PortfolioHolding, ActionStats, PortfolioAction,
@@ -779,6 +780,112 @@ function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
 
 // ── Action Queue (inline) ─────────────────────────────────────────
 
+// ── Action row (Step 5E — options-aware) ───────────────────────────
+function ActionRow({
+  action: a,
+  onApprove,
+  onReject,
+}: {
+  action: PortfolioAction;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const isOptions = a.instrument_type === "options" && a.options_strategy;
+  const opt = a.options_strategy;
+
+  if (!isOptions || !opt) {
+    // Existing equity render
+    return (
+      <div className="flex items-start gap-3 p-3 rounded-lg border border-border/40 bg-surface/50">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-sm font-bold text-white">{a.ticker}</span>
+            <Badge className={`text-[9px] ${a.action_type === "BUY" || a.action_type === "ADD" ? "bg-profit/15 text-profit" : a.action_type === "CLOSE" || a.action_type === "SELL" ? "bg-loss/15 text-loss" : "bg-amber-500/15 text-amber-400"}`}>{a.action_type}</Badge>
+            <span className="text-[10px] text-gray-500 font-mono">conf {a.confidence}/10</span>
+            <span className="text-[10px] text-gray-600">{formatTimeAgo(a.created_at)}</span>
+          </div>
+          <p className="text-xs text-gray-400">{a.reasoning}</p>
+        </div>
+        {a.status === "pending" && (
+          <div className="flex flex-col gap-1">
+            <Button size="sm" onClick={onApprove} className="text-[10px] h-6 bg-profit/20 text-profit border-profit/20 hover:bg-profit/30">Approve</Button>
+            <Button size="sm" onClick={onReject} className="text-[10px] h-6 bg-loss/20 text-loss border-loss/20 hover:bg-loss/30">Reject</Button>
+          </div>
+        )}
+        {a.status !== "pending" && (
+          <Badge className={`text-[9px] ${a.status === "approved" ? "bg-profit/15 text-profit" : a.status === "rejected" ? "bg-loss/15 text-loss" : "bg-gray-600/20 text-gray-500"}`}>{a.status}</Badge>
+        )}
+      </div>
+    );
+  }
+
+  // Options render
+  const strategyName = opt.strategy_type.replace(/_/g, " ");
+  const theta = opt.greeks?.theta;
+  const legsLine = opt.legs
+    .map((l) => `${l.action === "buy" ? "Buy" : "Sell"} ${a.ticker} ${opt.expiration} $${l.strike} ${l.type === "call" ? "Call" : "Put"} @ $${l.premium.toFixed(2)}`)
+    .join(" · ");
+  const spot = (() => {
+    const strikes = opt.legs.map((l) => l.strike);
+    return Math.round((Math.max(...strikes) + Math.min(...strikes)) / 2);
+  })();
+
+  return (
+    <div className="flex flex-col gap-2 p-3 rounded-lg border border-purple-500/30 bg-purple-500/5">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-bold text-white">{a.ticker}</span>
+        <Badge className="text-[9px] bg-purple-500/20 text-purple-300 border-purple-500/30 flex items-center gap-1">
+          {/* Stacked layers glyph (inline SVG — avoids a lucide dep here) */}
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="12 2 2 7 12 12 22 7 12 2" />
+            <polyline points="2 17 12 22 22 17" />
+            <polyline points="2 12 12 17 22 12" />
+          </svg>
+          {strategyName}
+        </Badge>
+        <span className="text-[10px] text-gray-500 font-mono">conf {a.confidence}/10</span>
+        <span className="text-[10px] text-gray-600 ml-auto">{formatTimeAgo(a.created_at)}</span>
+      </div>
+      <div className="text-[10px] text-gray-300 font-mono">{legsLine}</div>
+      <div className="text-[10px] text-gray-400 font-mono">
+        {opt.max_risk != null && <>Max risk: ${opt.max_risk.toFixed(0)} · </>}
+        {opt.max_reward != null && <>Max reward: ${opt.max_reward.toFixed(0)} · </>}
+        {opt.breakeven != null && <>BE: ${opt.breakeven.toFixed(2)} · </>}
+        {opt.breakevens && opt.breakevens.length > 0 && (
+          <>BE: {opt.breakevens.map((b) => `$${b.toFixed(2)}`).join("/")} · </>
+        )}
+        {theta != null && <>Theta: ${(theta * 100).toFixed(0)}/day</>}
+      </div>
+      <div className="mt-1">
+        <PayoffDiagram
+          legs={opt.legs.map((l) => ({
+            type: l.type,
+            strike: l.strike,
+            action: l.action,
+            premium: l.premium,
+            quantity: l.quantity,
+          }))}
+          spotPrice={spot}
+          height={100}
+        />
+      </div>
+      {a.reasoning && (
+        <p className="text-xs text-gray-400">{a.reasoning}</p>
+      )}
+      <div className="flex items-center gap-2 justify-end">
+        {a.status === "pending" ? (
+          <>
+            <Button size="sm" onClick={onApprove} className="text-[10px] h-6 bg-profit/20 text-profit border-profit/20 hover:bg-profit/30">Approve</Button>
+            <Button size="sm" onClick={onReject} className="text-[10px] h-6 bg-loss/20 text-loss border-loss/20 hover:bg-loss/30">Reject</Button>
+          </>
+        ) : (
+          <Badge className={`text-[9px] ${a.status === "approved" ? "bg-profit/15 text-profit" : a.status === "rejected" ? "bg-loss/15 text-loss" : "bg-gray-600/20 text-gray-500"}`}>{a.status}</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActionQueue({ portfolioId }: { portfolioId: string }) {
   const [actions, setActions] = useState<PortfolioAction[]>([]);
   const [filter, setFilter] = useState("pending");
@@ -818,26 +925,12 @@ function ActionQueue({ portfolioId }: { portfolioId: string }) {
         ) : (
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {actions.map((a) => (
-              <div key={a.id} className="flex items-start gap-3 p-3 rounded-lg border border-border/40 bg-surface/50">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-bold text-white">{a.ticker}</span>
-                    <Badge className={`text-[9px] ${a.action_type === "BUY" || a.action_type === "ADD" ? "bg-profit/15 text-profit" : a.action_type === "CLOSE" || a.action_type === "SELL" ? "bg-loss/15 text-loss" : "bg-amber-500/15 text-amber-400"}`}>{a.action_type}</Badge>
-                    <span className="text-[10px] text-gray-500 font-mono">conf {a.confidence}/10</span>
-                    <span className="text-[10px] text-gray-600">{formatTimeAgo(a.created_at)}</span>
-                  </div>
-                  <p className="text-xs text-gray-400">{a.reasoning}</p>
-                </div>
-                {a.status === "pending" && (
-                  <div className="flex flex-col gap-1">
-                    <Button size="sm" onClick={() => handleApprove(a.id)} className="text-[10px] h-6 bg-profit/20 text-profit border-profit/20 hover:bg-profit/30">Approve</Button>
-                    <Button size="sm" onClick={() => handleReject(a.id)} className="text-[10px] h-6 bg-loss/20 text-loss border-loss/20 hover:bg-loss/30">Reject</Button>
-                  </div>
-                )}
-                {a.status !== "pending" && (
-                  <Badge className={`text-[9px] ${a.status === "approved" ? "bg-profit/15 text-profit" : a.status === "rejected" ? "bg-loss/15 text-loss" : "bg-gray-600/20 text-gray-500"}`}>{a.status}</Badge>
-                )}
-              </div>
+              <ActionRow
+                key={a.id}
+                action={a}
+                onApprove={() => handleApprove(a.id)}
+                onReject={() => handleReject(a.id)}
+              />
             ))}
           </div>
         )}
@@ -1757,6 +1850,269 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// OPTIONS POSITIONS (Step 5C)
+// ══════════════════════════════════════════════════════════════════════
+
+function OptionsPositionsSection({
+  portfolioId,
+  optionsLevel,
+}: {
+  portfolioId: string;
+  optionsLevel: 0 | 1 | 2 | 3;
+}) {
+  const [positions, setPositions] = useState<import("@/lib/types").OptionsPosition[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getPortfolioOptions(portfolioId)
+      .then((p) => {
+        if (!cancelled) setPositions(p);
+      })
+      .catch((e) => {
+        if (!cancelled) setErr(e?.message || "Failed to load options");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioId]);
+
+  if (optionsLevel === 0) {
+    return (
+      <Card className="bg-gray-950/60 border-gray-800">
+        <CardContent className="pt-5 text-xs text-gray-500">
+          Options trading is disabled for this portfolio. Enable in{" "}
+          <a href="/settings" className="text-ai-blue underline">
+            Settings → Options
+          </a>
+          .
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Card className="bg-gray-950/60 border-gray-800">
+        <CardContent className="pt-5 space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (err) {
+    return (
+      <Card className="bg-gray-950/60 border-gray-800">
+        <CardContent className="pt-5 text-xs text-loss">{err}</CardContent>
+      </Card>
+    );
+  }
+
+  if (positions.length === 0) {
+    return (
+      <Card className="bg-gray-950/60 border-gray-800">
+        <CardContent className="pt-5 text-xs text-gray-500">
+          No options positions.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const dteColor = (d: number | null) => {
+    if (d == null) return "text-gray-400";
+    if (d < 7) return "text-loss";
+    if (d < 14) return "text-yellow-400";
+    return "text-gray-300";
+  };
+
+  // Group by spread_group_id — nulls are single legs
+  const singles = positions.filter((p) => !p.spread_group_id);
+  const spreadGroups = new Map<string, typeof positions>();
+  positions
+    .filter((p) => p.spread_group_id)
+    .forEach((p) => {
+      const arr = spreadGroups.get(p.spread_group_id!) ?? [];
+      arr.push(p);
+      spreadGroups.set(p.spread_group_id!, arr);
+    });
+
+  return (
+    <div className="space-y-3">
+      {/* Single legs */}
+      {singles.length > 0 && (
+        <Card className="bg-gray-950/60 border-gray-800">
+          <CardContent className="pt-5">
+            <h4 className="text-xs font-semibold text-gray-300 mb-2" style={FONT_OUTFIT}>
+              Single Legs
+            </h4>
+            <table className="w-full text-[11px]" style={FONT_MONO}>
+              <thead className="text-[10px] text-gray-500">
+                <tr className="border-b border-gray-800">
+                  <th className="text-left py-1.5">Contract</th>
+                  <th className="text-right">Qty</th>
+                  <th className="text-right">Entry</th>
+                  <th className="text-right">Current</th>
+                  <th className="text-right">P&L</th>
+                  <th className="text-right">DTE</th>
+                  <th className="text-right">Δ</th>
+                  <th className="text-right">Θ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {singles.map((p) => {
+                  const d = p.greeks_current?.delta ?? p.greeks_at_entry?.delta;
+                  const t = p.greeks_current?.theta ?? p.greeks_at_entry?.theta;
+                  const pnl = p.pnl_dollars ?? null;
+                  const pnlPct = p.pnl_percent ?? null;
+                  const nameBits = [
+                    p.ticker,
+                    new Date(p.expiration).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    }),
+                    `${p.strike}`,
+                    p.option_type === "call" ? "Call" : "Put",
+                  ];
+                  return (
+                    <tr key={p.id} className="border-b border-gray-900/60">
+                      <td className="py-1">
+                        <span
+                          className={
+                            p.direction === "long" ? "text-profit" : "text-loss"
+                          }
+                        >
+                          {p.direction === "long" ? "Long" : "Short"}
+                        </span>{" "}
+                        {nameBits.join(" ")}
+                      </td>
+                      <td className="text-right">{p.quantity}</td>
+                      <td className="text-right">${p.entry_premium.toFixed(2)}</td>
+                      <td className="text-right">
+                        {p.current_premium != null ? `$${p.current_premium.toFixed(2)}` : "—"}
+                      </td>
+                      <td
+                        className={`text-right ${
+                          pnl != null && pnl >= 0 ? "text-profit" : pnl != null ? "text-loss" : ""
+                        }`}
+                      >
+                        {pnl != null
+                          ? `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(0)}${
+                              pnlPct != null ? ` (${pnlPct.toFixed(1)}%)` : ""
+                            }`
+                          : "—"}
+                      </td>
+                      <td className={`text-right ${dteColor(p.dte)}`}>{p.dte ?? "—"}</td>
+                      <td className="text-right">{d != null ? d.toFixed(2) : "—"}</td>
+                      <td className="text-right text-gray-400">
+                        {t != null ? `-$${Math.abs(t).toFixed(2)}/d` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Multi-leg groups */}
+      {Array.from(spreadGroups.entries()).map(([gid, legs]) => (
+        <SpreadCard key={gid} legs={legs} />
+      ))}
+    </div>
+  );
+}
+
+function SpreadCard({ legs }: { legs: import("@/lib/types").OptionsPosition[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const strategyName = (legs[0]?.strategy_type || "Spread").replace(/_/g, " ");
+  const ticker = legs[0]?.ticker;
+  const expiry = legs[0]?.expiration;
+  const strikes = legs.map((l) => `${l.strike}`).join("/");
+  const netPnl = legs.reduce((acc, l) => acc + (l.pnl_dollars ?? 0), 0);
+  const dte = legs[0]?.dte;
+
+  // Derive legs for payoff
+  const payoffLegs = legs.map((l) => ({
+    type: l.option_type,
+    strike: l.strike,
+    action: (l.direction === "long" ? "buy" : "sell") as "buy" | "sell",
+    premium: l.entry_premium,
+    quantity: l.quantity,
+  }));
+
+  // spot approximation from strike span — use the nearest-to-middle if we
+  // don't know the live underlying price. Good enough for diagram centering.
+  const spot = Math.round((Math.max(...legs.map((l) => l.strike)) + Math.min(...legs.map((l) => l.strike))) / 2);
+
+  return (
+    <Card className="bg-gray-950/60 border-gray-800">
+      <CardContent className="pt-5">
+        <div
+          className="flex items-start justify-between cursor-pointer"
+          onClick={() => setExpanded((e) => !e)}
+        >
+          <div>
+            <div className="text-sm font-semibold text-gray-200" style={FONT_OUTFIT}>
+              {strategyName.charAt(0).toUpperCase() + strategyName.slice(1)} — {ticker}{" "}
+              {strikes}
+            </div>
+            <div className="text-[10px] text-gray-500" style={FONT_MONO}>
+              exp {expiry} · {dte ?? "—"} DTE
+            </div>
+          </div>
+          <div
+            className={`text-sm font-mono ${
+              netPnl >= 0 ? "text-profit" : "text-loss"
+            }`}
+          >
+            {netPnl >= 0 ? "+" : ""}${netPnl.toFixed(0)}
+          </div>
+        </div>
+        <div className="mt-3">
+          <PayoffDiagram legs={payoffLegs} spotPrice={spot} height={120} />
+        </div>
+        {expanded && (
+          <div className="mt-3 border-t border-gray-800 pt-2">
+            <table className="w-full text-[10px]" style={FONT_MONO}>
+              <tbody>
+                {legs.map((l) => (
+                  <tr key={l.id} className="border-b border-gray-900/60">
+                    <td className="py-1">
+                      <span
+                        className={
+                          l.direction === "long" ? "text-profit" : "text-loss"
+                        }
+                      >
+                        {l.direction === "long" ? "+" : "-"}
+                      </span>{" "}
+                      {l.quantity} × {l.strike} {l.option_type}
+                    </td>
+                    <td className="text-right">${l.entry_premium.toFixed(2)}</td>
+                    <td className="text-right">
+                      {l.current_premium != null ? `$${l.current_premium.toFixed(2)}` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1983,6 +2339,9 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
           <TabsTrigger value="actions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Actions
           </TabsTrigger>
+          <TabsTrigger value="options" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+            Options
+          </TabsTrigger>
           <TabsTrigger value="henry" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Henry
           </TabsTrigger>
@@ -2019,6 +2378,13 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
 
         <TabsContent value="actions" className="mt-4 space-y-4">
           <ActionQueue portfolioId={portfolioId} />
+        </TabsContent>
+
+        <TabsContent value="options" className="mt-4 space-y-4">
+          <OptionsPositionsSection
+            portfolioId={portfolioId}
+            optionsLevel={(portfolio?.options_level ?? 0) as 0 | 1 | 2 | 3}
+          />
         </TabsContent>
 
         <TabsContent value="henry" className="mt-4 space-y-4">

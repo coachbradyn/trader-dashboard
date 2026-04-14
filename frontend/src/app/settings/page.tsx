@@ -313,6 +313,7 @@ export default function SettingsPage() {
               { value: "backtests", label: "Backtests" },
               { value: "henry", label: "Henry AI" },
               { value: "scanner", label: "Scanner" },
+              { value: "options", label: "Options" },
             ].map((t) => (
               <button
                 key={t.value}
@@ -782,6 +783,11 @@ export default function SettingsPage() {
           {/* ── SCANNER CONFIG TAB ──────────────────────────── */}
           <TabsContent value="scanner">
             <ScannerConfigTab flash={flash} />
+          </TabsContent>
+
+          {/* ── OPTIONS CONFIG TAB ──────────────────────────── */}
+          <TabsContent value="options">
+            <OptionsSettingsTab flash={flash} />
           </TabsContent>
         </Tabs>
       </div>
@@ -1457,5 +1463,362 @@ function WebhookTestCard({ traderId, flash }: { traderId: string; flash: (msg: s
         </div>
       )}
     </CardContent></Card>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// OPTIONS SETTINGS TAB (Step 5F)
+// ══════════════════════════════════════════════════════════════════════
+
+function OptionsSettingsTab({ flash }: { flash: (msg: string, type?: "success" | "error") => void }) {
+  const [portfolios, setPortfolios] = useState<import("@/lib/types").Portfolio[]>([]);
+  const [configs, setConfigs] = useState<Record<string, import("@/lib/types").PortfolioOptionsConfig>>({});
+  const [positionsSummary, setPositionsSummary] = useState<Record<string, { count: number; at_risk: number }>>({});
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [defaults, setDefaults] = useState<import("@/lib/types").OptionsDefaults | null>(null);
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [confirm, setConfirm] = useState<{
+    portfolioId: string;
+    portfolioName: string;
+    newLevel: 0 | 1 | 2 | 3;
+    mode: "upgrade" | "downgrade";
+  } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await api.getPortfolios();
+        setPortfolios(list);
+        const cfgs: Record<string, import("@/lib/types").PortfolioOptionsConfig> = {};
+        const sums: Record<string, { count: number; at_risk: number }> = {};
+        await Promise.all(
+          list.map(async (p) => {
+            try {
+              cfgs[p.id] = await api.getPortfolioOptionsConfig(p.id);
+            } catch {
+              cfgs[p.id] = {
+                portfolio_id: p.id,
+                options_level: (p.options_level ?? 0) as 0 | 1 | 2 | 3,
+                max_options_risk: p.max_options_risk ?? null,
+                max_options_daily_trades: p.max_options_daily_trades ?? null,
+                options_allocation_pct: p.options_allocation_pct ?? 0.2,
+              };
+            }
+            try {
+              const positions = await api.getPortfolioOptions(p.id);
+              sums[p.id] = {
+                count: positions.length,
+                at_risk: positions.reduce(
+                  (s, pos) => s + Math.abs(pos.entry_premium * pos.quantity * 100),
+                  0
+                ),
+              };
+            } catch {
+              sums[p.id] = { count: 0, at_risk: 0 };
+            }
+          })
+        );
+        setConfigs(cfgs);
+        setPositionsSummary(sums);
+        try {
+          setDefaults(await api.getOptionsDefaults());
+        } catch {
+          setDefaults({
+            max_risk_per_trade: 2000,
+            max_daily_trades: 5,
+            min_dte: 7,
+            target_dte: 35,
+            min_strategy_score: 0.5,
+          });
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const levelMeta: Array<{ level: 0 | 1 | 2 | 3; label: string; subtitle: string; color: string }> = [
+    { level: 0, label: "Disabled", subtitle: "Equity only", color: "bg-gray-600/20 text-gray-400 border-gray-600/30" },
+    { level: 1, label: "Level 1", subtitle: "Covered calls, cash-secured puts", color: "bg-green-500/15 text-green-400 border-green-500/30" },
+    { level: 2, label: "Level 2", subtitle: "+ Long calls/puts", color: "bg-ai-blue/15 text-ai-blue border-ai-blue/30" },
+    { level: 3, label: "Level 3", subtitle: "+ Spreads, iron condors", color: "bg-purple-500/15 text-purple-400 border-purple-500/30" },
+  ];
+
+  async function commitLevelChange(portfolioId: string, newLevel: 0 | 1 | 2 | 3) {
+    try {
+      const updated = await api.updatePortfolioOptionsConfig(portfolioId, {
+        options_level: newLevel,
+      });
+      setConfigs((prev) => ({ ...prev, [portfolioId]: updated }));
+      flash(`Updated options level to ${newLevel}`, "success");
+    } catch (e: any) {
+      flash(e?.message || "Failed to update level", "error");
+    }
+  }
+
+  function handleLevelChange(p: import("@/lib/types").Portfolio, newLevel: 0 | 1 | 2 | 3) {
+    const current = (configs[p.id]?.options_level ?? 0) as 0 | 1 | 2 | 3;
+    if (current === newLevel) return;
+    const live = (p.execution_mode || "local").toLowerCase() === "live";
+    const positionsAbove = (positionsSummary[p.id]?.count ?? 0) > 0 && newLevel < current;
+    if ((current === 0 && newLevel > 0 && live) || positionsAbove) {
+      setConfirm({
+        portfolioId: p.id,
+        portfolioName: p.name,
+        newLevel,
+        mode: positionsAbove ? "downgrade" : "upgrade",
+      });
+      return;
+    }
+    commitLevelChange(p.id, newLevel);
+  }
+
+  async function updateRisk(
+    portfolioId: string,
+    field: keyof import("@/lib/types").PortfolioOptionsConfig,
+    value: number | null
+  ) {
+    try {
+      const updated = await api.updatePortfolioOptionsConfig(portfolioId, {
+        [field]: value,
+      } as any);
+      setConfigs((prev) => ({ ...prev, [portfolioId]: updated }));
+    } catch (e: any) {
+      flash(e?.message || "Failed to update", "error");
+    }
+  }
+
+  async function saveDefaults() {
+    if (!defaults) return;
+    try {
+      const updated = await api.updateOptionsDefaults(defaults);
+      setDefaults(updated);
+      flash("Saved options defaults", "success");
+    } catch (e: any) {
+      flash(e?.message || "Failed to save defaults", "error");
+    }
+  }
+
+  if (loading) return <Skeleton className="h-40 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      {/* Section 1: Overview */}
+      <Card>
+        <CardContent className="p-5 space-y-2">
+          <SectionTitle>Options trading levels</SectionTitle>
+          <p className="text-xs text-gray-500">
+            Match this to your brokerage approval level. Henry will not recommend
+            or execute strategies above the set level.
+          </p>
+          <table className="w-full text-[11px] mt-2">
+            <tbody>
+              {levelMeta.map((m) => (
+                <tr key={m.level} className="border-t border-border/40">
+                  <td className="py-2 w-24">
+                    <Badge className={`text-[10px] ${m.color}`}>{m.label}</Badge>
+                  </td>
+                  <td className="py-2 text-gray-400">{m.subtitle}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      {/* Section 2: Per-portfolio */}
+      <Card>
+        <CardContent className="p-5">
+          <SectionTitle>Per-portfolio configuration</SectionTitle>
+          <div className="mt-3 space-y-2">
+            {portfolios.map((p) => {
+              const cfg = configs[p.id];
+              const sum = positionsSummary[p.id] ?? { count: 0, at_risk: 0 };
+              const level = (cfg?.options_level ?? 0) as 0 | 1 | 2 | 3;
+              const meta = levelMeta[level];
+              const isOpen = expanded === p.id;
+              return (
+                <div key={p.id} className="border border-border/40 rounded-lg">
+                  <button
+                    onClick={() => setExpanded(isOpen ? null : p.id)}
+                    className="w-full flex items-center gap-3 px-3 py-2 hover:bg-surface/40"
+                  >
+                    <span className="text-sm font-medium text-white flex-1 text-left">
+                      {p.name}
+                    </span>
+                    <Badge className="text-[9px] bg-gray-600/15 text-gray-400 border-gray-600/30">
+                      {(p.execution_mode || "local").toUpperCase()}
+                    </Badge>
+                    <Badge className={`text-[9px] ${meta.color}`}>{meta.label}</Badge>
+                    <span className="text-[10px] text-gray-500 font-mono w-40 text-right">
+                      {sum.count > 0
+                        ? `${sum.count} position${sum.count > 1 ? "s" : ""}, $${sum.at_risk.toFixed(0)} at risk`
+                        : "No options positions"}
+                    </span>
+                  </button>
+                  {isOpen && cfg && (
+                    <div className="px-3 py-3 border-t border-border/40 space-y-3 bg-surface/20">
+                      {/* Level selector */}
+                      <div>
+                        <div className="text-[10px] text-gray-500 mb-1.5">Level</div>
+                        <div className="flex rounded-md overflow-hidden border border-border">
+                          {levelMeta.map((m) => (
+                            <button
+                              key={m.level}
+                              onClick={() => handleLevelChange(p, m.level)}
+                              className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition ${
+                                level === m.level
+                                  ? m.color
+                                  : "bg-surface-light/20 text-gray-400 hover:text-white"
+                              }`}
+                            >
+                              <div>{m.label}</div>
+                              <div className="text-[9px] opacity-70 mt-0.5">{m.subtitle}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Risk settings */}
+                      {level > 0 && (
+                        <div className="grid grid-cols-3 gap-3">
+                          <label className="text-[10px] text-gray-500">
+                            Max risk per trade
+                            <input
+                              type="number"
+                              className="mt-1 w-full bg-gray-900 border border-border rounded px-2 py-1 text-xs font-mono text-gray-200"
+                              value={cfg.max_options_risk ?? ""}
+                              placeholder={`Global default: $${defaults?.max_risk_per_trade ?? 2000}`}
+                              onChange={(e) =>
+                                setConfigs((prev) => ({
+                                  ...prev,
+                                  [p.id]: { ...prev[p.id], max_options_risk: e.target.value ? Number(e.target.value) : null },
+                                }))
+                              }
+                              onBlur={(e) =>
+                                updateRisk(p.id, "max_options_risk", e.target.value ? Number(e.target.value) : null)
+                              }
+                            />
+                          </label>
+                          <label className="text-[10px] text-gray-500">
+                            Max daily trades
+                            <input
+                              type="number"
+                              className="mt-1 w-full bg-gray-900 border border-border rounded px-2 py-1 text-xs font-mono text-gray-200"
+                              value={cfg.max_options_daily_trades ?? ""}
+                              placeholder={`Global default: ${defaults?.max_daily_trades ?? 5}`}
+                              onChange={(e) =>
+                                setConfigs((prev) => ({
+                                  ...prev,
+                                  [p.id]: { ...prev[p.id], max_options_daily_trades: e.target.value ? Number(e.target.value) : null },
+                                }))
+                              }
+                              onBlur={(e) =>
+                                updateRisk(p.id, "max_options_daily_trades", e.target.value ? Number(e.target.value) : null)
+                              }
+                            />
+                          </label>
+                          <label className="text-[10px] text-gray-500">
+                            Options allocation (%)
+                            <input
+                              type="number"
+                              step={1}
+                              className="mt-1 w-full bg-gray-900 border border-border rounded px-2 py-1 text-xs font-mono text-gray-200"
+                              value={Math.round((cfg.options_allocation_pct ?? 0.2) * 100)}
+                              onChange={(e) =>
+                                setConfigs((prev) => ({
+                                  ...prev,
+                                  [p.id]: { ...prev[p.id], options_allocation_pct: Number(e.target.value) / 100 },
+                                }))
+                              }
+                              onBlur={(e) =>
+                                updateRisk(p.id, "options_allocation_pct", Number(e.target.value) / 100)
+                              }
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Section 3: Global defaults */}
+      <Card>
+        <CardContent className="p-5">
+          <button
+            onClick={() => setDefaultsOpen((o) => !o)}
+            className="w-full text-left flex items-center gap-2"
+          >
+            <SectionTitle>Global defaults</SectionTitle>
+            <span className="text-[10px] text-gray-500 ml-auto">
+              {defaultsOpen ? "Hide" : "Show"}
+            </span>
+          </button>
+          {defaultsOpen && defaults && (
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-3">
+              {([
+                ["Max risk per trade ($)", "max_risk_per_trade"],
+                ["Max daily trades", "max_daily_trades"],
+                ["Min DTE", "min_dte"],
+                ["Target DTE", "target_dte"],
+                ["Min strategy score", "min_strategy_score"],
+              ] as const).map(([label, key]) => (
+                <label key={key} className="text-[10px] text-gray-500">
+                  {label}
+                  <input
+                    type="number"
+                    step={key === "min_strategy_score" ? 0.05 : 1}
+                    className="mt-1 w-full bg-gray-900 border border-border rounded px-2 py-1 text-xs font-mono text-gray-200"
+                    value={(defaults as any)[key] ?? 0}
+                    onChange={(e) =>
+                      setDefaults({ ...defaults, [key]: Number(e.target.value) })
+                    }
+                  />
+                </label>
+              ))}
+              <div className="col-span-full flex justify-end">
+                <Button size="sm" onClick={saveDefaults}>Save defaults</Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirm dialog */}
+      {confirm && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+          <Card className="max-w-md w-full bg-gray-950 border-gray-800">
+            <CardContent className="p-5 space-y-3">
+              <h3 className="text-sm font-semibold text-white">
+                {confirm.mode === "upgrade" ? "Enable options trading" : "Downgrade options level"}
+              </h3>
+              <p className="text-xs text-gray-400">
+                {confirm.mode === "upgrade"
+                  ? `You are enabling live options on "${confirm.portfolioName}". Options can incur losses that exceed the premium paid and involve additional risks like assignment and expiration. Make sure your brokerage approval matches.`
+                  : `"${confirm.portfolioName}" has open options positions. Downgrading to Level ${confirm.newLevel} will prevent new trades at higher levels, but existing positions stay open until they close or you exit them manually.`}
+              </p>
+              <div className="flex gap-2 justify-end">
+                <Button variant="outline" size="sm" onClick={() => setConfirm(null)}>Cancel</Button>
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    await commitLevelChange(confirm.portfolioId, confirm.newLevel);
+                    setConfirm(null);
+                  }}
+                >
+                  Confirm
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
   );
 }

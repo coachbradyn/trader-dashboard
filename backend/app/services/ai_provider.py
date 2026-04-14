@@ -207,9 +207,15 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
 
 
 async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
-    """Call Gemini API. Returns (text, model, input_tokens, output_tokens)."""
+    """Call Gemini API. Returns (text, model, input_tokens, output_tokens).
+
+    Walks a fallback chain of models (GEMINI_MODEL + GEMINI_FALLBACK_MODELS)
+    so a deprecated or rate-limited slug on the primary doesn't silently
+    route everything to Claude.
+    """
     settings = get_settings()
     if not settings.gemini_api_key:
+        logger.warning("Gemini skipped: GEMINI_API_KEY is empty")
         return (None, None, None, None)
 
     try:
@@ -218,41 +224,59 @@ async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
         logger.warning("google-genai package not installed, skipping Gemini")
         return (None, None, None, None)
 
-    model_name = "gemini-2.0-flash"
+    models = [settings.gemini_model] + [
+        m.strip() for m in (settings.gemini_fallback_models or "").split(",") if m.strip()
+    ]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    models = [m for m in models if not (m in seen or seen.add(m))]
 
-    try:
-        # Run in thread pool since genai may be sync, with timeout protection
-        def _sync_call():
-            client = genai.Client(api_key=settings.gemini_api_key)
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=system,
-                    max_output_tokens=max_tokens,
-                    temperature=0.7,
-                ),
+    last_err: Exception | None = None
+    for model_name in models:
+        try:
+            def _sync_call(mn=model_name):
+                client = genai.Client(api_key=settings.gemini_api_key)
+                response = client.models.generate_content(
+                    model=mn,
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=max_tokens,
+                        temperature=0.7,
+                    ),
+                )
+                # response.text can raise when content is blocked by safety
+                # filters — surface that so we try the next model.
+                try:
+                    text = response.text
+                except Exception as e:
+                    raise RuntimeError(f"response.text raised: {e}") from e
+                in_tok = None
+                out_tok = None
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    in_tok = getattr(response.usage_metadata, "prompt_token_count", None)
+                    out_tok = getattr(response.usage_metadata, "candidates_token_count", None)
+                return text, in_tok, out_tok
+
+            text, in_tok, out_tok = await asyncio.wait_for(
+                asyncio.to_thread(_sync_call), timeout=90.0
             )
-            text = response.text
-            # Try to get usage metadata
-            in_tok = None
-            out_tok = None
-            if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                in_tok = getattr(response.usage_metadata, 'prompt_token_count', None)
-                out_tok = getattr(response.usage_metadata, 'candidates_token_count', None)
-            return text, in_tok, out_tok
+            if text is None:
+                logger.warning(f"Gemini {model_name} returned None text; trying next model")
+                continue
+            return (text, model_name, in_tok, out_tok)
 
-        text, in_tok, out_tok = await asyncio.wait_for(
-            asyncio.to_thread(_sync_call), timeout=90.0
-        )
-        return (text, model_name, in_tok, out_tok)
+        except asyncio.TimeoutError:
+            logger.error(f"Gemini {model_name} timed out (90s)")
+            last_err = asyncio.TimeoutError()
+            continue
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini {model_name} failed: {str(e)[:200]}")
+            continue
 
-    except asyncio.TimeoutError:
-        logger.error("Gemini call timed out (90s)")
-        return (None, "gemini-timeout", None, None)
-    except Exception as e:
-        logger.error(f"Gemini call failed: {e}")
-        return (None, "gemini-error", None, None)
+    logger.error(f"Gemini exhausted all models {models}: last error {last_err}")
+    return (None, "gemini-error", None, None)
 
 
 async def _log_usage(
