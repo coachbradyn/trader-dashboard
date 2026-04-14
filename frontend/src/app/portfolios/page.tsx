@@ -32,7 +32,7 @@ function ExecutionBadge({ mode }: { mode?: string }) {
   return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-profit bg-profit/10 font-mono">Live</span>;
 }
 
-function PortfolioSparkline({ portfolioId, isUp }: { portfolioId: string; isUp: boolean }) {
+function PortfolioSparkline({ portfolioId, isUp, equity }: { portfolioId: string; isUp: boolean; equity: number }) {
   const [data, setData] = useState<{ t: string; v: number }[] | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -43,11 +43,25 @@ function PortfolioSparkline({ portfolioId, isUp }: { portfolioId: string; isUp: 
       .getEquityHistory(portfolioId)
       .then((points) => {
         if (cancelled) return;
-        const mapped = (points ?? []).map((p) => ({ t: p.time, v: p.equity }));
-        setData(mapped.slice(-30));
+        const mapped = (points ?? []).map((p) => ({ t: p.time, v: p.equity })).slice(-30);
+        // With <2 points Recharts renders nothing — fall back to a flat
+        // line at the current equity so untraded portfolios still show
+        // a visual anchor on the card.
+        if (mapped.length < 2 && equity > 0) {
+          const t = new Date().toISOString();
+          setData([{ t, v: equity }, { t, v: equity }]);
+        } else {
+          setData(mapped);
+        }
       })
       .catch(() => {
-        if (!cancelled) setData([]);
+        if (cancelled) return;
+        if (equity > 0) {
+          const t = new Date().toISOString();
+          setData([{ t, v: equity }, { t, v: equity }]);
+        } else {
+          setData([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -55,13 +69,13 @@ function PortfolioSparkline({ portfolioId, isUp }: { portfolioId: string; isUp: 
     return () => {
       cancelled = true;
     };
-  }, [portfolioId]);
+  }, [portfolioId, equity]);
 
   if (loading) {
     return <Skeleton className="h-[72px] w-full rounded-md" />;
   }
 
-  if (!data || data.length === 0) {
+  if (!data || data.length < 2) {
     return <div className="h-[72px] w-full" aria-hidden />;
   }
 
@@ -142,7 +156,7 @@ export default function PortfoliosPage() {
 
                     {/* Sparkline (30-day equity curve) */}
                     <div className="mb-3 -mx-1">
-                      <PortfolioSparkline portfolioId={p.id} isUp={isUp} />
+                      <PortfolioSparkline portfolioId={p.id} isUp={isUp} equity={p.equity} />
                     </div>
 
                     {/* Stat row */}

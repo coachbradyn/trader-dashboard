@@ -461,6 +461,41 @@ async def _run_intraday_monitor():
         logger.error(f"Intraday monitor failed: {e}")
 
 
+async def _snapshot_all_portfolios():
+    """Take an equity snapshot for every active portfolio.
+
+    Snapshots are otherwise only generated when trades execute, so quiet
+    portfolios end up with a single creation-time snapshot and their
+    sparklines / equity curves stay blank. Running every 30 min during
+    market hours (plus one after-hours run for weekend viewing) keeps the
+    equity-history endpoint populated so the home page, portfolios list,
+    and portfolio detail page can all render curves regardless of trading
+    activity.
+    """
+    try:
+        from app.database import async_session
+        from app.models import Portfolio
+        from app.services.trade_processor import _take_snapshot
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(Portfolio).where(Portfolio.is_active == True)
+            )
+            portfolios = result.scalars().all()
+            if not portfolios:
+                return
+            for p in portfolios:
+                try:
+                    await _take_snapshot(p, db)
+                except Exception as e:
+                    logger.debug(f"snapshot failed for {p.id}: {e}")
+            await db.commit()
+            logger.info(f"Snapshot tick: {len(portfolios)} portfolios")
+    except Exception as e:
+        logger.error(f"Periodic portfolio snapshot failed: {e}")
+
+
 async def _reconcile_alpaca_positions():
     """Reconcile DB holdings against live Alpaca positions for paper/live portfolios."""
     logger.info("Running Alpaca position reconciliation...")
@@ -854,6 +889,24 @@ def start_scheduler():
         _reconcile_alpaca_positions,
         CronTrigger(hour="9-16", minute="0,30", timezone=ET, day_of_week="mon-fri"),
         id="alpaca_reconcile",
+        replace_existing=True,
+    )
+
+    # Portfolio equity snapshots: every 30 min during market hours plus one
+    # post-close tick at 4:05 PM ET so weekend viewing shows a curve even
+    # for untraded portfolios. Without this, equity history is only
+    # written when a trade fires, and quiet portfolios never develop a
+    # sparkline.
+    scheduler.add_job(
+        _snapshot_all_portfolios,
+        CronTrigger(hour="9-16", minute="0,30", timezone=ET, day_of_week="mon-fri"),
+        id="portfolio_snapshots",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _snapshot_all_portfolios,
+        CronTrigger(hour=16, minute=5, timezone=ET, day_of_week="mon-fri"),
+        id="portfolio_snapshots_eod",
         replace_existing=True,
     )
 

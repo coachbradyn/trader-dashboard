@@ -500,6 +500,10 @@ class NewsService:
 
                 return [
                     {
+                        # `id` is required by the frontend `NewsArticle` type
+                        # (used as React list key). NewsCache.id is the
+                        # primary key — fall back to url when absent.
+                        "id": getattr(a, "id", None) or a.url or f"{a.source}:{a.headline[:40]}",
                         "headline": a.headline,
                         "summary": a.summary,
                         "source": a.source,

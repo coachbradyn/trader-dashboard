@@ -219,11 +219,31 @@ function PortfolioRow({ p }: { p: Portfolio }) {
       .then((pts) => {
         if (!mounted) return;
         const mapped = pts.slice(-30).map((x) => ({ t: x.time, v: x.equity }));
-        setData(mapped);
+        // Portfolios without trade activity may have 0 or 1 snapshots.
+        // Recharts won't render an <Area> with <2 points, so synthesise
+        // a flat line at the current equity — the sparkline is a visual
+        // anchor, not a precise history in that state.
+        if (mapped.length < 2 && p.equity > 0) {
+          const t = new Date().toISOString();
+          setData([
+            { t, v: p.equity },
+            { t, v: p.equity },
+          ]);
+        } else {
+          setData(mapped);
+        }
       })
-      .catch(() => { if (mounted) setData([]); });
+      .catch(() => {
+        if (!mounted) return;
+        if (p.equity > 0) {
+          const t = new Date().toISOString();
+          setData([{ t, v: p.equity }, { t, v: p.equity }]);
+        } else {
+          setData([]);
+        }
+      });
     return () => { mounted = false; };
-  }, [p.id]);
+  }, [p.id, p.equity]);
 
   return (
     <Link href={`/portfolios/${p.id}`} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-[#1f2937]/40 transition">
@@ -270,36 +290,63 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: s
 
 // ── Card 4: Sector Analysis ───────────────────────────────────────
 function SectorCard({ briefing }: { briefing: string | null }) {
+  // Map common ETF/synonym tokens back to the canonical sector name so
+  // briefings that say "XLK" or "tech" still register under "Technology".
+  const SECTOR_ALIASES: Record<string, string[]> = {
+    Technology: ["technology", "tech", "semis", "semiconductor", "software", "xlk", "qqq"],
+    Energy: ["energy", "oil", "gas", "xle", "crude"],
+    Healthcare: ["healthcare", "health care", "biotech", "xlv", "pharma"],
+    Financials: ["financials", "financial", "banks", "xlf"],
+    Consumer: ["consumer", "retail", "xly", "xlp", "discretionary", "staples"],
+    Industrials: ["industrials", "industrial", "xli"],
+    Materials: ["materials", "xlb", "metals"],
+    Utilities: ["utilities", "xlu"],
+    "Real Estate": ["real estate", "reit", "xlre"],
+    Communication: ["communication", "media", "xlc", "telecom"],
+  };
   const sectors = useMemo(() => {
-    const names = ["Technology", "Energy", "Healthcare", "Financials", "Consumer", "Industrials", "Materials", "Utilities", "Real Estate", "Communication"];
-    const text = (briefing || "");
+    const text = (briefing || "").toLowerCase();
+    const names = Object.keys(SECTOR_ALIASES);
+    // Always return the full set so the panel renders as a list even when
+    // the briefing is thin; missing sectors just show a neutral bar.
     return names.map((name) => {
-      const regex = new RegExp(`${name}[^.\\n]{0,120}`, "i");
-      const match = text.match(regex);
+      const aliases = SECTOR_ALIASES[name];
       let score = 0;
-      if (match) {
-        const s = match[0].toLowerCase();
-        if (/strong|outperform|rally|lead|up|bullish|momentum/.test(s)) score = 1;
-        else if (/weak|underperform|declin|down|bearish|lag/.test(s)) score = -1;
-        else score = 0;
+      let mentioned = false;
+      for (const alias of aliases) {
+        const idx = text.indexOf(alias);
+        if (idx < 0) continue;
+        mentioned = true;
+        const window = text.slice(idx, idx + 160);
+        if (/strong|outperform|rally|lead(?!s? to (declin|loss))|bullish|momentum|gain|advance|breakout|surge/.test(window)) {
+          score = 1;
+          break;
+        }
+        if (/weak|underperform|declin|bearish|lag|drop|selloff|fall|pressure/.test(window)) {
+          score = -1;
+          break;
+        }
       }
-      return { name, score, mentioned: !!match };
-    }).filter((s) => s.mentioned).slice(0, 6);
+      return { name, score, mentioned };
+    }).slice(0, 8);
   }, [briefing]);
+
+  const anyMentioned = sectors.some((s) => s.mentioned);
 
   return (
     <CardSpotlight>
       <div className="p-5">
         <CardHeader icon={PieIcon} title="Sector Analysis" />
-        {sectors.length === 0 ? (
+        {!anyMentioned && !briefing ? (
           <p className="text-xs text-gray-500 py-6 text-center">Sector rotation analysis awaiting briefing context.</p>
         ) : (
           <div className="space-y-2">
             {sectors.map((s) => {
               const tone = s.score > 0 ? "bg-profit" : s.score < 0 ? "bg-loss" : "bg-gray-500";
               const width = s.score > 0 ? 70 : s.score < 0 ? 70 : 30;
+              const rowOpacity = s.mentioned ? "opacity-100" : "opacity-50";
               return (
-                <div key={s.name} className="flex items-center gap-3">
+                <div key={s.name} className={`flex items-center gap-3 ${rowOpacity}`}>
                   <span className="text-[11px] text-gray-300 w-24 truncate" style={FONT_OUTFIT}>{s.name}</span>
                   <div className="flex-1 h-1.5 rounded-full bg-[#0a0a0f] border border-[#1f2937] overflow-hidden">
                     <div
@@ -344,11 +391,15 @@ function NewsCard() {
           <p className="text-xs text-gray-500 py-4 text-center">No recent headlines.</p>
         ) : (
           <ul className="space-y-2.5">
-            {items.slice(0, 6).map((a) => {
+            {items.slice(0, 6).map((a, idx) => {
               const s = a.sentiment_score ?? 0;
               const tone = s > 0.2 ? "bg-profit" : s < -0.2 ? "bg-loss" : "bg-gray-500";
+              // id can be absent on older cache rows — fall back to url
+              // or headline+index so the list still renders with unique
+              // React keys.
+              const rowKey = a.id || a.url || `${a.headline}-${idx}`;
               return (
-                <li key={a.id} className="flex items-start gap-2.5">
+                <li key={rowKey} className="flex items-start gap-2.5">
                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${tone}`} />
                   <div className="min-w-0 flex-1">
                     <a
@@ -440,7 +491,12 @@ function TradeColumn({
 // ── Card 7: The Play ──────────────────────────────────────────────
 function PlayCard({ actions }: { actions: PortfolioAction[] }) {
   const play = useMemo(() => {
-    const candidates = actions.filter((a) => a.action_type === "BUY" || a.action_type === "ADD");
+    // Scanner-generated entries come through as OPPORTUNITY; Henry's
+    // autonomous/portfolio-review entries come through as BUY or ADD.
+    // All three are "go long" signals and should qualify as The Play.
+    const candidates = actions.filter(
+      (a) => a.action_type === "BUY" || a.action_type === "ADD" || a.action_type === "OPPORTUNITY",
+    );
     if (candidates.length === 0) return null;
     return [...candidates].sort((a, b) => b.confidence - a.confidence)[0];
   }, [actions]);
