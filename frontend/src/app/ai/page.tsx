@@ -24,7 +24,7 @@ import {
 } from "recharts";
 import type {
   Portfolio, PortfolioAction, ActionStats,
-  BriefingResponse, Trade, NewsArticle,
+  BriefingResponse, Trade, NewsArticle, MarketIntel,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -288,66 +288,39 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: s
   );
 }
 
-// ── Card 4: Sector Analysis ───────────────────────────────────────
-function SectorCard({ briefing }: { briefing: string | null }) {
-  // Map common ETF/synonym tokens back to the canonical sector name so
-  // briefings that say "XLK" or "tech" still register under "Technology".
-  const SECTOR_ALIASES: Record<string, string[]> = {
-    Technology: ["technology", "tech", "semis", "semiconductor", "software", "xlk", "qqq"],
-    Energy: ["energy", "oil", "gas", "xle", "crude"],
-    Healthcare: ["healthcare", "health care", "biotech", "xlv", "pharma"],
-    Financials: ["financials", "financial", "banks", "xlf"],
-    Consumer: ["consumer", "retail", "xly", "xlp", "discretionary", "staples"],
-    Industrials: ["industrials", "industrial", "xli"],
-    Materials: ["materials", "xlb", "metals"],
-    Utilities: ["utilities", "xlu"],
-    "Real Estate": ["real estate", "reit", "xlre"],
-    Communication: ["communication", "media", "xlc", "telecom"],
-  };
-  const sectors = useMemo(() => {
-    const text = (briefing || "").toLowerCase();
-    const names = Object.keys(SECTOR_ALIASES);
-    // Always return the full set so the panel renders as a list even when
-    // the briefing is thin; missing sectors just show a neutral bar.
-    return names.map((name) => {
-      const aliases = SECTOR_ALIASES[name];
-      let score = 0;
-      let mentioned = false;
-      for (const alias of aliases) {
-        const idx = text.indexOf(alias);
-        if (idx < 0) continue;
-        mentioned = true;
-        const window = text.slice(idx, idx + 160);
-        if (/strong|outperform|rally|lead(?!s? to (declin|loss))|bullish|momentum|gain|advance|breakout|surge/.test(window)) {
-          score = 1;
-          break;
-        }
-        if (/weak|underperform|declin|bearish|lag|drop|selloff|fall|pressure/.test(window)) {
-          score = -1;
-          break;
-        }
-      }
-      return { name, score, mentioned };
-    }).slice(0, 8);
-  }, [briefing]);
-
-  const anyMentioned = sectors.some((s) => s.mentioned);
-
+// ── Card 4: Sector Analysis (Gemini-grounded) ─────────────────────
+function SectorCard({ intel, loading }: { intel: MarketIntel | null; loading: boolean }) {
+  const sectors = intel?.sectors ?? [];
+  const isFallback = intel?.source === "fallback";
   return (
     <CardSpotlight>
       <div className="p-5">
         <CardHeader icon={PieIcon} title="Sector Analysis" />
-        {!anyMentioned && !briefing ? (
-          <p className="text-xs text-gray-500 py-6 text-center">Sector rotation analysis awaiting briefing context.</p>
+        {loading && !intel ? (
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-4 rounded" />
+            ))}
+          </div>
+        ) : sectors.length === 0 ? (
+          <p className="text-xs text-gray-500 py-6 text-center">
+            Sector intel unavailable. Gemini will refresh shortly.
+          </p>
         ) : (
           <div className="space-y-2">
             {sectors.map((s) => {
               const tone = s.score > 0 ? "bg-profit" : s.score < 0 ? "bg-loss" : "bg-gray-500";
-              const width = s.score > 0 ? 70 : s.score < 0 ? 70 : 30;
-              const rowOpacity = s.mentioned ? "opacity-100" : "opacity-50";
+              const width = s.score !== 0 ? 70 : 30;
+              const rowOpacity = s.score !== 0 ? "opacity-100" : "opacity-60";
               return (
-                <div key={s.name} className={`flex items-center gap-3 ${rowOpacity}`}>
-                  <span className="text-[11px] text-gray-300 w-24 truncate" style={FONT_OUTFIT}>{s.name}</span>
+                <div
+                  key={s.name}
+                  className={`group relative flex items-center gap-3 ${rowOpacity}`}
+                  title={s.summary || s.name}
+                >
+                  <span className="text-[11px] text-gray-300 w-28 truncate" style={FONT_OUTFIT}>
+                    {s.name}
+                  </span>
                   <div className="flex-1 h-1.5 rounded-full bg-[#0a0a0f] border border-[#1f2937] overflow-hidden">
                     <div
                       className={`h-full ${tone} transition-all duration-500`}
@@ -357,14 +330,45 @@ function SectorCard({ briefing }: { briefing: string | null }) {
                       }}
                     />
                   </div>
-                  <span className={`text-[10px] font-mono w-8 text-right ${
-                    s.score > 0 ? "text-profit" : s.score < 0 ? "text-loss" : "text-gray-500"
-                  }`} style={FONT_MONO}>
+                  <span
+                    className={`text-[10px] font-mono w-8 text-right ${
+                      s.score > 0 ? "text-profit" : s.score < 0 ? "text-loss" : "text-gray-500"
+                    }`}
+                    style={FONT_MONO}
+                  >
                     {s.score > 0 ? "↑" : s.score < 0 ? "↓" : "—"}
                   </span>
+                  {/* Hover detail: leaders + summary */}
+                  {(s.summary || s.leaders.length > 0) && (
+                    <div className="absolute left-0 right-0 -bottom-1 translate-y-full z-10 hidden group-hover:block p-2 rounded-md bg-[#0a0a0f] border border-[#1f2937] shadow-lg">
+                      {s.summary && (
+                        <p className="text-[10px] text-gray-300 leading-relaxed" style={FONT_OUTFIT}>
+                          {s.summary}
+                        </p>
+                      )}
+                      {s.leaders.length > 0 && (
+                        <div className="flex gap-1 mt-1">
+                          {s.leaders.map((t) => (
+                            <span
+                              key={t}
+                              className="text-[9px] font-mono text-ai-blue bg-ai-blue/10 px-1.5 py-0.5 rounded"
+                              style={FONT_MONO}
+                            >
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
+            {isFallback && (
+              <p className="text-[9px] text-gray-600 mt-2 text-center" style={FONT_MONO}>
+                Awaiting Gemini refresh
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -372,31 +376,68 @@ function SectorCard({ briefing }: { briefing: string | null }) {
   );
 }
 
-// ── Card 5: News ──────────────────────────────────────────────────
-function NewsCard() {
-  const [items, setItems] = useState<NewsArticle[] | null>(null);
+// ── Card 5: News / Macro (Gemini-grounded with raw news fallback) ──
+function NewsCard({ intel, loading }: { intel: MarketIntel | null; loading: boolean }) {
+  // Raw news kept only as a fallback when Gemini intel is absent — the
+  // primary path is Gemini's curated macro headlines with impact tags.
+  const [rawNews, setRawNews] = useState<NewsArticle[] | null>(null);
+  const macro = intel?.macro ?? [];
   useEffect(() => {
+    if (macro.length > 0) return;
     api.getNews({ limit: 6, hours: 24 })
-      .then((d) => setItems(Array.isArray(d) ? d : []))
-      .catch(() => setItems([]));
-  }, []);
+      .then((d) => setRawNews(Array.isArray(d) ? d : []))
+      .catch(() => setRawNews([]));
+  }, [macro.length]);
 
   return (
     <CardSpotlight>
       <div className="p-5">
         <CardHeader icon={Newspaper} title="News / Macro" />
-        {items === null ? (
-          <div className="space-y-2">{[1,2,3,4].map((i) => <Skeleton key={i} className="h-6 rounded" />)}</div>
-        ) : items.length === 0 ? (
-          <p className="text-xs text-gray-500 py-4 text-center">No recent headlines.</p>
-        ) : (
+        {loading && !intel && rawNews === null ? (
+          <div className="space-y-2">
+            {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-6 rounded" />)}
+          </div>
+        ) : macro.length > 0 ? (
           <ul className="space-y-2.5">
-            {items.slice(0, 6).map((a, idx) => {
+            {macro.slice(0, 6).map((m, idx) => {
+              const tone =
+                m.impact === "bullish" ? "bg-profit"
+                : m.impact === "bearish" ? "bg-loss"
+                : "bg-gray-500";
+              return (
+                <li key={`${m.headline}-${idx}`} className="flex items-start gap-2.5">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${tone}`} />
+                  <div className="min-w-0 flex-1">
+                    {m.url ? (
+                      <a
+                        href={m.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[12px] text-gray-200 hover:text-white line-clamp-1 leading-snug"
+                        style={FONT_OUTFIT}
+                      >
+                        {m.headline}
+                      </a>
+                    ) : (
+                      <span className="text-[12px] text-gray-200 line-clamp-1 leading-snug" style={FONT_OUTFIT}>
+                        {m.headline}
+                      </span>
+                    )}
+                    {m.summary && (
+                      <p className="text-[10px] text-gray-500 line-clamp-2 mt-0.5 leading-snug" style={FONT_OUTFIT}>
+                        {m.summary}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        ) : rawNews && rawNews.length > 0 ? (
+          <ul className="space-y-2.5">
+            {rawNews.slice(0, 6).map((a, idx) => {
               const s = a.sentiment_score ?? 0;
               const tone = s > 0.2 ? "bg-profit" : s < -0.2 ? "bg-loss" : "bg-gray-500";
-              // id can be absent on older cache rows — fall back to url
-              // or headline+index so the list still renders with unique
-              // React keys.
               const rowKey = a.id || a.url || `${a.headline}-${idx}`;
               return (
                 <li key={rowKey} className="flex items-start gap-2.5">
@@ -419,6 +460,8 @@ function NewsCard() {
               );
             })}
           </ul>
+        ) : (
+          <p className="text-xs text-gray-500 py-4 text-center">No recent headlines.</p>
         )}
       </div>
     </CardSpotlight>
@@ -488,18 +531,50 @@ function TradeColumn({
   );
 }
 
-// ── Card 7: The Play ──────────────────────────────────────────────
-function PlayCard({ actions }: { actions: PortfolioAction[] }) {
+// ── Card 7: The Play (pending actions first, Gemini intel fallback) ─
+function PlayCard({
+  actions,
+  intel,
+}: {
+  actions: PortfolioAction[];
+  intel: MarketIntel | null;
+}) {
   const play = useMemo(() => {
-    // Scanner-generated entries come through as OPPORTUNITY; Henry's
-    // autonomous/portfolio-review entries come through as BUY or ADD.
-    // All three are "go long" signals and should qualify as The Play.
+    // Primary: highest-confidence pending go-long action from Henry.
     const candidates = actions.filter(
-      (a) => a.action_type === "BUY" || a.action_type === "ADD" || a.action_type === "OPPORTUNITY",
+      (a) =>
+        a.action_type === "BUY" ||
+        a.action_type === "ADD" ||
+        a.action_type === "OPPORTUNITY"
     );
-    if (candidates.length === 0) return null;
-    return [...candidates].sort((a, b) => b.confidence - a.confidence)[0];
-  }, [actions]);
+    if (candidates.length > 0) {
+      const top = [...candidates].sort((a, b) => b.confidence - a.confidence)[0];
+      return {
+        ticker: top.ticker,
+        direction: top.direction || "long",
+        reasoning: top.reasoning,
+        confidence: top.confidence,
+        action_type: top.action_type,
+        current_price: top.current_price,
+        suggested_price: top.suggested_price,
+        source: "henry_action" as const,
+      };
+    }
+    // Fallback: Gemini's pick from market-intel
+    if (intel?.play) {
+      return {
+        ticker: intel.play.ticker,
+        direction: intel.play.direction,
+        reasoning: intel.play.rationale,
+        confidence: intel.play.confidence,
+        action_type: "GEMINI",
+        current_price: intel.play.current_price ?? null,
+        suggested_price: intel.play.suggested_price ?? null,
+        source: "gemini" as const,
+      };
+    }
+    return null;
+  }, [actions, intel]);
 
   return (
     <CardSpotlight>
@@ -516,7 +591,15 @@ function PlayCard({ actions }: { actions: PortfolioAction[] }) {
               <Badge className={`text-[9px] ${play.direction === "long" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>
                 {play.direction.toUpperCase()}
               </Badge>
-              <Badge className="text-[9px] bg-ai-blue/15 text-ai-blue">{play.action_type}</Badge>
+              <Badge
+                className={`text-[9px] ${
+                  play.source === "gemini"
+                    ? "bg-purple-500/15 text-purple-300"
+                    : "bg-ai-blue/15 text-ai-blue"
+                }`}
+              >
+                {play.source === "gemini" ? "GEMINI" : play.action_type}
+              </Badge>
             </div>
             <p className="text-xs text-gray-400 leading-relaxed line-clamp-3 mb-3">{play.reasoning}</p>
             <div className="grid grid-cols-3 gap-2 text-[10px] font-mono mb-3" style={FONT_MONO}>
@@ -643,6 +726,8 @@ export default function HomePage() {
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [traders, setTraders] = useState<{ id: string }[] | null>(null);
+  const [intel, setIntel] = useState<MarketIntel | null>(null);
+  const [intelLoading, setIntelLoading] = useState(true);
 
   const market = getMarketStatus();
   const now = new Date();
@@ -669,13 +754,22 @@ export default function HomePage() {
     api.getActionStats().then(setActionStats).catch(() => setActionStats(null));
     api.getTraders().then(setTraders).catch(() => setTraders([]));
     fetchBriefing();
+    // Market intel (Gemini-grounded) powers Sector + Macro News + The Play
+    // fallback. Cache TTL is 15 min backend-side so polling it every 5
+    // minutes is cheap — most calls hit the cache.
+    api.getMarketIntel()
+      .then((d) => { setIntel(d); setIntelLoading(false); })
+      .catch(() => setIntelLoading(false));
 
     const iv = setInterval(() => {
       api.getPortfolios().then(setPortfolios).catch(() => {});
       api.getActions("pending").then(setActions).catch(() => {});
       api.getActionStats().then(setActionStats).catch(() => {});
     }, 30000);
-    return () => clearInterval(iv);
+    const intelIv = setInterval(() => {
+      api.getMarketIntel().then(setIntel).catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => { clearInterval(iv); clearInterval(intelIv); };
   }, [fetchBriefing]);
 
   const handleApprove = useCallback(async (id: string) => {
@@ -724,10 +818,10 @@ export default function HomePage() {
           marketOpen={market.open}
         />
         <PortfolioCommentaryCard portfolios={portfolios} />
-        <SectorCard briefing={briefing?.briefing ?? null} />
-        <NewsCard />
+        <SectorCard intel={intel} loading={intelLoading} />
+        <NewsCard intel={intel} loading={intelLoading} />
         <WinsLossesCard />
-        <PlayCard actions={actions} />
+        <PlayCard actions={actions} intel={intel} />
         <ActionsQueueCard actions={actions} onApprove={handleApprove} />
         <HenrySentimentCard stats={actionStats} />
       </div>

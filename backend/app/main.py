@@ -621,6 +621,10 @@ app.include_router(execution_router.router, prefix="/api", tags=["execution"])
 app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"])
 app.include_router(options_router.router, prefix="/api", tags=["options"])
 
+# Gemini-grounded home-dashboard intel
+from app.api import market_intel as market_intel_router  # noqa: E402
+app.include_router(market_intel_router.router, prefix="/api", tags=["ai"])
+
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────
 

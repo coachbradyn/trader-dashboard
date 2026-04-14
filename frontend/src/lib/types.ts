@@ -1316,3 +1316,38 @@ export interface OptionsOrderRequest {
   notes?: string | null;
 }
 
+// ── Market Intel (Gemini-grounded home cards) ──────────────────────
+export interface MarketIntelSector {
+  name: string;
+  score: -1 | 0 | 1;
+  sentiment: "bullish" | "bearish" | "neutral";
+  summary: string;
+  leaders: string[];
+}
+
+export interface MarketIntelMacro {
+  headline: string;
+  summary: string;
+  impact: "bullish" | "bearish" | "neutral";
+  url: string;
+}
+
+export interface MarketIntelPlay {
+  ticker: string;
+  direction: "long" | "short";
+  rationale: string;
+  confidence: number;
+  source: "henry_action" | "gemini";
+  action_id?: string;
+  current_price?: number | null;
+  suggested_price?: number | null;
+}
+
+export interface MarketIntel {
+  sectors: MarketIntelSector[];
+  macro: MarketIntelMacro[];
+  play: MarketIntelPlay | null;
+  generated_at: string;
+  source: "gemini" | "fallback";
+}
+
