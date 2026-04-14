@@ -627,17 +627,23 @@ app.include_router(options_router.router, prefix="/api", tags=["options"])
 async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
     """Fetch trades from the last N days, formatted as webhook-style dicts for ai_service."""
     cutoff = utcnow() - timedelta(days=days_back)
+    # Join PortfolioTrade so each row knows which portfolio it belongs
+    # to — used by the portfolio-scoped chat path to avoid Henry mixing
+    # positions from sibling portfolios into a single portfolio's
+    # conversation.
+    from app.models import PortfolioTrade as _PT
     async with async_session() as db:
         result = await db.execute(
-            select(Trade)
+            select(Trade, _PT.portfolio_id)
+            .outerjoin(_PT, _PT.trade_id == Trade.id)
             .options(selectinload(Trade.trader))
             .where(Trade.created_at >= cutoff, Trade.is_simulated == False)
             .order_by(Trade.created_at.desc())
         )
-        db_trades = result.scalars().all()
+        rows = result.all()
 
     out = []
-    for t in db_trades:
+    for t, portfolio_id in rows:
         if t.status == "open":
             out.append({
                 "signal": "entry",
@@ -652,6 +658,7 @@ async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
                 "stop": t.stop_price or 0,
                 "tf": t.timeframe or "?",
                 "time": int(t.entry_time.timestamp() * 1000) if t.entry_time else 0,
+                "portfolio_id": portfolio_id,
             })
         else:
             out.append({
@@ -665,6 +672,7 @@ async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
                 "exit_reason": t.exit_reason or "unknown",
                 "tf": t.timeframe or "?",
                 "time": int(t.exit_time.timestamp() * 1000) if t.exit_time else 0,
+                "portfolio_id": portfolio_id,
             })
             # Also include the entry for this trade
             out.append({
@@ -680,23 +688,32 @@ async def get_trades_for_ai(days_back: int = 1) -> list[dict]:
                 "stop": t.stop_price or 0,
                 "tf": t.timeframe or "?",
                 "time": int(t.entry_time.timestamp() * 1000) if t.entry_time else 0,
+                "portfolio_id": portfolio_id,
             })
     return out
 
 
 async def get_positions_for_ai() -> list[dict]:
-    """Fetch currently open positions, formatted for ai_service."""
+    """Fetch currently open positions, formatted for ai_service.
+
+    Rows carry `portfolio_id` so the portfolio-scoped chat path can
+    filter out positions from sibling portfolios — without it, Henry
+    would reference trades system-wide even when the user is asking
+    about a specific portfolio.
+    """
+    from app.models import PortfolioTrade as _PT
     async with async_session() as db:
         result = await db.execute(
-            select(Trade)
+            select(Trade, _PT.portfolio_id)
+            .outerjoin(_PT, _PT.trade_id == Trade.id)
             .options(selectinload(Trade.trader))
             .where(Trade.status == "open", Trade.is_simulated == False)
             .order_by(Trade.entry_time.desc())
         )
-        open_trades = result.scalars().all()
+        rows = result.all()
 
     out = []
-    for t in open_trades:
+    for t, portfolio_id in rows:
         current_price = price_service.get_price(t.ticker) or t.entry_price
         if t.entry_price and t.entry_price > 0:
             if t.direction == "long":
@@ -714,6 +731,7 @@ async def get_positions_for_ai() -> list[dict]:
             "current_price": current_price,
             "pnl_pct": round(pnl_pct, 2),
             "bars_in_trade": 0,
+            "portfolio_id": portfolio_id,
         })
     return out
 

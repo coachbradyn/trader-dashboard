@@ -2327,11 +2327,21 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
         ) : null;
       })()}
 
+      {(() => { return null; })()}
+      {/* Tab count uses the same dedup as PositionsManager so the number
+          matches the list below: holdings + (positions not already
+          covered by a holding on the same ticker+direction). Without
+          this the tab was double-counting holdings that were also
+          surfaced through the positions endpoint. */}
       {/* Content Tabs */}
       <Tabs defaultValue="positions" className="w-full">
         <TabsList className="bg-surface-light/30 border border-border p-1 rounded-lg">
           <TabsTrigger value="positions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
-            Positions ({(holdings?.length ?? 0) + (positions?.length ?? 0)})
+            Positions ({(() => {
+              const held = new Set((holdings || []).map((h) => `${h.ticker}:${h.direction}`));
+              const extra = (positions || []).filter((p) => !held.has(`${p.ticker}:${p.direction}`)).length;
+              return (holdings?.length ?? 0) + extra;
+            })()})
           </TabsTrigger>
           <TabsTrigger value="trades" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
             Trades ({trades?.length ?? 0})

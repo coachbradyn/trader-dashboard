@@ -17,13 +17,15 @@ from app.services.price_service import price_service
 router = APIRouter()
 
 
-async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[float, float, float, int]:
+async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[float, float, float, int, set]:
     """Calculate holdings metrics for portfolio display.
 
-    Returns (holdings_cost_basis, holdings_unrealized_pnl, holdings_market_value, holdings_count).
-    - holdings_cost_basis = sum of (entry_price * qty) — capital deployed, NOT a gain.
-    - holdings_unrealized_pnl = sum of per-holding unrealized P&L — actual performance.
-    - holdings_market_value = sum of (current_price * qty) — for display purposes.
+    Returns (cost_basis, unrealized_pnl, market_value, count, ticker_dir_keys).
+    - count = every active holding (the UI renders every row, so the
+      badge should match).
+    - ticker_dir_keys = {ticker:direction} set the caller uses to dedup
+      open Trades that share a ticker+direction with a holding — the UI
+      collapses those into the holding card, so we don't double count.
     """
     result = await db.execute(
         select(PortfolioHolding)
@@ -32,12 +34,13 @@ async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[flo
     holdings = result.scalars().all()
 
     if not holdings:
-        return 0.0, 0.0, 0.0, 0
+        return 0.0, 0.0, 0.0, 0, set()
 
     total_cost_basis = 0.0
     total_market_value = 0.0
     total_unrealized = 0.0
     count = 0
+    keys: set[str] = set()
 
     for h in holdings:
         current_price = price_service.get_price(h.ticker)
@@ -57,19 +60,36 @@ async def _calc_holdings_value(portfolio_id: str, db: AsyncSession) -> tuple[flo
         total_market_value += position_value
         total_unrealized += unrealized
         count += 1
+        keys.add(f"{h.ticker}:{h.direction}")
 
-    return total_cost_basis, total_unrealized, total_market_value, count
+    return total_cost_basis, total_unrealized, total_market_value, count, keys
 
 
 async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> PortfolioResponse:
     """Build a PortfolioResponse combining snapshot data + holdings data."""
     # Holdings-based data (from manual entries + portfolio manager)
-    holdings_cost_basis, holdings_unrealized, holdings_market_value, holdings_count = await _calc_holdings_value(p.id, db)
+    (
+        holdings_cost_basis,
+        holdings_unrealized,
+        holdings_market_value,
+        holdings_count,
+        holding_keys,
+    ) = await _calc_holdings_value(p.id, db)
 
-    # Webhook trades: compute unrealized P&L from open trades linked to this portfolio
+    # Webhook trades: compute unrealized P&L from open trades linked to
+    # this portfolio. Non-simulated (real/paper/live webhook fills) and
+    # simulated (Henry's autonomous AI paper trades) are tracked
+    # separately for equity math, but both count toward open_positions
+    # — the positions list surfaces simulated trades too, and the badge
+    # should match what the user actually sees on the page.
+    #
+    # When a Trade and a Holding share ticker+direction the UI renders
+    # just the holding row (see PositionsManager.uniquePositions), so we
+    # dedup those against `holding_keys` before incrementing the count.
     from app.models import Trade, PortfolioTrade
     webhook_unrealized = 0.0
     webhook_open = 0
+    extra_trade_count = 0
     try:
         trade_result = await db.execute(
             select(Trade)
@@ -88,6 +108,23 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
                 webhook_unrealized += (cp - t.entry_price) * t.qty
             else:
                 webhook_unrealized += (t.entry_price - cp) * t.qty
+            if f"{t.ticker}:{t.direction}" not in holding_keys:
+                extra_trade_count += 1
+
+        # Simulated open trades (Henry's autonomous paper positions).
+        # Also deduped against holdings so the badge stays honest.
+        sim_result = await db.execute(
+            select(Trade.ticker, Trade.direction)
+            .join(PortfolioTrade)
+            .where(
+                PortfolioTrade.portfolio_id == p.id,
+                Trade.status == "open",
+                Trade.is_simulated == True,
+            )
+        )
+        for tk, d in sim_result.all():
+            if f"{tk}:{d}" not in holding_keys:
+                extra_trade_count += 1
     except Exception:
         pass
 
@@ -128,12 +165,15 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
 
         equity = p.initial_capital + sim_closed_pnl + sim_unrealized + holdings_unrealized
         unrealized = sim_unrealized + holdings_unrealized
-        open_pos = holdings_count + webhook_open
+        # holdings_count counts every active holding row; extra_trade_count
+        # is open Trades (sim or real) that don't share ticker+direction
+        # with any holding. Sum matches the PositionsManager UI dedup.
+        open_pos = holdings_count + extra_trade_count
     else:
-        # Non-AI portfolios: cash + market value is correct
+        # Non-AI portfolios: cash + market value is correct.
         equity = p.cash + holdings_market_value + webhook_unrealized
         unrealized = holdings_unrealized + webhook_unrealized
-        open_pos = holdings_count + webhook_open
+        open_pos = holdings_count + extra_trade_count
 
     # Return % = total gains / total capital deployed
     if p.initial_capital > 0:

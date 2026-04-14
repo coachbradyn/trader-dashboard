@@ -2034,6 +2034,18 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
             all_trades = await get_trades_fn(days_back=30)
             positions = await get_positions_fn()
 
+            # Scope trades + positions to the requested portfolio so Henry
+            # doesn't reference a ticker from a sibling portfolio when
+            # the user is asking about a specific one. The helpers above
+            # return system-wide data — filter by portfolio_id here when
+            # the row carries it.
+            if req.portfolio_id:
+                def _in_scope(row: dict) -> bool:
+                    pid = row.get("portfolio_id")
+                    return pid is None or pid == req.portfolio_id
+                all_trades = [t for t in (all_trades or []) if _in_scope(t)]
+                positions = [p for p in (positions or []) if _in_scope(p)]
+
             # Fetch holdings — scoped to specific portfolio if provided
             holdings_context = None
             portfolio_name = None
