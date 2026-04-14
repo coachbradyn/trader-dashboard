@@ -17,6 +17,14 @@ class PortfolioResponse(BaseModel):
     max_order_amount: float | None = None
     has_alpaca_credentials: bool = False
     ai_evaluation_enabled: bool = False
+    # Options trading config — surfaces in the UI so the Options tab on
+    # the portfolio page knows whether options are enabled and at what
+    # level. Without these fields the frontend always saw "disabled" and
+    # bounced the user to Settings even when a level was set.
+    options_level: int = 0
+    max_options_risk: float | None = None
+    max_options_daily_trades: int | None = None
+    options_allocation_pct: float = 0.20
     created_at: datetime
 
     class Config:
