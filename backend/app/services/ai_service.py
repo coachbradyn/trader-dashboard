@@ -1629,6 +1629,7 @@ async def query_trades(
     all_trades: list[dict],
     open_positions: list[dict] = None,
     holdings_context: str = None,
+    portfolio_id: str = None,
 ) -> str:
     """
     Answer a natural language question about trade history and portfolio.
@@ -1641,6 +1642,10 @@ async def query_trades(
         all_trades: Trade history (entries + exits)
         open_positions: Current open positions from strategies
         holdings_context: Text summary of manual portfolio holdings
+        portfolio_id: When the chat is scoped to a specific portfolio,
+            forwarded to _build_system_prompt so the BROKERAGE ACCOUNTS
+            block fires with live Alpaca equity/BP/cash and the prompt
+            is built for that portfolio's context.
     """
     trades_text = _format_trades_for_prompt(all_trades)
     positions_text = _format_positions_for_prompt(open_positions) if open_positions else "None."
@@ -1705,7 +1710,14 @@ Answer concisely (<200 words). Use tables for comparisons. If data is insufficie
     from app.services.ai_provider import call_ai
     # Pass the user's raw question as query_text — it's a cleaner semantic
     # retrieval signal than the synthetic prompt template wrapping it.
-    system = await _build_system_prompt(enable_web_search=True, query_text=question)
+    # When portfolio_id is set, scope the prompt so the BROKERAGE ACCOUNTS
+    # section fires with live equity/BP/cash for that portfolio only.
+    system = await _build_system_prompt(
+        enable_web_search=True,
+        query_text=question,
+        portfolio_id=portfolio_id,
+        scope="portfolio" if portfolio_id else "general",
+    )
     return await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, question_text=question, enable_web_search=True)
 
 
@@ -2249,7 +2261,13 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 except Exception:
                     pass
 
-            result = await query_trades(scoped_question, all_trades, positions, holdings_context=holdings_context)
+            result = await query_trades(
+                scoped_question,
+                all_trades,
+                positions,
+                holdings_context=holdings_context,
+                portfolio_id=req.portfolio_id,
+            )
 
             # Extract and save research findings (non-blocking)
             if result:

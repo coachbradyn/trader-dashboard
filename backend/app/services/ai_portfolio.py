@@ -1027,7 +1027,28 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                                 resolved_at=utcnow(),
                             ))
 
-                            logger.info(f"AI portfolio review: CLOSED {ticker} | PnL: {pos.pnl_percent:+.2f}%")
+                            # PARITY FIX: For live/paper portfolios, the
+                            # DB close above must be mirrored by an actual
+                            # Alpaca sell — otherwise the broker keeps the
+                            # position open while our books say closed.
+                            # check_autonomous_exits already does this; the
+                            # scheduled review was missing it.
+                            if (
+                                portfolio.execution_mode in ("paper", "live")
+                                and portfolio.alpaca_api_key
+                            ):
+                                from app.services.trade_processor import (
+                                    _execute_on_alpaca,
+                                )
+                                asyncio.create_task(_execute_on_alpaca(
+                                    portfolio, pos.ticker, pos.qty, "sell", cp,
+                                ))
+
+                            logger.info(
+                                f"AI portfolio review ({portfolio.name}): "
+                                f"CLOSED {ticker} | PnL: {pos.pnl_percent:+.2f}% "
+                                f"| mode={portfolio.execution_mode}"
+                            )
                             break
 
             # Save portfolio health observation

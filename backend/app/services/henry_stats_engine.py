@@ -132,6 +132,18 @@ async def _compute_strategy_performance(db):
 
     by_strategy = defaultdict(list)
     for t in trades:
+        # Skip trades that exited at entry price — these came from the
+        # trade_processor fallback when TradingView sent no exit price and
+        # the price_service cache was cold. They record pnl=0 which would
+        # otherwise drag down win-rate and profit-factor despite not being
+        # real losses. Detection is exit_price ≈ entry_price AND pnl=0.
+        if (
+            t.exit_price is not None
+            and t.entry_price is not None
+            and abs(t.exit_price - t.entry_price) < 1e-6
+            and (t.pnl_dollars or 0) == 0
+        ):
+            continue
         sid = t.trader.trader_id if t.trader else "unknown"
         by_strategy[sid].append(t)
 
@@ -479,10 +491,19 @@ async def _compute_conditional_probability(db):
     )
     webhook_trades = list(result.scalars().all())
 
-    # Group webhook by (strategy_id, ticker)
+    # Group webhook by (strategy_id, ticker) — same fallback-trade filter
+    # as _compute_strategy_performance so Henry's conditional probability
+    # tables don't include price-less exits that recorded pnl=0.
     grouped: dict[tuple[str, str], list] = defaultdict(list)
     for t in webhook_trades:
         if not t.trader or not t.ticker:
+            continue
+        if (
+            t.exit_price is not None
+            and t.entry_price is not None
+            and abs(t.exit_price - t.entry_price) < 1e-6
+            and (t.pnl_dollars or 0) == 0
+        ):
             continue
         grouped[(t.trader.trader_id, t.ticker.upper())].append(t)
 
