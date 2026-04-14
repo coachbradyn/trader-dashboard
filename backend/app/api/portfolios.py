@@ -197,6 +197,12 @@ async def _build_portfolio_response(p: Portfolio, db: AsyncSession) -> Portfolio
         max_order_amount=p.max_order_amount,
         has_alpaca_credentials=bool(p.alpaca_api_key and p.alpaca_secret_key),
         ai_evaluation_enabled=getattr(p, "ai_evaluation_enabled", False) or False,
+        # Options config needs to ride along so the portfolio page's Options
+        # tab renders the right state instead of pinging Settings.
+        options_level=int(getattr(p, "options_level", 0) or 0),
+        max_options_risk=getattr(p, "max_options_risk", None),
+        max_options_daily_trades=getattr(p, "max_options_daily_trades", None),
+        options_allocation_pct=float(getattr(p, "options_allocation_pct", 0.20) or 0.20),
         created_at=p.created_at,
     )
 
