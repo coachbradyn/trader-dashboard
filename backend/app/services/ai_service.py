@@ -83,6 +83,9 @@ async def _build_system_prompt(
     scope: str = "general",
     enable_web_search: bool = False,
     query_text: str = None,
+    portfolio_id: str = None,
+    direction: str = None,
+    confidence: float = None,
 ) -> str:
     """
     Build a dynamic system prompt that includes strategy descriptions,
@@ -682,6 +685,150 @@ async def _build_system_prompt(
         except Exception:
             pass  # Pure-data lookup; missing data → no section
 
+    # ── OPTIONS CONTEXT ────────────────────────────────────────────────
+    # When the caller is evaluating a specific ticker for a portfolio
+    # (signal eval, portfolio action generation) with a direction and
+    # confidence, ask the strategy selector whether an options structure
+    # beats raw equity. Silent no-op when any input is missing, options
+    # are disabled on the portfolio, or no strategy clears the threshold.
+    if (
+        ticker and portfolio_id and direction and confidence is not None
+        and scope in ("signal", "portfolio")
+    ):
+        try:
+            from app.services.options_strategy import (
+                select_options_strategy, STRATEGY_MIN_LEVEL
+            )
+            from app.models import Portfolio as _Portfolio
+            async with async_session() as db:
+                rec = await select_options_strategy(
+                    ticker=ticker,
+                    direction=direction,
+                    confidence=float(confidence),
+                    portfolio_id=portfolio_id,
+                    session=db,
+                )
+                # Look up the portfolio's options_level for the label.
+                pres = await db.execute(
+                    select(_Portfolio).where(_Portfolio.id == portfolio_id)
+                )
+                portfolio_row = pres.scalar_one_or_none()
+            if rec and portfolio_row:
+                level = int(getattr(portfolio_row, "options_level", 0) or 0)
+                level_desc = {
+                    1: "covered calls",
+                    2: "long calls/puts available",
+                    3: "all strategies incl. spreads & condors",
+                }.get(level, "")
+                # Legs summary
+                leg_lines = []
+                for leg in rec.get("legs") or []:
+                    q = leg.get("quantity", 1)
+                    prem = leg.get("premium")
+                    prem_str = f" @ ${prem:.2f}" if prem is not None else ""
+                    leg_lines.append(
+                        f"  {leg.get('action','?').upper()} {q}x "
+                        f"{rec.get('expiration','?')} "
+                        f"${leg.get('strike','?')} {leg.get('type','?').upper()}"
+                        f"{prem_str}"
+                    )
+                g = rec.get("greeks") or {}
+                greeks_str = ", ".join(
+                    f"{k}={v:+.3f}"
+                    for k, v in g.items()
+                    if v is not None
+                )
+                risk_reward = (
+                    f"max risk ${rec.get('max_risk')}, "
+                    f"max reward {rec.get('max_reward')}"
+                )
+                theta = g.get("theta")
+                theta_part = (
+                    f"\n  Theta impact: ${theta*100:+.2f}/day "
+                    f"(per-contract per-day)"
+                    if theta is not None else ""
+                )
+                be = rec.get("breakeven")
+                bes = rec.get("breakevens")
+                be_str = (
+                    f"BE {bes}" if bes else (f"BE {be}" if be is not None else "")
+                )
+                reasoning_bits = []
+                if rec.get("strategy_type") == "covered_call":
+                    reasoning_bits.append(
+                        "covered call chosen: own the shares, collect "
+                        "premium, modest upside cap"
+                    )
+                elif "spread" in rec.get("strategy_type", ""):
+                    reasoning_bits.append(
+                        "spread chosen over long option: elevated IV "
+                        "makes debit spreads cheaper than outright"
+                    )
+                elif rec.get("strategy_type") == "iron_condor":
+                    reasoning_bits.append(
+                        "iron condor chosen: neutral stance + high IV "
+                        "= sell premium on both sides"
+                    )
+                else:
+                    reasoning_bits.append(
+                        "long option chosen: high-conviction directional "
+                        "bet, cheap IV environment"
+                    )
+                reasoning_bits.append(
+                    f"selector score {rec.get('score',0):.2f}"
+                )
+                options_section = (
+                    f"OPTIONS CONTEXT (Options level: {level}"
+                    + (f" — {level_desc}" if level_desc else "")
+                    + "):\n"
+                    f"  Recommended: {rec.get('strategy_type','?').replace('_',' ')} "
+                    f"expiring {rec.get('expiration','?')} "
+                    f"({rec.get('dte','?')} DTE)\n"
+                    + "\n".join(leg_lines)
+                    + (f"\n  {risk_reward}, {be_str}" if be_str else f"\n  {risk_reward}")
+                    + (f"\n  Greeks: {greeks_str}" if greeks_str else "")
+                    + theta_part
+                    + "\n  Rationale: " + "; ".join(reasoning_bits)
+                )
+                sections.append(options_section)
+
+                # OPTIONS TRACK RECORD — per-strategy historical performance
+                # across all portfolios. Only surfaced alongside the options
+                # context so Henry sees "should I take this options trade?"
+                # and "has this strategy worked historically?" together.
+                try:
+                    from app.models import HenryStats as _HS_opt
+                    async with async_session() as db2:
+                        op_rows = list((await db2.execute(
+                            select(_HS_opt).where(
+                                _HS_opt.stat_type == "options_performance"
+                            )
+                        )).scalars().all())
+                    if op_rows:
+                        tr_parts: list[str] = []
+                        for r in op_rows:
+                            if not r.strategy or not r.data:
+                                continue
+                            overall = (r.data or {}).get("overall") or {}
+                            n = overall.get("n") or 0
+                            if not n:
+                                continue
+                            sample_hint = " (thin sample)" if n < 5 else ""
+                            tr_parts.append(
+                                f"{r.strategy.replace('_',' ').capitalize()}: "
+                                f"{n} trades, {overall.get('win_rate','?')}% win rate, "
+                                f"avg P&L {overall.get('avg_pnl_pct','?')}%"
+                                f"{sample_hint}"
+                            )
+                        if tr_parts:
+                            sections.append(
+                                "OPTIONS TRACK RECORD: " + ". ".join(tr_parts) + "."
+                            )
+                except Exception as _e2:
+                    logger.debug(f"options track record injection skipped: {_e2}")
+        except Exception as _e:
+            logger.debug(f"options context injection skipped: {_e}")
+
     # Confidence calibration (intelligence upgrade Phase 6, System 8) —
     # injected for any decision context (signal eval / portfolio / ask).
     # Skipped silently when sufficient_for_prompt is false (fewer than
@@ -992,6 +1139,32 @@ async def extract_and_save_memories(analysis_text: str, source: str = "briefing"
             "5. SCREENER CONFLUENCE (memory_type=observation):\n"
             "   ticker, date, indicators that fired, bullish vs bearish count, "
             "confluence direction.\n\n"
+            "6. OPTIONS ENTRY (memory_type=strategy_note, source=options_entry):\n"
+            "   ticker, strategy type (long_call | long_put | bull_call_spread "
+            "| bear_put_spread | covered_call | iron_condor), strike(s), "
+            "expiration, direction, premium paid/received, max risk, max "
+            "reward, breakeven, Greeks at entry (delta, theta, vega — "
+            "whichever are mentioned), IV rank at entry, why options over "
+            "equity, VIX level + regime at entry. Always set ticker. Always "
+            "include numerical values — if a field isn't stated in the source, "
+            "omit that memory rather than guessing.\n"
+            "   Example content: \"Long NVDA May 145 call @ $8.20 — IV rank "
+            "38, VIX 17.2 low-vol uptrend, delta 0.42, theta -$0.06/day. "
+            "Chose options over equity: confidence 8/10 + 75% win rate on "
+            "NVDA S1 means cheap premium beats 3x-sized equity. Max risk "
+            "$820; BE $153.20.\"\n\n"
+            "7. OPTIONS OUTCOME (memory_type=lesson, source=options_outcome):\n"
+            "   ticker, strategy type, entry vs exit premium, P&L, theta "
+            "impact (how much did time decay cost?), IV impact (did vol "
+            "expansion/contraction help or hurt?), whether the strategy type "
+            "was correct, whether the strike selection was correct, "
+            "single-sentence lesson about options on this ticker/regime "
+            "combination. Always set ticker.\n"
+            "   Example content: \"Closed NVDA May 145 call: entry $8.20 → "
+            "exit $3.10, -62%. Theta cost ~$3.00 over 14d holding; IV "
+            "contracted 38→26. Strike was right (spot reached 148) but DTE "
+            "too short — gamma decay outran directional gain. Lesson: on "
+            "NVDA with 14d IV rank <50, use 35+ DTE or a vertical spread.\"\n\n"
             "STRICT RULES:\n"
             "- If the source text doesn't contain the numerical values for a "
             "category, DO NOT FABRICATE THEM. Skip that memory.\n"
@@ -1343,7 +1516,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
         _logger.info("Briefing: generating via Claude with web search")
         result = await call_ai(
             system, prompt,
-            function_name="signal_evaluation",
+            function_name="morning_briefing",
             max_tokens=2000,
             enable_web_search=True,
         )
@@ -1354,7 +1527,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: fallback without web search")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2000)
+            result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
@@ -1367,7 +1540,7 @@ POSITIONS: {positions_text}
 HOLDINGS: {holdings_text}
 Market vibe (SPY/VIX), portfolio status (big picture), today's play (2-3 actions).
 Be direct, have opinions, use real numbers. Have personality."""
-            result = await call_ai(BASE_SYSTEM_PROMPT, simple, function_name="signal_evaluation", max_tokens=1000)
+            result = await call_ai(BASE_SYSTEM_PROMPT, simple, function_name="morning_briefing", max_tokens=1000)
         except Exception as e:
             _logger.error(f"Briefing attempt 3 failed: {e}")
             result = "Henry's having a rough morning. Check that your AI API keys are configured."

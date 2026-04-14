@@ -1292,6 +1292,15 @@ async def admin_ensure_schema(
             "add_memory_cluster_id_override",
             "ALTER TABLE henry_memory ADD COLUMN IF NOT EXISTS cluster_id_override INTEGER",
         ),
+        # Step 2C — options routing on portfolio_actions.
+        (
+            "add_action_instrument_type",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS instrument_type VARCHAR(10) DEFAULT 'equity'",
+        ),
+        (
+            "add_action_options_strategy",
+            "ALTER TABLE portfolio_actions ADD COLUMN IF NOT EXISTS options_strategy JSON",
+        ),
     ]
 
     # Check which columns exist before attempting the DDL so we can report
@@ -1332,6 +1341,8 @@ async def admin_ensure_schema(
         "kelly_f_base",
         "kelly_f_effective",
         "injected_memory_ids",
+        "instrument_type",
+        "options_strategy",
     }
 
     action_cols_q = await db.execute(

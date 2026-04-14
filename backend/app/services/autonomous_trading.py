@@ -921,6 +921,44 @@ async def _execute_autonomous_trade(
             if not port_obj:
                 return False
 
+            # ── Options-first attempt ────────────────────────────────
+            # If the portfolio has options enabled and the strategy
+            # selector returns a recommendation, try to place that order
+            # first. Any failure (score below threshold, chain fetch fail,
+            # Alpaca rejection, insufficient buying power) falls through
+            # to the equity path below — options are always an enhancement,
+            # never a requirement.
+            options_rec: dict | None = None
+            if int(getattr(port_obj, "options_level", 0) or 0) > 0:
+                try:
+                    from app.services.options_strategy import select_options_strategy
+                    options_rec = await select_options_strategy(
+                        ticker=ticker,
+                        direction=direction,
+                        confidence=float(confidence),
+                        portfolio_id=port_obj.id,
+                        session=db,
+                    )
+                except Exception as _e:
+                    logger.debug(
+                        f"Autonomous options selector failed for {ticker}: {_e}"
+                    )
+                    options_rec = None
+
+            if options_rec:
+                options_ok = await _try_execute_autonomous_options(
+                    db, port_obj, ticker, direction, confidence,
+                    reasoning, source, options_rec,
+                )
+                if options_ok:
+                    return True
+                logger.info(
+                    f"Autonomous options submission failed for {ticker}; "
+                    f"falling back to equity"
+                )
+                # Fall through to equity path. Don't commit partial state —
+                # the options helper rolls back its own writes on failure.
+
             # Position sizing — cap at available cash
             high_alloc = cfg.get("high_alloc_pct", 5.0) / 100.0
             mid_alloc = cfg.get("mid_alloc_pct", 3.0) / 100.0
@@ -1000,6 +1038,7 @@ async def _execute_autonomous_trade(
                 priority_score=confidence * 1.5,
                 status="approved",
                 resolved_at=utcnow(),
+                instrument_type="equity",
             )
             db.add(action)
             await db.flush()
@@ -1221,3 +1260,163 @@ async def check_autonomous_exits() -> int:
             logger.error(f"Autonomous exit check failed for {portfolio.name}: {e}")
 
     return total_closed
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Options execution helper (Step 2C)
+# ══════════════════════════════════════════════════════════════════════
+
+async def _try_execute_autonomous_options(
+    db,
+    portfolio: Portfolio,
+    ticker: str,
+    direction: str,
+    confidence: int,
+    reasoning: str,
+    source: str,
+    options_rec: dict,
+) -> bool:
+    """Submit the options recommendation via the execution API. Returns
+    True on success (order submitted or recorded locally) and records a
+    PortfolioAction with instrument_type='options' + the full recommendation
+    stored in the options_strategy JSON column.
+
+    Returns False on any failure — Alpaca rejection, insufficient buying
+    power, broker errors — so the caller can fall back to equity. This
+    helper never raises; it swallows and logs.
+
+    The caller's db session is used for the PortfolioAction write. We
+    commit only on success to avoid leaving a half-populated action row
+    when Alpaca fails.
+    """
+    try:
+        from app.services.alpaca_service import alpaca_service
+        import uuid as _uuid
+        from datetime import date as _date
+        from app.models.options_trade import OptionsTrade
+
+        legs = options_rec.get("legs") or []
+        if not legs:
+            return False
+
+        # Compute net limit price from legs (debit positive, credit negative).
+        net_debit = options_rec.get("net_debit")
+        net_credit = options_rec.get("net_credit")
+        if net_debit is not None:
+            limit_price = float(net_debit)
+        elif net_credit is not None:
+            limit_price = -float(net_credit)
+        else:
+            # Sum mid prices across legs as fallback
+            lp = 0.0
+            for leg in legs:
+                sign = 1 if leg.get("action", "").lower() == "buy" else -1
+                lp += sign * float(leg.get("premium") or 0.0) * int(leg.get("quantity", 1))
+            limit_price = lp
+
+        # Route to Alpaca (paper/live) or record locally
+        exec_mode = (portfolio.execution_mode or "local").lower()
+        api_key = portfolio.alpaca_api_key_decrypted
+        secret_key = portfolio.alpaca_secret_key_decrypted
+        paper = exec_mode == "paper"
+
+        submit_ok = True
+        submit_payload: dict = {"status": "local-only"}
+
+        if exec_mode in ("paper", "live") and api_key and secret_key:
+            if len(legs) == 1:
+                leg = legs[0]
+                submit_payload = await alpaca_service.submit_options_order(
+                    api_key=api_key, secret_key=secret_key, paper=paper,
+                    option_symbol=leg.get("option_symbol"),
+                    qty=int(leg.get("quantity", 1)),
+                    side=leg.get("action", "buy"),
+                    limit_price=abs(limit_price) or float(leg.get("premium") or 0.0),
+                )
+            else:
+                submit_payload = await alpaca_service.submit_multi_leg_order(
+                    api_key=api_key, secret_key=secret_key, paper=paper,
+                    legs=[
+                        {
+                            "option_symbol": l.get("option_symbol"),
+                            "qty": int(l.get("quantity", 1)),
+                            "side": l.get("action", "buy"),
+                        }
+                        for l in legs
+                    ],
+                    limit_price=limit_price,
+                )
+            if submit_payload.get("status") == "error":
+                logger.warning(
+                    f"Autonomous options: Alpaca rejected {ticker} "
+                    f"{options_rec.get('strategy_type')}: "
+                    f"{submit_payload.get('message')}"
+                )
+                return False
+
+        # Success — record the action + per-leg OptionsTrade rows.
+        alpaca_order_id = submit_payload.get("order_id")
+        spread_group_id = str(_uuid.uuid4()) if len(legs) > 1 else None
+
+        action = PortfolioAction(
+            portfolio_id=portfolio.id,
+            ticker=ticker,
+            direction=direction,
+            action_type="BUY",
+            suggested_price=float(limit_price) if limit_price else None,
+            current_price=float(limit_price) if limit_price else None,
+            confidence=confidence,
+            reasoning=(
+                f"[Autonomous options - {source}] "
+                f"{options_rec.get('strategy_type')} "
+                f"{options_rec.get('expiration')}: "
+                f"{reasoning[:400]}"
+            ),
+            trigger_type="SCANNER",
+            trigger_ref=alpaca_order_id,
+            priority_score=confidence * 1.5,
+            status="approved",
+            resolved_at=utcnow(),
+            instrument_type="options",
+            options_strategy=options_rec,
+        )
+        db.add(action)
+
+        # Parse expiration once
+        try:
+            y, m, d = (options_rec.get("expiration") or "").split("-")
+            exp_date = _date(int(y), int(m), int(d))
+        except Exception:
+            exp_date = _date.today()
+
+        for leg in legs:
+            db.add(OptionsTrade(
+                portfolio_id=portfolio.id,
+                ticker=ticker,
+                option_symbol=leg.get("option_symbol") or "",
+                option_type=leg.get("type", "call"),
+                strike=float(leg.get("strike") or 0.0),
+                expiration=exp_date,
+                direction="long" if leg.get("action") == "buy" else "short",
+                quantity=int(leg.get("quantity", 1)),
+                entry_premium=float(leg.get("premium") or 0.0),
+                strategy_type=options_rec.get("strategy_type") or "unknown",
+                spread_group_id=spread_group_id,
+                alpaca_order_id=alpaca_order_id,
+                notes=f"autonomous:{source}",
+            ))
+
+        await db.commit()
+        logger.info(
+            f"Autonomous options: submitted {options_rec.get('strategy_type')} "
+            f"for {ticker} (conf {confidence}, source={source}, "
+            f"score={options_rec.get('score'):.2f})"
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Autonomous options submission failed for {ticker}: {e}")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return False

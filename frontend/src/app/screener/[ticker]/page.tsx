@@ -17,7 +17,7 @@ import { MetricTooltip } from "@/app/layout-shell";
 import type {
   WatchlistTickerDetail, ChartDataPoint, BacktestImportData,
   BacktestTradeData, MonteCarloResponse, MonteCarloRequest,
-  TickerNewsResponse,
+  TickerNewsResponse, OptionsChain, OptionsChainRow,
 } from "@/lib/types";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
@@ -192,6 +192,190 @@ function CompanyDescription({ text }: { text: string }) {
     </div>
   );
 }
+
+// ── Options Chain Viewer (Step 5A) ─────────────────────────────────
+function OptionsSection({ ticker }: { ticker: string }) {
+  const [chain, setChain] = useState<OptionsChain | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [selectedExp, setSelectedExp] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    api
+      .getOptionsChain(ticker)
+      .then((c) => {
+        if (cancelled) return;
+        setChain(c);
+        setSelectedExp(c.expirations?.[0] ?? null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setErr(e?.message || "Failed to load options chain");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker]);
+
+  const spot = chain?.underlying_price ?? null;
+  const expirations = (chain?.expirations ?? []).slice(0, 4);
+  const bucket = selectedExp ? chain?.by_expiration?.[selectedExp] : undefined;
+
+  // Merge calls+puts by strike for table render
+  type Row = { strike: number; call?: OptionsChainRow; put?: OptionsChainRow };
+  const byStrike = new Map<number, Row>();
+  (bucket?.calls ?? []).forEach((c) => {
+    byStrike.set(c.strike, { ...(byStrike.get(c.strike) ?? { strike: c.strike }), call: c });
+  });
+  (bucket?.puts ?? []).forEach((p) => {
+    byStrike.set(p.strike, { ...(byStrike.get(p.strike) ?? { strike: p.strike }), put: p });
+  });
+  const rows = Array.from(byStrike.values()).sort((a, b) => a.strike - b.strike);
+
+  // Closest strike to spot (ATM)
+  const atmStrike =
+    spot != null && rows.length
+      ? rows.reduce((acc, r) =>
+          Math.abs(r.strike - spot) < Math.abs(acc - spot) ? r.strike : acc,
+          rows[0].strike
+        )
+      : null;
+
+  const fmt = (v: number | null | undefined, d = 2) =>
+    v == null ? "—" : v.toFixed(d);
+  const fmtInt = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString());
+  const fmtPct = (v: number | null | undefined) => (v == null ? "—" : `${(v * 100).toFixed(0)}%`);
+
+  return (
+    <Card className="mt-6 bg-gray-950/60 border-gray-800">
+      <CardContent className="pt-5">
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="text-sm font-semibold tracking-wide text-gray-200" style={FONT_OUTFIT}>
+            Options
+          </h3>
+          {spot != null && (
+            <span className="text-[11px] font-mono text-gray-400">
+              Spot: ${spot.toFixed(2)}
+            </span>
+          )}
+        </div>
+
+        {loading && (
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-5 w-full" />
+            ))}
+          </div>
+        )}
+
+        {!loading && err && (
+          <p className="text-xs text-loss">{err}</p>
+        )}
+
+        {!loading && !err && (!chain || !expirations.length) && (
+          <p className="text-xs text-gray-500">
+            {chain?.note || "No options chain available for this ticker."}
+          </p>
+        )}
+
+        {!loading && !err && expirations.length > 0 && (
+          <>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {expirations.map((e) => (
+                <button
+                  key={e}
+                  onClick={() => setSelectedExp(e)}
+                  className={`px-2.5 py-1 rounded-full text-[10px] font-mono border transition ${
+                    selectedExp === e
+                      ? "bg-ai-blue/20 text-ai-blue border-ai-blue/40"
+                      : "text-gray-400 border-gray-700 hover:text-gray-200"
+                  }`}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table
+                className="w-full text-[10px] border-collapse"
+                style={FONT_MONO}
+              >
+                <thead className="text-gray-500">
+                  <tr className="border-b border-gray-800">
+                    <th colSpan={7} className="text-center py-1 text-ai-blue/80 font-semibold">
+                      CALLS
+                    </th>
+                    <th className="text-center py-1 text-gray-400 font-semibold">
+                      STRIKE
+                    </th>
+                    <th colSpan={7} className="text-center py-1 text-loss/80 font-semibold">
+                      PUTS
+                    </th>
+                  </tr>
+                  <tr className="border-b border-gray-800 text-[9px]">
+                    {["Δ", "IV", "OI", "Vol", "Last", "Ask", "Bid"].map((h) => (
+                      <th key={`ch-${h}`} className="px-1.5 py-1 text-right">{h}</th>
+                    ))}
+                    <th className="px-2 py-1 text-center">$</th>
+                    {["Bid", "Ask", "Last", "Vol", "OI", "IV", "Δ"].map((h) => (
+                      <th key={`ph-${h}`} className="px-1.5 py-1 text-right">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const isAtm = atmStrike != null && r.strike === atmStrike;
+                    const callItm = spot != null && r.strike < spot;
+                    const putItm = spot != null && r.strike > spot;
+                    return (
+                      <tr
+                        key={r.strike}
+                        className={`border-b border-gray-900/60 ${
+                          isAtm ? "ring-1 ring-ai-blue/30 bg-ai-blue/5" : ""
+                        }`}
+                      >
+                        {/* Call columns, reversed so bid/ask hug the strike */}
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmt(r.call?.delta, 2)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmtPct(r.call?.iv)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmtInt(r.call?.open_interest)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmtInt(r.call?.volume)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmt(r.call?.last)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmt(r.call?.ask)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${callItm ? "bg-ai-blue/10" : ""}`}>{fmt(r.call?.bid)}</td>
+
+                        {/* Strike */}
+                        <td className="px-2 py-0.5 text-center font-semibold text-gray-200">
+                          {r.strike}
+                        </td>
+
+                        {/* Put columns */}
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmt(r.put?.bid)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmt(r.put?.ask)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmt(r.put?.last)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmtInt(r.put?.volume)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmtInt(r.put?.open_interest)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmtPct(r.put?.iv)}</td>
+                        <td className={`px-1.5 py-0.5 text-right ${putItm ? "bg-loss/10" : ""}`}>{fmt(r.put?.delta, 2)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 export default function TickerDetailPage() {
   useFonts();
@@ -1084,6 +1268,9 @@ export default function TickerDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ═══ OPTIONS ═══ */}
+      {ticker && <OptionsSection ticker={ticker} />}
     </div>
   );
 }

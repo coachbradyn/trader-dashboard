@@ -69,23 +69,35 @@ async def call_ai(
             provider = "claude"
             logger.info("Escalated ask_henry to Claude (detected decision keywords)")
 
+    # Single diagnostic line per call — shows in Railway logs exactly which
+    # provider was chosen, and whether web search was requested. Cheap to
+    # keep at INFO; makes "why is Claude getting everything?" trivial to
+    # answer with one grep.
+    logger.info(
+        f"AI route: {function_name} → {provider} "
+        f"(mode={mode}, web_search={enable_web_search})"
+    )
+
     # Try primary provider
     start = time.monotonic()
     was_fallback = False
 
-    # Only enable web search on Claude calls (not Gemini — cost/latency)
-    use_web_search = enable_web_search and provider == "claude"
-
     if provider == "gemini":
-        result, model, in_tok, out_tok = await _call_gemini(system, prompt, max_tokens)
+        result, model, in_tok, out_tok = await _call_gemini(
+            system, prompt, max_tokens, web_search=enable_web_search
+        )
         if result is None:
-            # Fallback to Claude
+            # Fallback to Claude — preserve the caller's web_search intent.
             logger.warning(f"Gemini failed for {function_name}, falling back to Claude")
-            result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens, web_search=enable_web_search)
+            result, model, in_tok, out_tok = await _call_claude(
+                system, prompt, max_tokens, web_search=enable_web_search
+            )
             provider = "claude"
             was_fallback = True
     else:
-        result, model, in_tok, out_tok = await _call_claude(system, prompt, max_tokens, web_search=use_web_search)
+        result, model, in_tok, out_tok = await _call_claude(
+            system, prompt, max_tokens, web_search=enable_web_search
+        )
 
     latency = int((time.monotonic() - start) * 1000)
 
@@ -206,10 +218,23 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
         return (None, "claude-error", None, None)
 
 
-async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
-    """Call Gemini API. Returns (text, model, input_tokens, output_tokens)."""
+async def _call_gemini(
+    system: str, prompt: str, max_tokens: int, web_search: bool = False
+) -> tuple:
+    """Call Gemini API. Returns (text, model, input_tokens, output_tokens).
+
+    Walks a fallback chain of models (GEMINI_MODEL + GEMINI_FALLBACK_MODELS)
+    so a deprecated or rate-limited slug on the primary doesn't silently
+    route everything to Claude.
+
+    When `web_search=True`, attaches Google Search grounding to the request
+    so briefings, ask-henry, and other high-volume calls get fresh market
+    context without paying Claude rates. Grounding is a first-class Gemini
+    feature (no extra latency / cost on 2.0+ Flash).
+    """
     settings = get_settings()
     if not settings.gemini_api_key:
+        logger.warning("Gemini skipped: GEMINI_API_KEY is empty")
         return (None, None, None, None)
 
     try:
@@ -218,41 +243,64 @@ async def _call_gemini(system: str, prompt: str, max_tokens: int) -> tuple:
         logger.warning("google-genai package not installed, skipping Gemini")
         return (None, None, None, None)
 
-    model_name = "gemini-2.0-flash"
+    models = [settings.gemini_model] + [
+        m.strip() for m in (settings.gemini_fallback_models or "").split(",") if m.strip()
+    ]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    models = [m for m in models if not (m in seen or seen.add(m))]
 
-    try:
-        # Run in thread pool since genai may be sync, with timeout protection
-        def _sync_call():
-            client = genai.Client(api_key=settings.gemini_api_key)
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=system,
-                    max_output_tokens=max_tokens,
-                    temperature=0.7,
-                ),
+    last_err: Exception | None = None
+    for model_name in models:
+        try:
+            def _sync_call(mn=model_name):
+                client = genai.Client(api_key=settings.gemini_api_key)
+                tools = (
+                    [genai.types.Tool(google_search=genai.types.GoogleSearch())]
+                    if web_search else []
+                )
+                response = client.models.generate_content(
+                    model=mn,
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        system_instruction=system,
+                        max_output_tokens=max_tokens,
+                        temperature=0.7,
+                        tools=tools,
+                    ),
+                )
+                # response.text can raise when content is blocked by safety
+                # filters — surface that so we try the next model.
+                try:
+                    text = response.text
+                except Exception as e:
+                    raise RuntimeError(f"response.text raised: {e}") from e
+                in_tok = None
+                out_tok = None
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    in_tok = getattr(response.usage_metadata, "prompt_token_count", None)
+                    out_tok = getattr(response.usage_metadata, "candidates_token_count", None)
+                return text, in_tok, out_tok
+
+            text, in_tok, out_tok = await asyncio.wait_for(
+                asyncio.to_thread(_sync_call), timeout=90.0
             )
-            text = response.text
-            # Try to get usage metadata
-            in_tok = None
-            out_tok = None
-            if hasattr(response, 'usage_metadata') and response.usage_metadata:
-                in_tok = getattr(response.usage_metadata, 'prompt_token_count', None)
-                out_tok = getattr(response.usage_metadata, 'candidates_token_count', None)
-            return text, in_tok, out_tok
+            if text is None:
+                logger.warning(f"Gemini {model_name} returned None text; trying next model")
+                continue
+            return (text, model_name, in_tok, out_tok)
 
-        text, in_tok, out_tok = await asyncio.wait_for(
-            asyncio.to_thread(_sync_call), timeout=90.0
-        )
-        return (text, model_name, in_tok, out_tok)
+        except asyncio.TimeoutError:
+            logger.error(f"Gemini {model_name} timed out (90s)")
+            last_err = asyncio.TimeoutError()
+            continue
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini {model_name} failed: {str(e)[:200]}")
+            continue
 
-    except asyncio.TimeoutError:
-        logger.error("Gemini call timed out (90s)")
-        return (None, "gemini-timeout", None, None)
-    except Exception as e:
-        logger.error(f"Gemini call failed: {e}")
-        return (None, "gemini-error", None, None)
+    logger.error(f"Gemini exhausted all models {models}: last error {last_err}")
+    return (None, "gemini-error", None, None)
 
 
 async def _log_usage(
