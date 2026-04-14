@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { Position } from "@/lib/types";
 import { formatCurrency, formatPercent, formatDateTime, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,6 +14,8 @@ import {
 } from "@/components/ui/table";
 
 export default function OpenPositions({ positions }: { positions: Position[] }) {
+  const router = useRouter();
+
   if (positions.length === 0) {
     return (
       <Card>
@@ -32,7 +35,11 @@ export default function OpenPositions({ positions }: { positions: Position[] }) 
           Open Positions <span className="text-gray-500 text-sm font-normal ml-1">({positions.length})</span>
         </h3>
         {positions.map((p) => (
-          <Card key={p.trade_id} className="overflow-hidden">
+          <Card
+            key={p.trade_id}
+            onClick={() => router.push(`/screener/${p.ticker}`)}
+            className="overflow-hidden cursor-pointer hover:bg-[#1f2937]/50 transition-colors"
+          >
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
@@ -104,7 +111,11 @@ export default function OpenPositions({ positions }: { positions: Position[] }) 
             </TableHeader>
             <TableBody>
               {positions.map((p) => (
-                <TableRow key={p.trade_id} className="border-b border-border/50">
+                <TableRow
+                  key={p.trade_id}
+                  onClick={() => router.push(`/screener/${p.ticker}`)}
+                  className="border-b border-border/50 cursor-pointer hover:bg-[#1f2937]/50 transition-colors"
+                >
                   <TableCell className="px-5 font-bold text-white">{p.ticker}</TableCell>
                   <TableCell className="px-3">
                     <Badge variant={p.direction === "long" ? "long" : "short"}>

@@ -4,13 +4,20 @@ import { formatCurrency } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   ResponsiveContainer,
-  LineChart,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   Tooltip,
   CartesianGrid,
 } from "recharts";
+import {
+  chartColors,
+  chartGrid,
+  chartAxis,
+  chartTooltip,
+  chartAnimation,
+} from "@/components/ui/chart-config";
 
 export default function EquityCurve({ data }: { data: EquityPoint[] }) {
   if (data.length === 0) {
@@ -34,17 +41,31 @@ export default function EquityCurve({ data }: { data: EquityPoint[] }) {
       <CardContent>
         <h3 className="font-bold text-white mb-4">Equity Curve</h3>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="date" stroke="#6b7280" tick={{ fontSize: 11 }} />
-            <YAxis stroke="#6b7280" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
+          <AreaChart data={chartData}>
+            <defs>
+              <linearGradient id="equity-curve-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={chartColors.aiBlue} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={chartColors.aiBlue} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid {...chartGrid} />
+            <XAxis {...chartAxis} dataKey="date" />
+            <YAxis {...chartAxis} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
             <Tooltip
-              contentStyle={{ background: "#1f2937", border: "1px solid #374151", borderRadius: 8 }}
-              labelStyle={{ color: "#9ca3af" }}
+              {...chartTooltip}
               formatter={(value: number) => [formatCurrency(value), "Equity"]}
             />
-            <Line type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={2} dot={false} />
-          </LineChart>
+            <Area
+              type="monotone"
+              dataKey="equity"
+              stroke={chartColors.aiBlue}
+              strokeWidth={2}
+              fill="url(#equity-curve-grad)"
+              dot={false}
+              animationDuration={chartAnimation.duration}
+              animationEasing={chartAnimation.easing}
+            />
+          </AreaChart>
         </ResponsiveContainer>
       </CardContent>
     </Card>

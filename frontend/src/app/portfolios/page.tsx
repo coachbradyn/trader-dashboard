@@ -1,11 +1,14 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { usePortfolios } from "@/hooks/usePortfolio";
+import { api } from "@/lib/api";
 import { formatCurrency, formatPercent, pnlColor } from "@/lib/formatters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { chartColors } from "@/components/ui/chart-config";
 
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
 const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
@@ -27,6 +30,67 @@ function ExecutionBadge({ mode }: { mode?: string }) {
   if (mode === "paper")
     return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-amber-400 bg-amber-400/10 font-mono">Paper</span>;
   return <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider text-profit bg-profit/10 font-mono">Live</span>;
+}
+
+function PortfolioSparkline({ portfolioId, isUp }: { portfolioId: string; isUp: boolean }) {
+  const [data, setData] = useState<{ t: string; v: number }[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getEquityHistory(portfolioId)
+      .then((points) => {
+        if (cancelled) return;
+        const mapped = (points ?? []).map((p) => ({ t: p.time, v: p.equity }));
+        setData(mapped.slice(-30));
+      })
+      .catch(() => {
+        if (!cancelled) setData([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [portfolioId]);
+
+  if (loading) {
+    return <Skeleton className="h-[72px] w-full rounded-md" />;
+  }
+
+  if (!data || data.length === 0) {
+    return <div className="h-[72px] w-full" aria-hidden />;
+  }
+
+  const color = isUp ? chartColors.profit : chartColors.loss;
+  const gradId = `sparkline-${portfolioId}`;
+
+  return (
+    <div className="h-[72px] w-full">
+      <ResponsiveContainer width="100%" height={72}>
+        <AreaChart data={data} margin={{ top: 2, right: 0, bottom: 2, left: 0 }}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity={0.35} />
+              <stop offset="100%" stopColor={color} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <Area
+            type="monotone"
+            dataKey="v"
+            stroke={color}
+            strokeWidth={1.5}
+            fill={`url(#${gradId})`}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 export default function PortfoliosPage() {
@@ -53,6 +117,7 @@ export default function PortfoliosPage() {
           {portfolios?.map((p) => {
             const isAI = p.name?.toLowerCase().includes("ai") || !!(p as unknown as Record<string, unknown>).is_ai_managed;
             const returnPct = p.total_return_pct ?? 0;
+            const isUp = returnPct >= 0;
             return (
               <Link key={p.id} href={`/portfolios/${p.id}`}>
                 <Card className={`group hover:border-gray-500 transition-all duration-200 cursor-pointer h-full bg-[#1f2937]/60 border-[#374151] ${isAI ? "border-[#6366f1]/40 hover:border-[#6366f1]/70" : ""}`}>
@@ -68,11 +133,16 @@ export default function PortfoliosPage() {
                     )}
 
                     {/* Hero number: equity */}
-                    <div className="mb-4">
+                    <div className="mb-3">
                       <div className="text-2xl font-bold text-white" style={FONT_MONO}>{formatCurrency(p.equity)}</div>
                       <span className={`text-sm font-semibold ${pnlColor(returnPct)}`} style={FONT_MONO}>
                         {formatPercent(returnPct)}
                       </span>
+                    </div>
+
+                    {/* Sparkline (30-day equity curve) */}
+                    <div className="mb-3 -mx-1">
+                      <PortfolioSparkline portfolioId={p.id} isUp={isUp} />
                     </div>
 
                     {/* Stat row */}
