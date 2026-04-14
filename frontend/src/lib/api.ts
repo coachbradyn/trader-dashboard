@@ -754,4 +754,14 @@ export const api = {
     fetchApi<import("./types").MarketIntel>(
       `/ai/market-intel${refresh ? "?refresh=true" : ""}`
     ),
+
+  // Consolidates portfolios + pending actions + action stats into one
+  // request so the home page doesn't fire three parallel fetches on each
+  // poll. See backend/app/api/market_intel.py:home_snapshot.
+  getHomeSnapshot: () =>
+    fetchApi<{
+      portfolios: import("./types").Portfolio[];
+      actions: import("./types").PortfolioAction[];
+      action_stats: import("./types").ActionStats | null;
+    }>("/ai/home-snapshot"),
 };

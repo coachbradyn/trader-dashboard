@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Treemap, ResponsiveContainer, Tooltip } from "recharts";
 import { api } from "@/lib/api";
+import { useVisibilityPoll } from "@/hooks/useVisibilityPoll";
 import { Search, Plus, Eye, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -222,27 +223,35 @@ export default function WatchlistTreemapPage() {
   const [addInput, setAddInput] = useState("");
   const [adding, setAdding] = useState(false);
 
-  const fetchAll = useCallback(async () => {
+  // Watchlist membership only changes on explicit add/delete — no need to
+  // re-fetch on the 30s poll. Quotes, on the other hand, need to stay
+  // fresh. Split the two so the interval-poll is half the bandwidth.
+  const fetchWatchlist = useCallback(async () => {
     try {
-      const [wl, q] = await Promise.all([
-        api.getWatchlist().catch(() => [] as WatchlistTickerData[]),
-        api.getWatchlistQuotes().catch(() => ({} as Record<string, Quote>)),
-      ]);
+      const wl = await api.getWatchlist();
       setWatchlist(wl);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const fetchQuotes = useCallback(async () => {
+    try {
+      const q = await api.getWatchlistQuotes();
       setQuotes(q || {});
     } catch {
-      /* ignore — keep last successful state */
+      /* ignore */
     }
   }, []);
 
   useEffect(() => {
-    fetchAll().finally(() => setLoading(false));
-  }, [fetchAll]);
+    Promise.all([fetchWatchlist(), fetchQuotes()]).finally(() => setLoading(false));
+  }, [fetchWatchlist, fetchQuotes]);
 
-  useEffect(() => {
-    const iv = setInterval(fetchAll, 30000);
-    return () => clearInterval(iv);
-  }, [fetchAll]);
+  // Only quotes are polled on an interval — watchlist is re-fetched
+  // explicitly after add/remove calls. Visibility-aware so idle tabs
+  // don't burn FMP/Alpaca quota.
+  useVisibilityPoll(fetchQuotes, 30_000);
 
   const handleAdd = async () => {
     const raw = addInput.trim();
@@ -256,7 +265,8 @@ export default function WatchlistTreemapPage() {
       if (tickers.length > 0) {
         await api.addWatchlistTickers(tickers);
         setAddInput("");
-        await fetchAll();
+        // Refetch both since a new ticker is added (membership + its quote)
+        await Promise.all([fetchWatchlist(), fetchQuotes()]);
       }
     } catch {
       /* ignore */
