@@ -748,4 +748,10 @@ export const api = {
       "/execution/options-order",
       { method: "POST", body: JSON.stringify(body) }
     ),
+
+  // ── Gemini-grounded home-page intel ─────────────────────────────────
+  getMarketIntel: (refresh = false) =>
+    fetchApi<import("./types").MarketIntel>(
+      `/ai/market-intel${refresh ? "?refresh=true" : ""}`
+    ),
 };
