@@ -1516,7 +1516,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
         _logger.info("Briefing: generating via Claude with web search")
         result = await call_ai(
             system, prompt,
-            function_name="signal_evaluation",
+            function_name="morning_briefing",
             max_tokens=2000,
             enable_web_search=True,
         )
@@ -1527,7 +1527,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: fallback without web search")
-            result = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2000)
+            result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2000)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
@@ -1540,7 +1540,7 @@ POSITIONS: {positions_text}
 HOLDINGS: {holdings_text}
 Market vibe (SPY/VIX), portfolio status (big picture), today's play (2-3 actions).
 Be direct, have opinions, use real numbers. Have personality."""
-            result = await call_ai(BASE_SYSTEM_PROMPT, simple, function_name="signal_evaluation", max_tokens=1000)
+            result = await call_ai(BASE_SYSTEM_PROMPT, simple, function_name="morning_briefing", max_tokens=1000)
         except Exception as e:
             _logger.error(f"Briefing attempt 3 failed: {e}")
             result = "Henry's having a rough morning. Check that your AI API keys are configured."
