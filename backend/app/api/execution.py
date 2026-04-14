@@ -56,6 +56,234 @@ async def _get_portfolio_with_creds(portfolio_id: str, db: AsyncSession) -> Port
 
 # ── Endpoints ─────────────────────────────────────────────────────────
 
+# ── Options order endpoint ────────────────────────────────────────────
+
+class OptionsLegRequest(BaseModel):
+    option_symbol: str
+    qty: int
+    side: str  # "buy" | "sell"
+
+
+class OptionsOrderRequest(BaseModel):
+    portfolio_id: str
+    strategy_type: str
+    legs: list[OptionsLegRequest]
+    limit_price: float | None = None   # net debit (positive) / credit (negative)
+    max_risk_dollars: float | None = None  # computed max loss, for safety check
+    notes: str | None = None
+
+
+async def _today_options_count(portfolio_id: str, db: AsyncSession) -> int:
+    """Count options legs opened today for this portfolio (one multi-leg
+    strategy counts as one trade since legs share a spread_group_id)."""
+    from app.models.options_trade import OptionsTrade
+    start_of_day = datetime.combine(
+        utcnow().date(), datetime.min.time(), tzinfo=timezone.utc
+    )
+    rows = await db.execute(
+        select(OptionsTrade.spread_group_id, OptionsTrade.id)
+        .where(
+            OptionsTrade.portfolio_id == portfolio_id,
+            OptionsTrade.entry_time >= start_of_day,
+        )
+    )
+    groups: set[str] = set()
+    singles = 0
+    for gid, _id in rows.all():
+        if gid:
+            groups.add(gid)
+        else:
+            singles += 1
+    return len(groups) + singles
+
+
+@router.post("/options-order")
+async def submit_options_order(body: OptionsOrderRequest, db: AsyncSession = Depends(get_db)):
+    """Submit an options order (single-leg or multi-leg). Enforces safety
+    rails: options level, covered short legs, min DTE, daily trade cap,
+    and max risk. This is the final choke point — even if the strategy
+    selector or UI is bypassed, orders still can't exceed the configured
+    level."""
+    import uuid as _uuid
+    from datetime import date as _date
+    from app.models.options_trade import OptionsTrade, STRATEGY_MIN_LEVEL
+    from app.services.options_service import _parse_occ_symbol
+    from app.models.henry_cache import HenryCache
+    from sqlalchemy import select as _select
+
+    portfolio = await _get_portfolio_with_creds(body.portfolio_id, db)
+    level = int(getattr(portfolio, "options_level", 0) or 0)
+    if level <= 0:
+        raise HTTPException(400, "Options trading is disabled for this portfolio (level 0)")
+
+    # 1. Strategy permitted at this level?
+    min_level = STRATEGY_MIN_LEVEL.get(body.strategy_type)
+    if min_level is None:
+        raise HTTPException(400, f"Unknown strategy_type: {body.strategy_type}")
+    if level < min_level:
+        raise HTTPException(
+            400,
+            f"Strategy {body.strategy_type} requires options level {min_level}; "
+            f"portfolio is level {level}",
+        )
+
+    # 2. Legs shape + OCC parseable?
+    if not body.legs:
+        raise HTTPException(400, "Order must have at least one leg")
+    parsed_legs = []
+    for leg in body.legs:
+        p = _parse_occ_symbol(leg.option_symbol)
+        if not p:
+            raise HTTPException(400, f"Cannot parse OCC symbol {leg.option_symbol}")
+        if leg.qty <= 0:
+            raise HTTPException(400, "leg.qty must be positive")
+        if leg.side.lower() not in ("buy", "sell"):
+            raise HTTPException(400, "leg.side must be buy or sell")
+        parsed_legs.append({"leg": leg, "parsed": p})
+
+    # 3. Min-DTE guard (opening only; closing short-dated positions is fine
+    #    but this endpoint is for opens — the notes/strategy_type distinguish
+    #    close flows in a future extension).
+    today = _date.today()
+    defaults_row = (await db.execute(
+        _select(HenryCache).where(HenryCache.cache_key == "options:defaults")
+    )).scalar_one_or_none()
+    min_dte = 7
+    if defaults_row and isinstance(defaults_row.content, dict):
+        try:
+            min_dte = int(defaults_row.content.get("min_dte", 7))
+        except (TypeError, ValueError):
+            min_dte = 7
+    for item in parsed_legs:
+        dte = (item["parsed"]["expiration"] - today).days
+        if dte < min_dte:
+            raise HTTPException(
+                400,
+                f"Leg {item['leg'].option_symbol} is {dte} DTE — below the {min_dte} DTE minimum",
+            )
+
+    # 4. No naked shorts. Every short leg must be either (a) covered by an
+    #    equity position (covered_call / cash_secured_put — handled by
+    #    strategy_type), or (b) paired with a long leg at the same expiry
+    #    in the same ticker (spreads).
+    short_legs = [i for i in parsed_legs if i["leg"].side.lower() == "sell"]
+    long_legs = [i for i in parsed_legs if i["leg"].side.lower() == "buy"]
+    if short_legs and body.strategy_type not in ("covered_call", "cash_secured_put"):
+        # For spreads: each short leg needs a corresponding long leg in the
+        # same underlying at a paired strike. We don't fully model every
+        # combination here — we just require at least as many long legs as
+        # short legs and that all legs share the underlying.
+        if len(long_legs) < len(short_legs):
+            raise HTTPException(400, "Short legs require matching long legs (no naked selling)")
+        underlyings = {i["parsed"]["root"] for i in parsed_legs}
+        if len(underlyings) != 1:
+            raise HTTPException(400, "All legs must share the same underlying")
+
+    # 5. Daily trade cap
+    max_daily = getattr(portfolio, "max_options_daily_trades", None)
+    if max_daily is None:
+        max_daily = 5
+        if defaults_row and isinstance(defaults_row.content, dict):
+            try:
+                max_daily = int(defaults_row.content.get("max_daily_trades", 5))
+            except (TypeError, ValueError):
+                pass
+    todays = await _today_options_count(body.portfolio_id, db)
+    if todays >= max_daily:
+        raise HTTPException(
+            400,
+            f"Daily options trade limit reached ({todays}/{max_daily})",
+        )
+
+    # 6. Max risk cap
+    max_risk_limit = getattr(portfolio, "max_options_risk", None)
+    if max_risk_limit is None:
+        max_risk_limit = 2000.0
+        if defaults_row and isinstance(defaults_row.content, dict):
+            try:
+                max_risk_limit = float(defaults_row.content.get("max_risk_per_trade", 2000.0))
+            except (TypeError, ValueError):
+                pass
+    if body.max_risk_dollars is not None and body.max_risk_dollars > max_risk_limit:
+        raise HTTPException(
+            400,
+            f"Order max risk ${body.max_risk_dollars:.0f} exceeds portfolio cap ${max_risk_limit:.0f}",
+        )
+
+    # 7. Submit to Alpaca (only when execution_mode is paper/live)
+    submitted_result: dict = {"status": "local-only", "message": "Execution mode is 'local' — recorded without broker submission."}
+    api_key = portfolio.alpaca_api_key_decrypted
+    secret_key = portfolio.alpaca_secret_key_decrypted
+    paper = (portfolio.execution_mode or "local").lower() == "paper"
+
+    if portfolio.execution_mode in ("paper", "live") and api_key and secret_key:
+        if len(body.legs) == 1:
+            leg = body.legs[0]
+            submitted_result = await alpaca_service.submit_options_order(
+                api_key=api_key, secret_key=secret_key, paper=paper,
+                option_symbol=leg.option_symbol,
+                qty=leg.qty, side=leg.side, limit_price=body.limit_price,
+            )
+        else:
+            if body.limit_price is None:
+                raise HTTPException(400, "limit_price required for multi-leg orders")
+            submitted_result = await alpaca_service.submit_multi_leg_order(
+                api_key=api_key, secret_key=secret_key, paper=paper,
+                legs=[{"option_symbol": l.option_symbol, "qty": l.qty, "side": l.side} for l in body.legs],
+                limit_price=body.limit_price,
+            )
+        if submitted_result.get("status") == "error":
+            raise HTTPException(502, f"Alpaca rejected: {submitted_result.get('message')}")
+
+    # 8. Record legs in options_trades
+    spread_group_id = str(_uuid.uuid4()) if len(body.legs) > 1 else None
+    alpaca_order_id = submitted_result.get("order_id") if submitted_result else None
+
+    for item in parsed_legs:
+        leg = item["leg"]
+        p = item["parsed"]
+        direction = "long" if leg.side.lower() == "buy" else "short"
+        entry_premium = body.limit_price if len(body.legs) == 1 and body.limit_price else 0.0
+        db.add(OptionsTrade(
+            portfolio_id=body.portfolio_id,
+            ticker=p["root"],
+            option_symbol=leg.option_symbol,
+            option_type=p["option_type"],
+            strike=p["strike"],
+            expiration=p["expiration"],
+            direction=direction,
+            quantity=int(leg.qty),
+            entry_premium=float(entry_premium),
+            strategy_type=body.strategy_type,
+            spread_group_id=spread_group_id,
+            alpaca_order_id=alpaca_order_id,
+            notes=body.notes,
+        ))
+    await db.commit()
+
+    return {
+        "status": "accepted",
+        "spread_group_id": spread_group_id,
+        "alpaca": submitted_result,
+        "legs": [
+            {"option_symbol": l.option_symbol, "qty": l.qty, "side": l.side}
+            for l in body.legs
+        ],
+    }
+
+
+@router.get("/options-positions")
+async def get_alpaca_options_positions(portfolio_id: str, db: AsyncSession = Depends(get_db)):
+    """Live options positions from Alpaca for a portfolio (reconciliation view)."""
+    portfolio = await _get_portfolio_with_creds(portfolio_id, db)
+    api_key = portfolio.alpaca_api_key_decrypted
+    secret_key = portfolio.alpaca_secret_key_decrypted
+    if not api_key or not secret_key:
+        raise HTTPException(400, "Portfolio has no Alpaca credentials configured")
+    paper = (portfolio.execution_mode or "local").lower() == "paper"
+    return await alpaca_service.get_options_positions(api_key, secret_key, paper)
+
+
 @router.post("/test-connection")
 async def test_connection(body: TestConnectionRequest, db: AsyncSession = Depends(get_db)):
     """Test Alpaca credentials for a portfolio."""

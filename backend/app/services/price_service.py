@@ -73,10 +73,36 @@ class PriceService:
         except Exception:
             pass  # Silently fail — cache retains last known prices
 
+    async def _update_options_positions(self):
+        """Refresh current_premium and greeks_current on all open options
+        legs. Shares cadence with equity polling; Alpaca's batch quote
+        endpoint makes this cheap. Non-critical — silent failures can't
+        break the equity loop.
+        """
+        try:
+            from app.database import async_session
+            from app.models.options_trade import OptionsTrade
+            from app.services.options_service import update_positions_live_data
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(OptionsTrade).where(OptionsTrade.status == "open")
+                )
+                rows = list(result.scalars().all())
+                if not rows:
+                    return
+                updated = await update_positions_live_data(rows)
+                if updated:
+                    await db.commit()
+        except Exception:
+            pass
+
     async def run(self):
         settings = get_settings()
         while True:
             await self._fetch_prices()
+            await self._update_options_positions()
             interval = (
                 settings.price_poll_interval_market
                 if self._is_market_hours()

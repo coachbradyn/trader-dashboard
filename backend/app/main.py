@@ -19,6 +19,7 @@ from app.api import ai_portfolio as ai_portfolio_router
 from app.api import news as news_router
 from app.api import execution as execution_router
 from app.api import fmp_scanner as fmp_scanner_router
+from app.api import options as options_router
 from app.services.price_service import price_service
 from app.database import async_session
 from app.models import Trade, Trader, ConflictResolution
@@ -207,11 +208,59 @@ async def _ensure_schema():
                     "alpaca_api_key": "ALTER TABLE portfolios ADD COLUMN alpaca_api_key VARCHAR(255)",
                     "alpaca_secret_key": "ALTER TABLE portfolios ADD COLUMN alpaca_secret_key VARCHAR(255)",
                     "max_order_amount": "ALTER TABLE portfolios ADD COLUMN max_order_amount FLOAT DEFAULT 1000.0",
+                    # Options configuration (level 0 = disabled)
+                    "options_level": "ALTER TABLE portfolios ADD COLUMN options_level INTEGER NOT NULL DEFAULT 0",
+                    "max_options_risk": "ALTER TABLE portfolios ADD COLUMN max_options_risk FLOAT",
+                    "max_options_daily_trades": "ALTER TABLE portfolios ADD COLUMN max_options_daily_trades INTEGER",
+                    "options_allocation_pct": "ALTER TABLE portfolios ADD COLUMN options_allocation_pct FLOAT NOT NULL DEFAULT 0.20",
                 }
                 for col_name, sql in new_portfolio_cols.items():
                     if col_name not in portfolio_cols:
                         connection.execute(text(sql))
                         logger.info(f"Added missing column: portfolios.{col_name}")
+
+                # Options trades table (fallback when Alembic didn't run)
+                if "options_trades" not in tables:
+                    connection.execute(text("""
+                        CREATE TABLE options_trades (
+                            id VARCHAR(36) PRIMARY KEY,
+                            portfolio_id VARCHAR(36) NOT NULL REFERENCES portfolios(id) ON DELETE CASCADE,
+                            ticker VARCHAR(20) NOT NULL,
+                            option_symbol VARCHAR(40) NOT NULL,
+                            option_type VARCHAR(4) NOT NULL,
+                            strike FLOAT NOT NULL,
+                            expiration DATE NOT NULL,
+                            direction VARCHAR(5) NOT NULL,
+                            quantity INTEGER NOT NULL,
+                            entry_premium FLOAT NOT NULL,
+                            entry_time TIMESTAMP NOT NULL,
+                            underlying_price_at_entry FLOAT,
+                            greeks_at_entry JSON,
+                            iv_at_entry FLOAT,
+                            current_premium FLOAT,
+                            greeks_current JSON,
+                            exit_premium FLOAT,
+                            exit_time TIMESTAMP,
+                            pnl_dollars FLOAT,
+                            pnl_percent FLOAT,
+                            status VARCHAR(10) NOT NULL DEFAULT 'open',
+                            strategy_type VARCHAR(30) NOT NULL,
+                            spread_group_id VARCHAR(36),
+                            alpaca_order_id VARCHAR(64),
+                            notes TEXT,
+                            created_at TIMESTAMP
+                        )
+                    """))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_portfolio_id ON options_trades (portfolio_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_ticker ON options_trades (ticker)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_option_symbol ON options_trades (option_symbol)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_expiration ON options_trades (expiration)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_status ON options_trades (status)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_strategy_type ON options_trades (strategy_type)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_spread_group_id ON options_trades (spread_group_id)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_portfolio_status ON options_trades (portfolio_id, status)"))
+                    connection.execute(text("CREATE INDEX IF NOT EXISTS ix_options_trades_expiration_status ON options_trades (expiration, status)"))
+                    logger.info("Created missing table: options_trades")
 
                 # Add position archetype columns to portfolio_holdings if missing
                 holding_cols = [c["name"] for c in insp.get_columns("portfolio_holdings")]
@@ -570,6 +619,7 @@ app.include_router(optimization_router.router, prefix="/api", tags=["optimizatio
 
 app.include_router(execution_router.router, prefix="/api", tags=["execution"])
 app.include_router(fmp_scanner_router.router, prefix="/api", tags=["fmp-scanner"])
+app.include_router(options_router.router, prefix="/api", tags=["options"])
 
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────

@@ -24,6 +24,7 @@ from app.models.news_cache import NewsCache
 from app.models.ai_usage import AIUsage
 from app.models.ticker_fundamentals import TickerFundamentals
 from app.models.fmp_cache import FmpCache
+from app.models.options_trade import OptionsTrade
 
 __all__ = [
     "Trader",
@@ -52,4 +53,5 @@ __all__ = [
     "AIUsage",
     "TickerFundamentals",
     "FmpCache",
+    "OptionsTrade",
 ]

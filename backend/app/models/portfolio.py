@@ -27,6 +27,17 @@ class Portfolio(Base):
     alpaca_api_key: Mapped[str | None] = mapped_column(String(255))
     alpaca_secret_key: Mapped[str | None] = mapped_column(String(255))
     max_order_amount: Mapped[float | None] = mapped_column(Float, default=1000.0)
+
+    # Options trading configuration. `options_level` is the hard gate —
+    # 0 means options are disabled for this portfolio; 1/2/3 mirror the
+    # standard brokerage approval tiers. The other three columns are
+    # per-portfolio overrides for the global defaults stored in
+    # henry_cache. Null here means "use global default".
+    options_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_options_risk: Mapped[float | None] = mapped_column(Float)
+    max_options_daily_trades: Mapped[int | None] = mapped_column(Integer)
+    options_allocation_pct: Mapped[float] = mapped_column(Float, default=0.20, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     @property
