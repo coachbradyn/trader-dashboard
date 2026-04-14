@@ -20,6 +20,8 @@ from typing import Optional
 
 import numpy as np
 
+from app.utils.utc import utcnow
+
 logger = logging.getLogger(__name__)
 
 
@@ -299,8 +301,6 @@ async def compute_projection(db, force: bool = False) -> Optional[dict]:
             "decayed_count": int(aging.get("decayed", 0)),
             "avg_importance": avg_importance,
         })
-
-    from app.utils.utc import utcnow
 
     # Surface fit-quality diagnostics from the cluster_stat row so the
     # frontend quality panel has what it needs without a second round-trip.
