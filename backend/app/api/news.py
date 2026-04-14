@@ -32,7 +32,8 @@ async def get_ticker_news(ticker: str):
     """Get news, sentiment, and company info for a specific ticker.
     Falls back to FMP news when Alpaca has nothing, and generates
     synthetic sector context as a last resort."""
-    ticker = ticker.upper().strip()
+    # Accept both "NVDA" and "NASDAQ:NVDA" — strip any exchange prefix.
+    ticker = ticker.upper().strip().split(":")[-1]
 
     # Fetch all sources in parallel
     import asyncio

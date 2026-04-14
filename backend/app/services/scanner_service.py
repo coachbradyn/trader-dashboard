@@ -50,7 +50,19 @@ DEFAULT_SCANNER_CRITERIA = {
         "isEtf": False,
         "isFund": False,
         "isActivelyTrading": True,
-        "limit": 50,
+        # Pull a wide net — FMP's screener sorts by market cap desc by default,
+        # so 50 always returned the MAG 7 + megacaps. 200 gives diversity, and
+        # _filter_by_momentum() below sorts by daily %change to surface movers.
+        "limit": 200,
+    },
+    # ── Momentum post-filter (applied after FMP screener, before technical
+    # rules). The FMP screener alone biases toward mega-caps; this filter
+    # narrows the pool to actual movers by daily percent change.
+    # ──────────────────────────────────────────────────────────────────────
+    "momentum_filter": {
+        "enabled": True,
+        "min_change_pct": 1.5,   # stocks must have moved at least 1.5% today
+        "top_n": 40,              # take top N by |change_pct| after filtering
     },
     # ── Technical filter rules (evaluated in sequence, all must pass) ──
     "technical_rules": [
@@ -200,6 +212,28 @@ DEFAULT_PROFILES = [
         "market_conditions": {
             "trend": "any",
             "time_slots": ["morning", "midday", "afternoon"],
+        },
+        "criteria": None,
+    },
+    {
+        "id": "mid_cap_momentum",
+        "name": "Mid Cap Momentum",
+        "description": "$1B–$10B mid caps with strong intraday moves — where most swing setups live",
+        "enabled": True,
+        "market_conditions": {
+            "trend": "any",
+            "time_slots": ["morning", "midday"],
+        },
+        "criteria": None,
+    },
+    {
+        "id": "small_cap_momentum",
+        "name": "Small Cap Momentum",
+        "description": "$300M–$1B small caps with high relative volume — higher risk, higher reward",
+        "enabled": False,
+        "market_conditions": {
+            "trend": "any",
+            "time_slots": ["morning"],
         },
         "criteria": None,
     },
@@ -601,6 +635,63 @@ def get_preset_criteria(preset_name: str) -> dict:
             # Drawdown filter: stock must be down >15% from 30-day high
             "drawdown_filter": {"enabled": True, "min_drawdown_pct": 15, "lookback_days": 30},
         },
+        "mid_cap_momentum": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 1_000_000_000,     # >$1B
+                "marketCapLessThan": 10_000_000_000,    # <$10B
+                "volumeMoreThan": 750_000,
+                "limit": 300,  # wider net — mid caps are more numerous
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 45, "compare_indicator": None,
+                    "label": "RSI > 45",
+                },
+                {
+                    "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 20, "compare_indicator": None,
+                    "label": "ADX > 20 (directional move)",
+                },
+                {
+                    "enabled": True, "indicator": "ema", "period": 9, "timeframe": "daily",
+                    "condition": "above", "value": 0,
+                    "compare_indicator": {"indicator": "ema", "period": 21},
+                    "label": "EMA 9 > EMA 21 (momentum)",
+                },
+            ],
+            "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
+            # Stronger momentum bar for mid caps — they move more
+            "momentum_filter": {"enabled": True, "min_change_pct": 2.0, "top_n": 40},
+            "active_preset": "mid_cap_momentum",
+        },
+        "small_cap_momentum": {
+            "screener": {
+                **DEFAULT_SCANNER_CRITERIA["screener"],
+                "marketCapMoreThan": 300_000_000,       # >$300M (avoid pennies)
+                "marketCapLessThan": 1_000_000_000,     # <$1B
+                "priceMoreThan": 5.0,
+                "volumeMoreThan": 300_000,
+                "limit": 500,
+            },
+            "technical_rules": [
+                {
+                    "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
+                    "condition": "above", "value": 25, "compare_indicator": None,
+                    "label": "ADX > 25 (strong directional)",
+                },
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "below", "value": 75, "compare_indicator": None,
+                    "label": "RSI < 75 (not yet blow-off top)",
+                },
+            ],
+            "volume_filter": {"enabled": True, "surge_multiplier": 2.0, "avg_period": 20},
+            # High change floor — small caps need to be clearly in motion
+            "momentum_filter": {"enabled": True, "min_change_pct": 3.0, "top_n": 30},
+            "active_preset": "small_cap_momentum",
+        },
     }
     preset = presets.get(preset_name)
     if not preset:
@@ -613,9 +704,80 @@ def get_preset_criteria(preset_name: str) -> dict:
 # MAIN SCANNER PIPELINE
 # ══════════════════════════════════════════════════════════════════════
 
+async def _filter_by_momentum(
+    screener_results: list[dict],
+    min_change_pct: float = 1.5,
+    top_n: int = 40,
+) -> list[dict]:
+    """Enrich screener results with batch quotes and filter/sort by daily %change.
+
+    The FMP /stable/company-screener endpoint returns results sorted by market
+    cap descending with no sort override, so the default top-50 is always the
+    MAG 7 + megacaps regardless of technical configuration. This function pulls
+    current %change for the full screener pool, drops anything that hasn't
+    moved at least min_change_pct today, sorts by |change_pct| descending, and
+    returns the top N candidates — so the downstream technical pipeline
+    evaluates actual movers instead of size-sorted megacaps.
+    """
+    from app.services.fmp_service import get_batch_quotes
+
+    if not screener_results:
+        return []
+
+    tickers = [s.get("symbol") for s in screener_results if s.get("symbol")]
+    if not tickers:
+        return []
+
+    # Batch quote in chunks (FMP batch-quote supports many symbols per call
+    # but individual endpoints have length limits).
+    change_map: dict[str, float] = {}
+    volume_map: dict[str, float] = {}
+    CHUNK = 50
+    for i in range(0, len(tickers), CHUNK):
+        chunk = tickers[i:i + CHUNK]
+        quotes = await get_batch_quotes(chunk)
+        if not quotes or not isinstance(quotes, list):
+            continue
+        for q in quotes:
+            sym = q.get("symbol")
+            cp = q.get("changesPercentage") or q.get("changePercentage")
+            if sym is not None and cp is not None:
+                try:
+                    change_map[sym] = float(cp)
+                    if q.get("volume") is not None:
+                        volume_map[sym] = float(q.get("volume") or 0)
+                except (TypeError, ValueError):
+                    continue
+
+    # Attach change% to each screener result and filter
+    enriched: list[dict] = []
+    for s in screener_results:
+        sym = s.get("symbol")
+        if not sym:
+            continue
+        cp = change_map.get(sym)
+        if cp is None:
+            continue  # drop silent tickers — probably halted or stale
+        if abs(cp) < min_change_pct:
+            continue
+        s["_change_pct"] = cp
+        s["_live_volume"] = volume_map.get(sym, s.get("volume"))
+        enriched.append(s)
+
+    # Sort by absolute %change descending (captures both long and short setups)
+    enriched.sort(key=lambda x: abs(x.get("_change_pct", 0)), reverse=True)
+
+    return enriched[:top_n]
+
+
 def _build_screener_params(screener_cfg: dict) -> dict:
     """Convert the screener section of criteria into FMP query params.
-    Skips None values.  For booleans, only passes if True."""
+    Skips None values.  For booleans, only passes if True.
+
+    Non-FMP post-filter keys (e.g. 'limit' when >200) are clamped, and
+    aliases like 'marketCapLessThan' are passed through unchanged — FMP's
+    stable endpoint accepts both the v3 'LessThan' and 'LowerThan' suffixes.
+    """
     params: dict = {}
     for key, value in screener_cfg.items():
         if value is None:
@@ -1010,6 +1172,44 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
     if not isinstance(screener_results, list):
         logger.warning(f"Scanner: FMP screener returned unexpected type: {type(screener_results)}")
         return []
+
+    # Diagnostics: market cap range + sector diversity of the raw pool. If
+    # every result is a $500B+ megacap the pool is rotten before any rules run.
+    try:
+        mcaps = [float(s.get("marketCap") or 0) for s in screener_results if s.get("marketCap")]
+        sectors = {s.get("sector") for s in screener_results if s.get("sector")}
+        if mcaps:
+            logger.info(
+                f"Scanner pool: {len(screener_results)} stocks | "
+                f"mcap ${min(mcaps)/1e9:.1f}B–${max(mcaps)/1e9:.1f}B | "
+                f"{len(sectors)} sectors"
+            )
+        else:
+            logger.info(f"Scanner pool: {len(screener_results)} stocks (no mcap data)")
+    except Exception:
+        pass
+
+    # 2b. Momentum post-filter — the screener's default sort is mcap desc, so
+    # without this step the MAG 7 pass every profile. This narrows to actual
+    # movers by today's %change before burning API calls on technical rules.
+    momentum_cfg = criteria.get("momentum_filter", DEFAULT_SCANNER_CRITERIA.get("momentum_filter", {}))
+    if momentum_cfg.get("enabled", True):
+        min_change = float(momentum_cfg.get("min_change_pct", 1.5))
+        top_n = int(momentum_cfg.get("top_n", 40))
+        before = len(screener_results)
+        screener_results = await _filter_by_momentum(
+            screener_results, min_change_pct=min_change, top_n=top_n,
+        )
+        logger.info(
+            f"Scanner momentum filter: {before} → {len(screener_results)} "
+            f"(|Δ| ≥ {min_change}%, top {top_n})"
+        )
+        if screener_results:
+            top_preview = ", ".join(
+                f"{s['symbol']}({s.get('_change_pct', 0):+.1f}%)"
+                for s in screener_results[:8]
+            )
+            logger.info(f"Scanner top movers: {top_preview}")
 
     logger.info(f"Scanner: {len(screener_results)} stocks from screener")
 

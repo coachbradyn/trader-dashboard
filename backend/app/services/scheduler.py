@@ -347,6 +347,55 @@ async def _refresh_fundamentals():
         logger.error(f"Fundamentals refresh failed: {e}")
 
 
+async def _warm_ticker_news():
+    """Pre-fetch news for watchlist + active-holding tickers so ticker pages
+    aren't cold on first visit. Runs every 2 hours during market hours.
+
+    Skips tickers whose cache is newer than 2h to avoid burning API calls.
+    """
+    try:
+        from app.database import async_session
+        from app.models.watchlist_ticker import WatchlistTicker
+        from app.models.trade import Trade
+        from app.services.news_service import news_service
+        from sqlalchemy import select
+
+        tickers: set[str] = set()
+        async with async_session() as db:
+            # Watchlist
+            try:
+                rows = await db.execute(
+                    select(WatchlistTicker.ticker).where(WatchlistTicker.is_active == True)  # noqa: E712
+                )
+                tickers.update(r[0] for r in rows.all() if r[0])
+            except Exception:
+                # Fallback without is_active column
+                rows = await db.execute(select(WatchlistTicker.ticker))
+                tickers.update(r[0] for r in rows.all() if r[0])
+
+            # Active (open) holdings
+            try:
+                rows = await db.execute(
+                    select(Trade.ticker).where(Trade.status == "open")
+                )
+                tickers.update(r[0] for r in rows.all() if r[0])
+            except Exception:
+                pass
+
+        if not tickers:
+            logger.debug("News warm: no watchlist/holdings to warm")
+            return
+
+        # Normalize any exchange-prefixed tickers
+        normalized = sorted({t.upper().split(":")[-1] for t in tickers})
+        logger.info(f"News warm: checking {len(normalized)} tickers")
+        await news_service.fetch_and_cache_many_tickers(
+            normalized, per_ticker_limit=8, ttl_seconds=7200,
+        )
+    except Exception as e:
+        logger.error(f"News warm failed: {e}")
+
+
 async def _run_auto_research():
     """Run auto-research for tickers needing context."""
     logger.info("Running auto-research...")
@@ -736,6 +785,16 @@ def start_scheduler():
         _run_auto_research,
         CronTrigger(hour=9, minute=0, timezone=ET, day_of_week="mon-fri"),
         id="auto_research",
+        replace_existing=True,
+    )
+
+    # Warm ticker news cache every 2 hours during market hours so per-ticker
+    # pages aren't cold on first visit (and so non-AAPL tickers actually have
+    # data when Alpaca keys aren't configured).
+    scheduler.add_job(
+        _warm_ticker_news,
+        CronTrigger(hour="9,11,13,15", minute=15, timezone=ET, day_of_week="mon-fri"),
+        id="news_warm",
         replace_existing=True,
     )
 

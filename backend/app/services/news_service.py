@@ -93,6 +93,91 @@ def _sentiment_label(score: float) -> str:
     return "Neutral"
 
 
+# ─── FMP → Alpaca-upsert shape normalizers ──────────────────────────────────
+# The news_cache upsert expects Alpaca's schema (id/headline/summary/source/
+# symbols/url/created_at). FMP news and press releases use different keys, so
+# map them here before handing to _upsert_articles.
+
+def _normalize_fmp_articles(raw, ticker: str) -> list[dict]:
+    """FMP /stable/news/stock returns a list of articles with keys like
+    url/title/text/site/publishedDate/symbol. Handles the occasional wrapper
+    dict ({"articles": [...]}) and silently drops malformed entries.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        for key in ("articles", "news", "data"):
+            if isinstance(raw.get(key), list):
+                raw = raw[key]
+                break
+        else:
+            return []
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict] = []
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        url = a.get("url") or ""
+        title = a.get("title") or ""
+        if not url and not title:
+            continue
+        aid = f"fmp-news-{url or title}"[:255]
+        syms = a.get("symbols")
+        if not syms:
+            sym = a.get("symbol") or ticker
+            syms = [sym] if isinstance(sym, str) else []
+        syms = [str(s).upper().split(":")[-1] for s in syms if s]
+        if ticker.upper() not in syms:
+            syms.append(ticker.upper())
+        out.append({
+            "id": aid,
+            "headline": title[:500],
+            "summary": (a.get("text") or "")[:500],
+            "source": a.get("site") or a.get("publisher") or "FMP",
+            "symbols": syms,
+            "url": url,
+            "created_at": a.get("publishedDate") or a.get("date"),
+        })
+    return out
+
+
+def _normalize_fmp_press_releases(raw, ticker: str) -> list[dict]:
+    """FMP /stable/news/press-releases has keys date/title/text/symbol."""
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        for key in ("articles", "data", "releases"):
+            if isinstance(raw.get(key), list):
+                raw = raw[key]
+                break
+        else:
+            return []
+    if not isinstance(raw, list):
+        return []
+
+    out: list[dict] = []
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        title = r.get("title") or f"{ticker} press release"
+        date = r.get("date") or r.get("publishedDate")
+        if not date:
+            continue
+        aid = f"fmp-pr-{ticker}-{date}"[:255]
+        out.append({
+            "id": aid,
+            "headline": title[:500],
+            "summary": (r.get("text") or "")[:500],
+            "source": "Press Release",
+            "symbols": [ticker.upper()],
+            "url": r.get("url") or "",
+            "created_at": date,
+        })
+    return out
+
+
 # ─── COMPANY DESCRIPTION CACHE ──────────────────────────────────────────────
 
 _company_cache: dict[str, dict] = {}  # ticker -> {data, fetched_at}
@@ -151,13 +236,23 @@ def _fetch_company_sync(ticker: str) -> dict:
 class NewsService:
     """Fetches news from Alpaca, caches in DB, and provides read access."""
 
+    # Alpaca-key-missing warning throttle — log at most once per hour rather
+    # than on every ticker page load.
+    _alpaca_missing_logged_at: float = 0.0
+
     async def _fetch_alpaca_news(
         self, tickers: list[str] | None = None, limit: int = 20
     ) -> list[dict]:
         """Call Alpaca News API via httpx (async)."""
         settings = get_settings()
         if not settings.alpaca_api_key:
-            logger.warning("Alpaca API key not configured — skipping news fetch")
+            now = time.time()
+            if now - NewsService._alpaca_missing_logged_at > 3600:
+                logger.warning(
+                    "Alpaca API key not configured — ticker news will fall back "
+                    "to FMP /stable/news/stock"
+                )
+                NewsService._alpaca_missing_logged_at = now
             return []
 
         params = {"limit": limit, "sort": "desc"}
@@ -257,13 +352,118 @@ class NewsService:
             return 0
 
     async def fetch_and_cache_ticker_news(self, ticker: str, limit: int = 10) -> int:
-        """Fetch news for a specific ticker and cache it. Returns count of new articles."""
+        """Fetch news for a specific ticker and cache it. Tries Alpaca first,
+        then FMP /stable/news/stock if Alpaca returns nothing (or keys are
+        missing). Returns count of new articles cached.
+        """
+        ticker = ticker.upper().strip()
+        alpaca_count = 0
+        fmp_count = 0
         try:
             articles = await self._fetch_alpaca_news(tickers=[ticker], limit=limit)
-            return await self._upsert_articles(articles)
+            if articles:
+                alpaca_count = await self._upsert_articles(articles)
+                logger.info(
+                    f"News fetch {ticker}: Alpaca returned {len(articles)} "
+                    f"articles, {alpaca_count} new rows cached"
+                )
+                if alpaca_count > 0:
+                    return alpaca_count
         except Exception as e:
-            logger.error(f"fetch_and_cache_ticker_news failed for {ticker}: {e}")
-            return 0
+            logger.warning(f"Alpaca news fetch failed for {ticker}: {e}")
+
+        # FMP fallback — normalize their response shape into the Alpaca
+        # upsert schema so both sources share a single cache path.
+        try:
+            from app.services.fmp_service import get_stock_news
+            fmp_news = await get_stock_news(ticker, limit=limit)
+            normalized = _normalize_fmp_articles(fmp_news, ticker)
+            if normalized:
+                fmp_count = await self._upsert_articles(normalized)
+                logger.info(
+                    f"News fetch {ticker}: FMP returned {len(normalized)} "
+                    f"articles, {fmp_count} new rows cached"
+                )
+                return fmp_count
+        except Exception as e:
+            logger.warning(f"FMP news fallback failed for {ticker}: {e}")
+
+        # Last resort: press releases
+        try:
+            from app.services.fmp_service import get_press_releases
+            releases = await get_press_releases(ticker, limit=5)
+            normalized = _normalize_fmp_press_releases(releases, ticker)
+            if normalized:
+                pr_count = await self._upsert_articles(normalized)
+                if pr_count:
+                    logger.info(
+                        f"News fetch {ticker}: FMP press releases → "
+                        f"{pr_count} new rows cached"
+                    )
+                return pr_count
+        except Exception as e:
+            logger.debug(f"FMP press-release fallback failed for {ticker}: {e}")
+
+        logger.info(
+            f"News fetch {ticker}: no articles from Alpaca, FMP news, or FMP "
+            f"press releases — ticker page will show synthetic fundamentals"
+        )
+        return 0
+
+    async def fetch_and_cache_many_tickers(
+        self, tickers: list[str], per_ticker_limit: int = 8,
+        ttl_seconds: int = 7200,
+    ) -> dict:
+        """Proactively warm the cache for a list of tickers. Used by the
+        scheduler job to keep holdings/watchlist news fresh so ticker pages
+        aren't cold on first visit.
+
+        Skips tickers whose cache is newer than ttl_seconds to avoid burning
+        API calls. Returns {ticker: inserted_count} for tickers it touched.
+        """
+        if not tickers:
+            return {}
+
+        results: dict[str, int] = {}
+        stale_cutoff = utcnow() - timedelta(seconds=ttl_seconds)
+
+        # Find which tickers actually need refreshing
+        to_fetch: list[str] = []
+        try:
+            async with async_session() as db:
+                for raw in tickers:
+                    t = raw.upper().strip()
+                    if not t or t in to_fetch:
+                        continue
+                    recent = await db.execute(
+                        select(func.max(NewsCache.fetched_at))
+                        .where(_ticker_filter(t))
+                    )
+                    last = recent.scalar()
+                    if last is None or last < stale_cutoff:
+                        to_fetch.append(t)
+        except Exception as e:
+            logger.warning(f"fetch_and_cache_many_tickers cache check failed: {e}")
+            to_fetch = [t.upper().strip() for t in tickers if t]
+
+        if not to_fetch:
+            logger.info(f"News warm: all {len(tickers)} tickers fresh, nothing to fetch")
+            return {}
+
+        logger.info(f"News warm: fetching {len(to_fetch)} stale tickers ({', '.join(to_fetch[:10])}{'...' if len(to_fetch) > 10 else ''})")
+        for t in to_fetch:
+            try:
+                count = await self.fetch_and_cache_ticker_news(t, limit=per_ticker_limit)
+                results[t] = count
+            except Exception as e:
+                logger.warning(f"News warm failed for {t}: {e}")
+                results[t] = 0
+            # Tiny pause to avoid hammering upstream
+            await asyncio.sleep(0.1)
+
+        fetched = sum(1 for v in results.values() if v > 0)
+        logger.info(f"News warm done: {fetched}/{len(to_fetch)} tickers got new articles")
+        return results
 
     async def get_cached_news(
         self,
@@ -317,28 +517,49 @@ class NewsService:
     async def get_ticker_headlines(self, ticker: str, limit: int = 5) -> list[dict]:
         """Get recent headlines for a specific ticker.
 
-        Skips the Alpaca fetch if we already have fresh articles (< 30 min old)
-        for this ticker — avoids hammering the API on every page load.
+        Skips the Alpaca/FMP fetch if we already have fresh articles (< 30 min
+        old) for this ticker. On a cache miss, fetch_and_cache_ticker_news
+        cascades Alpaca → FMP news → FMP press releases so non-AAPL tickers
+        aren't dependent on Alpaca being configured.
         """
-        ticker_upper = ticker.upper()
+        # Normalize exchange prefixes (e.g. NASDAQ:NVDA → NVDA)
+        ticker_upper = ticker.upper().strip().split(":")[-1]
 
         should_fetch = True
+        existing_count = 0
         try:
             async with async_session() as db:
                 recent = await db.execute(
-                    select(func.max(NewsCache.fetched_at))
+                    select(func.max(NewsCache.fetched_at), func.count(NewsCache.id))
                     .where(_ticker_filter(ticker_upper))
                 )
-                last_fetch = recent.scalar()
+                row = recent.first()
+                last_fetch = row[0] if row else None
+                existing_count = (row[1] if row else 0) or 0
                 if last_fetch and (utcnow() - last_fetch).total_seconds() < 1800:
                     should_fetch = False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"get_ticker_headlines cache check failed for {ticker_upper}: {e}")
 
         if should_fetch:
+            logger.debug(
+                f"News {ticker_upper}: cache stale ({existing_count} cached) → "
+                f"fetching fresh"
+            )
             await self.fetch_and_cache_ticker_news(ticker_upper, limit=limit)
+        else:
+            logger.debug(
+                f"News {ticker_upper}: using cache ({existing_count} articles, "
+                f"< 30 min old)"
+            )
 
-        return await self.get_cached_news(ticker=ticker_upper, limit=limit, hours=72)
+        results = await self.get_cached_news(ticker=ticker_upper, limit=limit, hours=72)
+        if not results and should_fetch:
+            logger.info(
+                f"News {ticker_upper}: 0 articles after fetch — API endpoint "
+                f"will fall through to synthetic fundamentals"
+            )
+        return results
 
     async def get_news_sentiment(self, ticker: str) -> dict:
         """Get aggregated sentiment for a ticker from cached articles."""
