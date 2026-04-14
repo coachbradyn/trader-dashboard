@@ -160,24 +160,56 @@ async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = D
     await db.commit()
     await db.refresh(alert)
 
-    # Invalidate cached Henry analysis for this ticker
-    from app.services.henry_cache import invalidate_by_ticker
-    await invalidate_by_ticker(db, alert.ticker)
-    await db.commit()
-
-    # Check if this ticker is on the watchlist and trigger staleness check
-    import asyncio
-    from app.services.watchlist_ai import check_and_regenerate_if_stale
-    asyncio.create_task(check_and_regenerate_if_stale(alert.ticker))
-
-    # Screener-to-memory bridge (intelligence upgrade Phase 2, System 3):
-    # if N+ distinct indicators have fired on this ticker in the last 48h,
-    # save a confluence memory so semantic retrieval surfaces it on any
-    # future signal evaluation for this ticker. Fire-and-forget — we don't
-    # want a slow memory save to delay the webhook ACK.
-    asyncio.create_task(_maybe_save_screener_confluence(alert.ticker))
+    # Phase 2 Fix 2 — debounce all post-alert background work per ticker.
+    # When 30 alerts arrive in the same minute, 30 separate bg tasks for
+    # cache invalidation + watchlist staleness + confluence memory would
+    # flood the DB pool and embedding APIs. Debouncing collapses bursts
+    # into a single post-processing run per ticker, 5s after the last
+    # alert for that ticker.
+    from app.utils.ticker_debounce import schedule as schedule_ticker_work
+    schedule_ticker_work(
+        alert.ticker,
+        lambda ticker=alert.ticker: _run_post_alert_work(ticker),
+    )
 
     return {"status": "ok", "alert_id": alert.id, "ticker": alert.ticker}
+
+
+async def _run_post_alert_work(ticker: str) -> None:
+    """
+    Debounced post-alert processing. Runs once per ticker burst
+    (default 5s idle window).
+
+    Three jobs:
+      1. Invalidate cached Henry analysis for this ticker.
+      2. Check watchlist staleness → optionally regenerate summary.
+      3. Screener-to-memory bridge (System 3) → save confluence memory
+         if ≥3 distinct indicators have fired in the last 48h.
+
+    Each is wrapped in its own try/except so one failure doesn't
+    prevent the others from running. Uses a fresh DB session because
+    this executes outside the original request's session scope.
+    """
+    from app.database import async_session
+    from app.services.henry_cache import invalidate_by_ticker
+    from app.services.watchlist_ai import check_and_regenerate_if_stale
+
+    try:
+        async with async_session() as db:
+            await invalidate_by_ticker(db, ticker)
+            await db.commit()
+    except Exception as e:
+        logger.debug(f"debounced invalidate_by_ticker({ticker}) failed: {e}")
+
+    try:
+        await check_and_regenerate_if_stale(ticker)
+    except Exception as e:
+        logger.debug(f"debounced check_and_regenerate_if_stale({ticker}) failed: {e}")
+
+    try:
+        await _maybe_save_screener_confluence(ticker)
+    except Exception as e:
+        logger.debug(f"debounced confluence({ticker}) failed: {e}")
 
 
 # Confluence threshold and lookback — kept module-level so they're easy to
