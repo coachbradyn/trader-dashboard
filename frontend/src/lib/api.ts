@@ -687,12 +687,18 @@ export const api = {
     fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean; generated_at?: string }>("/news/ticker/" + ticker + "/thesis"),
   generateTickerThesis: (ticker: string) =>
     fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean }>("/news/ticker/" + ticker + "/thesis", { method: "POST" }),
-  getNews: (params?: { ticker?: string; limit?: number; hours?: number }) => {
+  getNews: async (params?: { ticker?: string; limit?: number; hours?: number }) => {
     const sp = new URLSearchParams();
     if (params?.ticker) sp.set("ticker", params.ticker);
     if (params?.limit) sp.set("limit", String(params.limit));
     if (params?.hours) sp.set("hours", String(params.hours));
     const qs = sp.toString();
-    return fetchApi<import("./types").NewsArticle[]>("/news" + (qs ? "?" + qs : ""));
+    // Backend returns { articles: [...], count: N } — unwrap to the array
+    // the rest of the app expects.
+    const data = await fetchApi<
+      { articles: import("./types").NewsArticle[]; count?: number } | import("./types").NewsArticle[]
+    >("/news" + (qs ? "?" + qs : ""));
+    if (Array.isArray(data)) return data;
+    return data.articles || [];
   },
 };

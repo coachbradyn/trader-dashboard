@@ -329,7 +329,9 @@ function SectorCard({ briefing }: { briefing: string | null }) {
 function NewsCard() {
   const [items, setItems] = useState<NewsArticle[] | null>(null);
   useEffect(() => {
-    api.getNews({ limit: 6, hours: 24 }).then(setItems).catch(() => setItems([]));
+    api.getNews({ limit: 6, hours: 24 })
+      .then((d) => setItems(Array.isArray(d) ? d : []))
+      .catch(() => setItems([]));
   }, []);
 
   return (
