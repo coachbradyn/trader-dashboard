@@ -10,50 +10,77 @@ from app.models import Trader, Trade, Portfolio, PortfolioStrategy, PortfolioTra
 from app.utils.utc import utcnow
 from app.schemas.webhook import WebhookPayload
 from app.utils.auth import verify_api_key
+from app.utils.api_key_cache import (
+    get_cached_trader_id,
+    remember as remember_key,
+    bcrypt_check,
+)
 from app.services.price_service import price_service
 
 logger = logging.getLogger(__name__)
 
 
 async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
-    # 1. Try to find existing trader
-    result = await db.execute(select(Trader).where(Trader.trader_id == payload.trader))
-    trader = result.scalar_one_or_none()
+    # Phase 2 Fix 1 — cached key verification. Repeat webhooks from the
+    # same strategy skip bcrypt entirely after the first successful auth.
+    # Unavoidable bcrypt calls run via asyncio.to_thread so they don't
+    # block the event loop for other concurrent requests.
+    cached_id = get_cached_trader_id(payload.key)
+    trader = None
+    if cached_id:
+        trader = (
+            await db.execute(select(Trader).where(Trader.id == cached_id).limit(1))
+        ).scalar_one_or_none()
+        # If the cached trader was deleted or the strategy was renamed,
+        # fall through and re-authenticate.
+        if trader and trader.trader_id != payload.trader:
+            trader = None
 
-    if trader:
-        # Check if strategy is paused
+    if trader is None:
+        # 1. Try to find existing trader by slug
+        result = await db.execute(select(Trader).where(Trader.trader_id == payload.trader))
+        trader = result.scalar_one_or_none()
+
+        if trader:
+            # Check if strategy is paused
+            if not trader.is_active:
+                raise ValueError(f"Strategy '{payload.trader}' is paused")
+            # Known trader — verify API key (non-blocking bcrypt)
+            if not await bcrypt_check(payload.key, trader.api_key_hash):
+                raise ValueError("Invalid API key")
+            await remember_key(payload.key, trader.id)
+        else:
+            # Unknown trader — check allowlisted keys
+            from app.models.allowlisted_key import AllowlistedKey
+            result = await db.execute(
+                select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
+            )
+            unclaimed_keys = result.scalars().all()
+
+            matched_key = None
+            for ak in unclaimed_keys:
+                if await bcrypt_check(payload.key, ak.api_key_hash):
+                    matched_key = ak
+                    break
+
+            if not matched_key:
+                raise ValueError(f"Unknown trader '{payload.trader}' and no matching allowlisted key")
+
+            # Auto-create trader from allowlisted key
+            trader = Trader(
+                trader_id=payload.trader,
+                display_name=matched_key.label or f"Strategy ({payload.trader})",
+                api_key_hash=matched_key.api_key_hash,
+            )
+            db.add(trader)
+            await db.flush()
+            matched_key.claimed_by_id = trader.id
+            await remember_key(payload.key, trader.id)
+    else:
+        # Cached trader — still enforce the paused flag because that
+        # can be flipped between requests without rotating the key.
         if not trader.is_active:
             raise ValueError(f"Strategy '{payload.trader}' is paused")
-        # Known trader — verify API key
-        if not verify_api_key(payload.key, trader.api_key_hash):
-            raise ValueError("Invalid API key")
-    else:
-        # Unknown trader — check allowlisted keys
-        from app.models.allowlisted_key import AllowlistedKey
-        result = await db.execute(
-            select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
-        )
-        unclaimed_keys = result.scalars().all()
-
-        matched_key = None
-        for ak in unclaimed_keys:
-            if verify_api_key(payload.key, ak.api_key_hash):
-                matched_key = ak
-                break
-
-        if not matched_key:
-            raise ValueError(f"Unknown trader '{payload.trader}' and no matching allowlisted key")
-
-        # Auto-create trader from allowlisted key
-        from app.utils.auth import hash_api_key
-        trader = Trader(
-            trader_id=payload.trader,
-            display_name=matched_key.label or f"Strategy ({payload.trader})",
-            api_key_hash=matched_key.api_key_hash,
-        )
-        db.add(trader)
-        await db.flush()
-        matched_key.claimed_by_id = trader.id
 
     # Update last webhook timestamp
     trader.last_webhook_at = utcnow()

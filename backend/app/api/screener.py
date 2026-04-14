@@ -18,6 +18,11 @@ from app.schemas.screener import (
     TickerAnalysisRequest, TickerAnalysisResponse,
 )
 from app.utils.auth import verify_api_key
+from app.utils.api_key_cache import (
+    get_cached_trader_id,
+    remember as remember_key,
+    bcrypt_check,
+)
 from app.services.chart_service import get_daily_chart
 from app.utils.dedup import make_screener_fingerprint, is_duplicate_webhook
 
@@ -36,50 +41,89 @@ def _fast_hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
+async def _authenticate_screener_key(raw_key: str, db: AsyncSession) -> Trader | None:
+    """
+    Resolve a raw API key to a Trader. Cache-first; bcrypt fallback.
+
+    Flow:
+      1. Cache hit → load trader by ID (single indexed query, ~5ms) and
+         return immediately. No bcrypt.
+      2. Cache miss → check whether any Trader.api_key_hash matches the
+         key's SHA-256 digest (legacy fast path for keys originally
+         stored as SHA-256). Rare; here for compatibility.
+      3. Still no match → bcrypt scan over traders, but each bcrypt call
+         runs via asyncio.to_thread so it doesn't block the event loop.
+         First match wins and is cached.
+      4. Still no match → bcrypt scan over unclaimed AllowlistedKey
+         rows. Matching key auto-creates a trader and is cached.
+
+    Returns the authenticated Trader or None. Never raises — callers
+    raise HTTP 401 on None.
+    """
+    # (1) Cache hit — the happy path after the first request per key.
+    cached_id = get_cached_trader_id(raw_key)
+    if cached_id:
+        row = (
+            await db.execute(select(Trader).where(Trader.id == cached_id).limit(1))
+        ).scalar_one_or_none()
+        if row is not None:
+            return row
+        # Stale cache (trader deleted) — fall through to full auth.
+
+    # (2) Legacy SHA-256 fast path. Our traders currently store bcrypt
+    # hashes so this almost never hits, but leaving it cheap + correct.
+    key_digest = _fast_hash_key(raw_key)
+    row = (
+        await db.execute(
+            select(Trader).where(Trader.api_key_hash == key_digest).limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        await remember_key(raw_key, row.id)
+        return row
+
+    # (3) Bcrypt scan over traders, off the event loop.
+    traders = list((await db.execute(select(Trader))).scalars().all())
+    for t in traders:
+        if await bcrypt_check(raw_key, t.api_key_hash):
+            await remember_key(raw_key, t.id)
+            return t
+
+    # (4) Bcrypt scan over unclaimed AllowlistedKey rows.
+    unclaimed = list(
+        (
+            await db.execute(
+                select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
+            )
+        ).scalars().all()
+    )
+    for ak in unclaimed:
+        if await bcrypt_check(raw_key, ak.api_key_hash):
+            slug = f"strategy-{ak.id[:8]}"
+            new_trader = Trader(
+                trader_id=slug,
+                display_name=ak.label or "Unnamed Strategy",
+                api_key_hash=ak.api_key_hash,
+            )
+            db.add(new_trader)
+            await db.flush()
+            ak.claimed_by_id = new_trader.id
+            await remember_key(raw_key, new_trader.id)
+            return new_trader
+
+    return None
+
+
 @router.post("/webhook")
 async def screener_webhook(payload: ScreenerWebhookPayload, db: AsyncSession = Depends(get_db)):
-    # Validate API key — fast path via SHA-256 lookup, bcrypt fallback
-    # 1. Fast O(1) lookup: SHA-256 hash of the raw key against traders table
-    key_digest = _fast_hash_key(payload.key)
-    result = await db.execute(
-        select(Trader).where(Trader.api_key_hash == key_digest).limit(1)
-    )
-    authenticated_trader = result.scalar_one_or_none()
-
-    # 2. Fallback: bcrypt scan for traders whose hashes are bcrypt (legacy)
+    # Authenticate via the shared API key cache (sha256(raw_key) → trader_id).
+    # Phase 2 Fix 1 — bcrypt is CPU-bound and blocks the event loop, so we
+    # (a) cache successful resolutions to skip bcrypt on repeat hits and
+    # (b) run any unavoidable bcrypt calls in the thread pool so concurrent
+    # requests aren't serialized by the single event loop.
+    authenticated_trader = await _authenticate_screener_key(payload.key, db)
     if not authenticated_trader:
-        result = await db.execute(select(Trader))
-        traders = result.scalars().all()
-        for t in traders:
-            if verify_api_key(payload.key, t.api_key_hash):
-                authenticated_trader = t
-                break
-
-    # 3. Check allowlisted keys if no trader match
-    if not authenticated_trader:
-        result = await db.execute(
-            select(AllowlistedKey).where(AllowlistedKey.claimed_by_id.is_(None))
-        )
-        unclaimed_keys = result.scalars().all()
-
-        for ak in unclaimed_keys:
-            if verify_api_key(payload.key, ak.api_key_hash):
-                # Auto-create trader
-                from app.utils.auth import hash_api_key
-                slug = f"strategy-{ak.id[:8]}"
-                new_trader = Trader(
-                    trader_id=slug,
-                    display_name=ak.label or "Unnamed Strategy",
-                    api_key_hash=ak.api_key_hash,
-                )
-                db.add(new_trader)
-                await db.flush()
-                ak.claimed_by_id = new_trader.id
-                authenticated_trader = new_trader
-                break
-
-        if not authenticated_trader:
-            raise HTTPException(401, "Invalid API key")
+        raise HTTPException(401, "Invalid API key")
 
     # Screener-specific idempotency check
     fp = make_screener_fingerprint(
