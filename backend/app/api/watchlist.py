@@ -708,21 +708,27 @@ async def get_watchlist_quotes(db: AsyncSession = Depends(get_db)):
     """Return today's live price and percent change for every active watchlist
     ticker. Used by the treemap view to size/color tiles by daily move.
 
-    Pulls from FMP /stable/batch-quote in chunks of 50 to stay under URL
-    length limits and respect rate-limit budget. Tickers for which FMP
-    returns nothing are omitted; the caller should show those as 'gray'.
+    Primary source: FMP /stable/batch-quote. When FMP returns no data
+    (missing key, rate-limited, or field-shape drift), fall back to Alpaca
+    snapshots which include today's trade + prior close so we can derive
+    change_pct locally. Tickers covered by neither source are omitted;
+    the caller shows those as gray.
     """
+    import logging
+    _log = logging.getLogger("watchlist.quotes")
+
+    result = await db.execute(
+        select(WatchlistTicker.ticker).where(WatchlistTicker.is_active == True)  # noqa: E712
+    )
+    tickers = [row[0] for row in result.all()]
+    if not tickers:
+        return {}
+
+    out: dict = {}
+
+    # ── Primary: FMP batch-quote ─────────────────────────────────────
     try:
         from app.services.fmp_service import get_batch_quotes
-
-        result = await db.execute(
-            select(WatchlistTicker.ticker).where(WatchlistTicker.is_active == True)  # noqa: E712
-        )
-        tickers = [row[0] for row in result.all()]
-        if not tickers:
-            return {}
-
-        out: dict = {}
         CHUNK = 50
         for i in range(0, len(tickers), CHUNK):
             chunk = tickers[i:i + CHUNK]
@@ -735,7 +741,14 @@ async def get_watchlist_quotes(db: AsyncSession = Depends(get_db)):
                     continue
                 try:
                     price = q.get("price")
-                    change_pct = q.get("changesPercentage") or q.get("changePercentage")
+                    # FMP's field naming has drifted between legacy (/v3/) and
+                    # /stable/. Check every plausible key — first non-null wins.
+                    change_pct = (
+                        q.get("changesPercentage")
+                        or q.get("changePercentage")
+                        or q.get("changePercent")
+                        or q.get("change_percent")
+                    )
                     change = q.get("change")
                     out[sym] = {
                         "price": float(price) if price is not None else None,
@@ -747,9 +760,74 @@ async def get_watchlist_quotes(db: AsyncSession = Depends(get_db)):
                     }
                 except (TypeError, ValueError):
                     continue
-        return out
-    except Exception:
-        return {}
+    except Exception as e:
+        _log.warning(f"FMP batch-quote failed: {e}")
+
+    # ── Fallback: Alpaca snapshots for anything FMP didn't cover ────
+    # Alpaca's /v2/stocks/snapshots returns latestTrade + prevDailyBar
+    # per ticker; we derive change_pct = (last − prev_close) / prev_close.
+    # Covers the "all gray" case when FMP is down or field shape changed.
+    missing = [
+        t for t in tickers
+        if t not in out
+        or out.get(t, {}).get("change_pct") is None
+        or out.get(t, {}).get("price") is None
+    ]
+    if missing:
+        try:
+            from app.config import get_settings
+            import httpx
+            settings = get_settings()
+            if settings.alpaca_api_key and settings.alpaca_secret_key:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    CHUNK = 100
+                    for i in range(0, len(missing), CHUNK):
+                        chunk = missing[i:i + CHUNK]
+                        resp = await client.get(
+                            f"{settings.alpaca_base_url}/v2/stocks/snapshots",
+                            params={"symbols": ",".join(chunk), "feed": "iex"},
+                            headers={
+                                "APCA-API-KEY-ID": settings.alpaca_api_key,
+                                "APCA-API-SECRET-KEY": settings.alpaca_secret_key,
+                            },
+                        )
+                        if resp.status_code != 200:
+                            _log.warning(
+                                f"Alpaca snapshots {resp.status_code}: "
+                                f"{resp.text[:200]}"
+                            )
+                            continue
+                        data = resp.json() or {}
+                        for sym, snap in data.items():
+                            try:
+                                last = (snap.get("latestTrade") or {}).get("p")
+                                prev_close = (snap.get("prevDailyBar") or {}).get("c")
+                                daily = snap.get("dailyBar") or {}
+                                if last is None or prev_close in (None, 0):
+                                    continue
+                                change = float(last) - float(prev_close)
+                                change_pct = (change / float(prev_close)) * 100.0
+                                out[sym] = {
+                                    "price": float(last),
+                                    "change_pct": round(change_pct, 3),
+                                    "change": round(change, 4),
+                                    "volume": daily.get("v"),
+                                    "day_high": daily.get("h"),
+                                    "day_low": daily.get("l"),
+                                }
+                            except (TypeError, ValueError):
+                                continue
+            else:
+                _log.info("Alpaca creds missing — skipping fallback")
+        except Exception as e:
+            _log.warning(f"Alpaca snapshot fallback failed: {e}")
+
+    _log.info(
+        f"watchlist/quotes: {len(tickers)} tickers, "
+        f"{sum(1 for v in out.values() if v.get('change_pct') is not None)} "
+        f"with change_pct"
+    )
+    return out
 
 
 # ── GET /watchlist/fundamentals — bulk fundamentals for all watchlist tickers ──

@@ -848,11 +848,54 @@ async def process_exit_for_ai_portfolio(
 # ── Scheduled Review ─────────────────────────────────────────────────────
 
 async def scheduled_ai_portfolio_review() -> None:
-    """Daily review of AI portfolio positions. May auto-close or adjust."""
+    """Daily review of every AI-managed portfolio.
+
+    Fetches all portfolios where is_ai_managed or ai_evaluation_enabled is
+    True (via the same helper the autonomous trader uses) and runs the
+    per-portfolio review in isolation — one portfolio's failure doesn't
+    block the rest.
+
+    Historically this only ran against the canonical paper portfolio
+    returned by get_ai_portfolio(); live/real AI-managed portfolios
+    received zero autonomous risk management. Now every qualifying
+    portfolio gets the 2:30 PM review.
+    """
+    try:
+        from app.services.autonomous_trading import _get_ai_enabled_portfolios
+        portfolios = await _get_ai_enabled_portfolios()
+    except Exception as e:
+        logger.error(f"AI portfolio review: failed to load portfolios: {e}")
+        portfolios = []
+
+    logger.info(
+        f"AI portfolio review: running for {len(portfolios)} portfolio"
+        f"{'s' if len(portfolios) != 1 else ''}"
+    )
+    for portfolio in portfolios:
+        try:
+            await _review_single_portfolio(portfolio)
+        except Exception as e:
+            logger.error(
+                f"AI portfolio review failed for {portfolio.name} "
+                f"({portfolio.id}): {e}",
+                exc_info=True,
+            )
+
+
+async def _review_single_portfolio(portfolio: Portfolio) -> None:
+    """Run the review loop for one portfolio. Separated so
+    scheduled_ai_portfolio_review can call it once per AI-enabled
+    portfolio and keep failures isolated."""
     try:
         async with async_session() as db:
-            portfolio = await get_ai_portfolio(db)
-            if not portfolio:
+            # Re-fetch inside this session so relationship loads use the
+            # right session context. The helper hands us a detached object.
+            from sqlalchemy import select as _select
+            fresh = await db.execute(
+                _select(Portfolio).where(Portfolio.id == portfolio.id)
+            )
+            portfolio = fresh.scalar_one_or_none()
+            if portfolio is None:
                 return
 
             equity = await _get_ai_portfolio_equity(portfolio, db)
@@ -870,7 +913,9 @@ async def scheduled_ai_portfolio_review() -> None:
             open_positions = result.scalars().all()
 
             if not open_positions:
-                logger.info("AI portfolio review: no open positions")
+                logger.info(
+                    f"AI portfolio review ({portfolio.name}): no open positions"
+                )
                 return
 
             # Format positions
@@ -908,7 +953,7 @@ async def scheduled_ai_portfolio_review() -> None:
 
             max_dd = portfolio.max_drawdown_pct or 20.0
 
-            prompt = f"""You are Henry, reviewing your AI paper portfolio. You trade AUTONOMOUSLY — you do not need user approval. Your CLOSE and TRIM decisions execute immediately. Your objective: MAXIMIZE RISK-ADJUSTED RETURNS.
+            prompt = f"""You are Henry, reviewing the AI-managed portfolio "{portfolio.name}" (mode: {portfolio.execution_mode or 'local'}). You trade AUTONOMOUSLY — you do not need user approval. Your CLOSE and TRIM decisions execute immediately. Your objective: MAXIMIZE RISK-ADJUSTED RETURNS.
 
 REVIEW RULES:
 1. CLOSE any position that has lost more than the original stop distance (risk exceeded)
@@ -998,7 +1043,11 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
             await db.commit()
 
     except Exception as e:
-        logger.error(f"AI portfolio scheduled review failed: {e}", exc_info=True)
+        logger.error(
+            f"AI portfolio scheduled review failed for "
+            f"{getattr(portfolio, 'name', '?')}: {e}",
+            exc_info=True,
+        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

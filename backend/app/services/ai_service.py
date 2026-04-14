@@ -151,6 +151,78 @@ async def _build_system_prompt(
     except Exception:
         pass  # Regime cache miss — non-fatal; memory log can still surface it
 
+    # ── BROKERAGE ACCOUNTS ────────────────────────────────────────────
+    # When the caller is asking a meaningful trading question (general
+    # ask-henry, signal evaluation, portfolio review), fetch live Alpaca
+    # account info for every portfolio wired to paper or live mode. Henry
+    # otherwise only sees DB holdings and has no idea what buying power is
+    # actually available. Skipped for briefings (runs on a timer and
+    # doesn't need per-portfolio broker state).
+    if scope in ("general", "signal", "signal_evaluation", "portfolio"):
+        try:
+            from sqlalchemy import select as _select
+            from app.models import Portfolio as _Portfolio
+            from app.services.alpaca_service import alpaca_service
+
+            async with async_session() as db:
+                q = _select(_Portfolio).where(
+                    _Portfolio.is_active == True,  # noqa: E712
+                    _Portfolio.execution_mode.in_(("paper", "live")),
+                )
+                if portfolio_id:
+                    q = q.where(_Portfolio.id == portfolio_id)
+                res = await db.execute(q)
+                portfolios_with_creds = [
+                    p for p in res.scalars().all()
+                    if p.alpaca_api_key and p.alpaca_secret_key
+                ]
+
+            if portfolios_with_creds:
+                broker_lines: list[str] = []
+
+                async def _fetch_one(p):
+                    try:
+                        api_key = p.alpaca_api_key_decrypted
+                        secret_key = p.alpaca_secret_key_decrypted
+                        if not api_key or not secret_key:
+                            return None
+                        paper = (p.execution_mode or "").lower() == "paper"
+                        info = await asyncio.wait_for(
+                            alpaca_service.get_account_info(
+                                api_key, secret_key, paper=paper
+                            ),
+                            timeout=5.0,
+                        )
+                        if not info or info.get("status") == "error":
+                            return None
+                        eq = info.get("equity") or info.get("portfolio_value") or 0.0
+                        bp = info.get("buying_power") or 0.0
+                        cash = info.get("cash") or 0.0
+                        return (
+                            f"  {p.name} ({p.execution_mode}): "
+                            f"equity ${float(eq):,.2f} | "
+                            f"buying power ${float(bp):,.2f} | "
+                            f"cash ${float(cash):,.2f}"
+                        )
+                    except Exception as _be:
+                        logger.debug(
+                            f"broker account lookup for {p.name} failed: {_be}"
+                        )
+                        return None
+
+                results = await asyncio.gather(
+                    *(_fetch_one(p) for p in portfolios_with_creds),
+                    return_exceptions=False,
+                )
+                broker_lines = [r for r in results if r]
+                if broker_lines:
+                    sections.append(
+                        "BROKERAGE ACCOUNTS (live via Alpaca):\n"
+                        + "\n".join(broker_lines)
+                    )
+        except Exception as _e:
+            logger.debug(f"brokerage account injection skipped: {_e}")
+
     # Pull strategy descriptions dynamically — separate session to isolate errors
     try:
         async with async_session() as db:

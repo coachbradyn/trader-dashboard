@@ -335,17 +335,45 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
     )
 
     trade.exit_price = payload.price
+
+    # TradingView strategy alerts don't always include a fill price on exit
+    # (especially for stop-losses or time-based exits). Fall back to the
+    # live price cache — price_service polls Alpaca every 15s during market
+    # hours, so it's usually fresh enough for P&L accounting.
+    if not trade.exit_price or trade.exit_price <= 0:
+        try:
+            current = price_service.get_price(payload.ticker)
+            if current and current > 0:
+                trade.exit_price = current
+                logger.warning(
+                    f"Exit webhook for {payload.ticker} had no price — "
+                    f"using live price ${current:.2f}"
+                )
+        except Exception:
+            pass
+
+    # Final fallback: entry price so P&L records 0% rather than crashing.
+    # Better to log a neutral exit than lose the close entirely.
+    if not trade.exit_price or trade.exit_price <= 0:
+        trade.exit_price = trade.entry_price
+        logger.warning(
+            f"Exit webhook for {payload.ticker} had no price and price_service "
+            f"cache was cold — defaulting exit_price to entry_price "
+            f"${trade.entry_price:.2f} (P&L will be 0%)"
+        )
+
     trade.exit_reason = payload.exit_reason
     trade.exit_time = exit_time
     trade.bars_in_trade = payload.bars_in_trade
     trade.status = "closed"
     trade.raw_exit_payload = payload.model_dump()
 
-    # Calculate P&L
+    # Calculate P&L off the resolved trade.exit_price, not payload.price
+    # directly — the two may differ when the fallback fired above.
     if trade.direction == "long":
-        trade.pnl_dollars = (payload.price - trade.entry_price) * trade.qty
+        trade.pnl_dollars = (trade.exit_price - trade.entry_price) * trade.qty
     else:
-        trade.pnl_dollars = (trade.entry_price - payload.price) * trade.qty
+        trade.pnl_dollars = (trade.entry_price - trade.exit_price) * trade.qty
 
     position_value = trade.entry_price * trade.qty
     trade.pnl_percent = (trade.pnl_dollars / position_value * 100) if position_value > 0 else 0.0
