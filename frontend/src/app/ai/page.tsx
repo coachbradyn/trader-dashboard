@@ -9,6 +9,7 @@ import {
   CheckCircle2, type LucideIcon,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useVisibilityPoll } from "@/hooks/useVisibilityPoll";
 import { formatCurrency, formatPercent, formatTimeAgo, pnlColor } from "@/lib/formatters";
 import { renderMarkdown } from "@/lib/markdown";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -748,29 +749,48 @@ export default function HomePage() {
     }
   }, []);
 
+  // Pull portfolios + actions + action stats in one round-trip. Replaces
+  // three separate parallel fetches with one call that the backend fans
+  // out internally — one auth middleware pass, one TLS handshake, and
+  // paired with useVisibilityPoll below, no polling happens while the
+  // tab is hidden.
+  const refreshHomeSnapshot = useCallback(async () => {
+    try {
+      const snap = await api.getHomeSnapshot();
+      setPortfolios(snap.portfolios || []);
+      setActions(snap.actions || []);
+      setActionStats(snap.action_stats || null);
+    } catch {
+      /* swallow — keep last good state */
+    }
+  }, []);
+
+  const refreshIntel = useCallback(async () => {
+    try {
+      const d = await api.getMarketIntel();
+      setIntel(d);
+    } catch {
+      /* ignore */
+    } finally {
+      setIntelLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    api.getPortfolios().then(setPortfolios).catch(() => setPortfolios([]));
-    api.getActions("pending").then(setActions).catch(() => setActions([]));
-    api.getActionStats().then(setActionStats).catch(() => setActionStats(null));
+    // One-time fetches (no interval needed)
     api.getTraders().then(setTraders).catch(() => setTraders([]));
     fetchBriefing();
-    // Market intel (Gemini-grounded) powers Sector + Macro News + The Play
-    // fallback. Cache TTL is 15 min backend-side so polling it every 5
-    // minutes is cheap — most calls hit the cache.
-    api.getMarketIntel()
-      .then((d) => { setIntel(d); setIntelLoading(false); })
-      .catch(() => setIntelLoading(false));
+    // Prime the polling caches once; useVisibilityPoll will take over
+    // the interval side of things.
+    refreshHomeSnapshot();
+    refreshIntel();
+  }, [fetchBriefing, refreshHomeSnapshot, refreshIntel]);
 
-    const iv = setInterval(() => {
-      api.getPortfolios().then(setPortfolios).catch(() => {});
-      api.getActions("pending").then(setActions).catch(() => {});
-      api.getActionStats().then(setActionStats).catch(() => {});
-    }, 30000);
-    const intelIv = setInterval(() => {
-      api.getMarketIntel().then(setIntel).catch(() => {});
-    }, 5 * 60 * 1000);
-    return () => { clearInterval(iv); clearInterval(intelIv); };
-  }, [fetchBriefing]);
+  // 30s poll for portfolios/actions/stats — paused when tab hidden,
+  // re-fires on visibility return so the user sees fresh data instantly.
+  useVisibilityPoll(refreshHomeSnapshot, 30_000);
+  // 5-min poll for market intel — backend caches 15m so most calls hit cache.
+  useVisibilityPoll(refreshIntel, 5 * 60_000);
 
   const handleApprove = useCallback(async (id: string) => {
     try {
