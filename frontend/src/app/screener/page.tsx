@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { Treemap, ResponsiveContainer, Tooltip } from "recharts";
 import { api } from "@/lib/api";
-import { Search, Plus, ArrowUpDown, Eye, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Search, Plus, Eye, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,8 +13,7 @@ import type { WatchlistTickerData } from "@/lib/types";
 const FONT_OUTFIT = { fontFamily: "'Outfit', sans-serif" } as const;
 const FONT_MONO = { fontFamily: "'JetBrains Mono', monospace" } as const;
 
-type SizeMetric = "alerts" | "signal" | "mcap";
-type DirFilter = "all" | "bullish" | "bearish";
+type DirFilter = "all" | "positive" | "negative";
 
 // ── Fonts ────────────────────────────────────────────────────────────────
 function useFonts() {
@@ -28,629 +28,468 @@ function useFonts() {
   }, []);
 }
 
-// ── Types ────────────────────────────────────────────────────────────────
-type Fundamentals = {
-  company_name?: string;
-  market_cap?: number;
-  pe_ratio?: number;
-  price?: number;
-  change_pct?: number;
-  daily_change_pct?: number;
+// ── Quote shape (matches GET /watchlist/quotes) ─────────────────────────
+type Quote = {
+  price: number | null;
+  change_pct: number | null;
+  change: number | null;
+  volume: number | null;
+  day_high: number | null;
+  day_low: number | null;
 };
 
-type EnrichedItem = WatchlistTickerData & { fundamentals?: Fundamentals };
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-function getFundamentals(item: WatchlistTickerData): Fundamentals | undefined {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (item as any).fundamentals as Fundamentals | undefined;
-}
-
-function consensusGradient(direction: string): string {
-  switch (direction) {
-    case "bullish":
-      return "bg-gradient-to-br from-profit/25 via-profit/10 to-transparent";
-    case "bearish":
-      return "bg-gradient-to-br from-loss/25 via-loss/10 to-transparent";
-    case "mixed":
-      return "bg-gradient-to-br from-amber-500/25 via-amber-500/10 to-transparent";
-    default:
-      return "bg-gradient-to-br from-gray-500/10 via-gray-500/5 to-transparent";
-  }
-}
-
-function consensusAccent(direction: string): { text: string; ring: string; dot: string } {
-  switch (direction) {
-    case "bullish":
-      return { text: "text-profit", ring: "ring-profit/30", dot: "bg-profit" };
-    case "bearish":
-      return { text: "text-loss", ring: "ring-loss/30", dot: "bg-loss" };
-    case "mixed":
-      return { text: "text-screener-amber", ring: "ring-amber-500/30", dot: "bg-amber-500" };
-    default:
-      return { text: "text-gray-500", ring: "ring-gray-600/30", dot: "bg-gray-600" };
-  }
-}
-
-function formatMarketCap(n: number | undefined): string {
-  if (n == null || !isFinite(n)) return "—";
-  if (n >= 1e12) return `$${(n / 1e12).toFixed(1)}T`;
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(0)}M`;
-  return `$${n.toFixed(0)}`;
-}
-
-function formatPct(n: number | undefined): string {
-  if (n == null || !isFinite(n)) return "—";
-  const sign = n >= 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}%`;
-}
-
-function formatPrice(n: number | undefined): string {
-  if (n == null || !isFinite(n)) return "—";
-  return `$${n.toFixed(2)}`;
-}
-
-function getWeight(item: EnrichedItem, metric: SizeMetric): number {
-  const f = getFundamentals(item);
-  switch (metric) {
-    case "alerts":
-      return Math.max(1, item.consensus.total_signals);
-    case "signal":
-      return Math.max(
-        1,
-        item.consensus.bullish_count + item.consensus.bearish_count,
-      );
-    case "mcap":
-      return Math.max(1, f?.market_cap ?? 1);
-  }
-}
-
-// ── Tile span: bucket weight into 4 size classes ─────────────────────────
-function tileSpan(
-  weight: number,
-  sorted: number[],
-): { cols: number; rows: number } {
-  if (sorted.length === 0) return { cols: 1, rows: 1 };
-  const idx = sorted.findIndex((w) => w <= weight);
-  const rank = idx === -1 ? sorted.length - 1 : idx;
-  const pct = 1 - rank / Math.max(1, sorted.length - 1); // 1 = largest
-  if (pct >= 0.85) return { cols: 3, rows: 2 }; // xlarge
-  if (pct >= 0.6) return { cols: 2, rows: 2 }; // large
-  if (pct >= 0.3) return { cols: 2, rows: 1 }; // medium
-  return { cols: 1, rows: 1 }; // small
-}
-
-// ── Sparkline ────────────────────────────────────────────────────────────
-function TileSparkline({
-  events,
-  direction,
-}: {
-  events: Array<{ date: string; signal: string }>;
+// ── Tile data shape fed to Recharts <Treemap> ───────────────────────────
+type TileDatum = {
+  name: string;      // ticker symbol
+  size: number;      // weight passed to Recharts (|change_pct| with floor)
+  changePct: number; // real daily %change (signed)
+  price: number | null;
+  totalSignals: number;
   direction: string;
-}) {
-  if (!events || events.length < 2) return null;
-  const W = 120;
-  const H = 32;
-  const len = Math.min(events.length, 24);
-  const recent = events.slice(-len);
+};
 
-  let val = 50;
-  const points: number[] = [];
-  for (const ev of recent) {
-    if (ev.signal === "bullish") val = Math.min(100, val + 10);
-    else if (ev.signal === "bearish") val = Math.max(0, val - 10);
-    points.push(val);
-  }
+// ── Color mapping ────────────────────────────────────────────────────────
+// Map magnitude of change_pct onto an opacity ramp so bigger moves feel
+// bolder. Tiles without quote data render gray so users see they're
+// unknown, not neutral.
+function fillForTile(d: TileDatum): string {
+  if (d.changePct == null || d.price == null) return "#374151"; // neutral gray
+  const mag = Math.min(10, Math.abs(d.changePct));
+  const alpha = 0.22 + (mag / 10) * 0.68; // 0.22–0.90
+  if (d.changePct > 0.1) return `rgba(34, 197, 94, ${alpha.toFixed(2)})`;   // profit
+  if (d.changePct < -0.1) return `rgba(239, 68, 68, ${alpha.toFixed(2)})`;  // loss
+  return "rgba(156, 163, 175, 0.35)"; // near-flat = gray
+}
 
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
+function textColorForTile(d: TileDatum): string {
+  if (d.changePct == null || d.price == null) return "#9ca3af";
+  if (Math.abs(d.changePct) >= 3) return "#ffffff";
+  return "#e5e7eb";
+}
 
-  const pts = points
-    .map((v, i) => {
-      const x = (i / (points.length - 1)) * W;
-      const y = H - ((v - min) / range) * (H - 4) - 2;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+// ── Custom tile content ─────────────────────────────────────────────────
+// Recharts <Treemap> passes each node's computed {x,y,width,height} plus
+// all the fields from the data. Render a bordered rect with the ticker
+// and %change, scaling label size to the tile to keep things readable on
+// both big and small cells.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function TreemapTile(props: any) {
+  const {
+    x, y, width, height, name, changePct, price,
+  } = props;
 
-  const stroke =
-    direction === "bullish"
-      ? "#22c55e"
-      : direction === "bearish"
-      ? "#ef4444"
-      : direction === "mixed"
-      ? "#fbbf24"
-      : "#6b7280";
+  if (!name || width <= 0 || height <= 0) return null;
+
+  const fill = fillForTile(props as TileDatum);
+  const textColor = textColorForTile(props as TileDatum);
+
+  // Don't render labels on tiles too small to fit them
+  const area = width * height;
+  const showTicker = width >= 34 && height >= 22;
+  const showChange = width >= 48 && height >= 40;
+  const showPrice = width >= 72 && height >= 62;
+
+  // Scale the ticker font with tile size, capped so small tiles don't crush
+  // and huge tiles don't get absurdly big
+  const tickerSize = Math.max(11, Math.min(34, Math.sqrt(area) / 5.5));
+  const changeSize = Math.max(9, Math.min(18, tickerSize * 0.55));
+  const priceSize = Math.max(9, Math.min(13, tickerSize * 0.42));
+
+  const pctLabel =
+    changePct == null
+      ? "—"
+      : `${changePct > 0 ? "+" : ""}${changePct.toFixed(2)}%`;
 
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      className="w-full h-8 opacity-80"
-      preserveAspectRatio="none"
-    >
-      <polyline
-        points={pts}
-        fill="none"
-        stroke={stroke}
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        style={{
+          fill,
+          stroke: "#0a0a0f",
+          strokeWidth: 1,
+          cursor: "pointer",
+        }}
       />
-    </svg>
+      {showTicker && (
+        <text
+          x={x + width / 2}
+          y={y + height / 2 - (showChange ? changeSize * 0.55 : 0)}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{
+            fill: textColor,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            fontSize: tickerSize,
+            letterSpacing: "-0.02em",
+            pointerEvents: "none",
+          }}
+        >
+          {name}
+        </text>
+      )}
+      {showChange && (
+        <text
+          x={x + width / 2}
+          y={y + height / 2 + tickerSize * 0.6}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{
+            fill: textColor,
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: changeSize,
+            fontWeight: 500,
+            pointerEvents: "none",
+          }}
+        >
+          {pctLabel}
+        </text>
+      )}
+      {showPrice && price != null && (
+        <text
+          x={x + width / 2}
+          y={y + height / 2 + tickerSize * 0.6 + changeSize + 4}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{
+            fill: textColor,
+            opacity: 0.75,
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: priceSize,
+            pointerEvents: "none",
+          }}
+        >
+          ${price.toFixed(2)}
+        </text>
+      )}
+    </g>
   );
 }
 
-// ── Tooltip ──────────────────────────────────────────────────────────────
-function TileTooltip({ item }: { item: EnrichedItem }) {
-  const f = getFundamentals(item);
-  const accent = consensusAccent(item.consensus.direction);
+// ── Custom tooltip ───────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function TreemapTooltip({ active, payload }: any) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0]?.payload as TileDatum | undefined;
+  if (!d || !d.name) return null;
   return (
     <div
-      role="tooltip"
-      className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 w-56 rounded-lg border border-border/70 bg-[#0b1120]/95 backdrop-blur-sm shadow-xl p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+      className="rounded-lg border border-[#374151] bg-[#111827] px-3 py-2 shadow-xl text-xs"
+      style={FONT_OUTFIT}
     >
-      <div className="flex items-center justify-between mb-2">
-        <span
-          className="text-sm font-bold text-white"
-          style={FONT_OUTFIT}
-        >
-          {item.ticker}
-        </span>
-        <span
-          className={`text-[10px] font-semibold uppercase tracking-wider ${accent.text}`}
-          style={FONT_OUTFIT}
-        >
-          {item.consensus.direction}
-        </span>
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-sm font-bold text-white" style={FONT_OUTFIT}>{d.name}</span>
+        {d.changePct != null && (
+          <span
+            className={
+              "text-[11px] font-mono " +
+              (d.changePct > 0 ? "text-profit" : d.changePct < 0 ? "text-loss" : "text-gray-400")
+            }
+            style={FONT_MONO}
+          >
+            {d.changePct > 0 ? "+" : ""}{d.changePct.toFixed(2)}%
+          </span>
+        )}
       </div>
-      {f?.company_name && (
-        <div className="text-[11px] text-gray-400 mb-2 truncate" style={FONT_OUTFIT}>
-          {f.company_name}
+      {d.price != null && (
+        <div className="text-[10px] text-gray-400 font-mono" style={FONT_MONO}>
+          ${d.price.toFixed(2)}
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2 text-[10px]" style={FONT_MONO}>
-        <div className="flex flex-col">
-          <span className="text-gray-500">Bullish</span>
-          <span className="text-profit font-semibold">
-            {item.consensus.bullish_count}
-          </span>
-        </div>
-        <div className="flex flex-col">
-          <span className="text-gray-500">Bearish</span>
-          <span className="text-loss font-semibold">
-            {item.consensus.bearish_count}
-          </span>
-        </div>
-        <div className="flex flex-col">
-          <span className="text-gray-500">Total Signals</span>
-          <span className="text-white font-semibold">
-            {item.consensus.total_signals}
-          </span>
-        </div>
-        <div className="flex flex-col">
-          <span className="text-gray-500">Mkt Cap</span>
-          <span className="text-white font-semibold">
-            {formatMarketCap(f?.market_cap)}
-          </span>
-        </div>
+      <div className="text-[10px] text-gray-500 mt-1" style={FONT_OUTFIT}>
+        {d.totalSignals} signal{d.totalSignals !== 1 ? "s" : ""} · {d.direction}
       </div>
     </div>
   );
 }
 
-// ── Tile ─────────────────────────────────────────────────────────────────
-function Tile({
-  item,
-  cols,
-  rows,
-  onClick,
-}: {
-  item: EnrichedItem;
-  cols: number;
-  rows: number;
-  onClick: () => void;
-}) {
-  const accent = consensusAccent(item.consensus.direction);
-  const gradient = consensusGradient(item.consensus.direction);
-  const f = getFundamentals(item);
-  const price = f?.price;
-  const changePct = f?.daily_change_pct ?? f?.change_pct;
-  const isLarge = cols >= 2 && rows >= 2;
-  const isXLarge = cols >= 3;
-
-  const DirIcon =
-    item.consensus.direction === "bullish"
-      ? TrendingUp
-      : item.consensus.direction === "bearish"
-      ? TrendingDown
-      : Minus;
-
-  return (
-    <div
-      className="relative group"
-      style={{
-        gridColumn: `span ${cols} / span ${cols}`,
-        gridRow: `span ${rows} / span ${rows}`,
-      }}
-    >
-      <button
-        onClick={onClick}
-        aria-label={`${item.ticker} — ${item.consensus.direction}`}
-        className={`relative w-full h-full rounded-xl border border-border/50 bg-[#0f1522] overflow-hidden
-          transition-all duration-300 ease-out
-          hover:scale-[1.02] hover:ring-1 hover:ring-ai-blue/40 hover:border-ai-blue/30
-          focus:outline-none focus:ring-1 focus:ring-ai-blue/60`}
-      >
-        {/* Gradient overlay */}
-        <div className={`absolute inset-0 ${gradient} pointer-events-none`} />
-
-        {/* Content */}
-        <div className="relative h-full flex flex-col justify-between p-3">
-          {/* Top row: ticker + direction icon */}
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div
-                className={`font-bold text-white tracking-tight leading-none truncate ${
-                  isXLarge ? "text-3xl" : isLarge ? "text-2xl" : cols >= 2 ? "text-xl" : "text-base"
-                }`}
-                style={FONT_OUTFIT}
-              >
-                {item.ticker}
-              </div>
-              {(isLarge || isXLarge) && f?.company_name && (
-                <div
-                  className="text-[10px] text-gray-400 truncate mt-1"
-                  style={FONT_OUTFIT}
-                >
-                  {f.company_name}
-                </div>
-              )}
-            </div>
-            <DirIcon className={`w-3.5 h-3.5 flex-shrink-0 ${accent.text}`} />
-          </div>
-
-          {/* Middle: sparkline (only large tiles) */}
-          {isLarge && item.signal_events && item.signal_events.length > 1 && (
-            <div className="flex-1 flex items-center justify-center px-1 py-2">
-              <TileSparkline
-                events={item.signal_events}
-                direction={item.consensus.direction}
-              />
-            </div>
-          )}
-
-          {/* Bottom: price + change */}
-          <div className="flex items-end justify-between gap-2">
-            <div className="min-w-0">
-              <div
-                className={`font-semibold text-white truncate ${
-                  isLarge ? "text-sm" : "text-xs"
-                }`}
-                style={FONT_MONO}
-              >
-                {formatPrice(price)}
-              </div>
-              <div
-                className={`text-[10px] font-medium truncate ${
-                  changePct == null
-                    ? "text-gray-500"
-                    : changePct >= 0
-                    ? "text-profit"
-                    : "text-loss"
-                }`}
-                style={FONT_MONO}
-              >
-                {formatPct(changePct)}
-              </div>
-            </div>
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <span className={`w-1.5 h-1.5 rounded-full ${accent.dot}`} />
-              <span
-                className={`text-[10px] font-semibold ${accent.text}`}
-                style={FONT_MONO}
-              >
-                {item.consensus.total_signals}
-              </span>
-            </div>
-          </div>
-        </div>
-      </button>
-
-      <TileTooltip item={item} />
-    </div>
-  );
-}
-
-// ── Main Page ───────────────────────────────────────────────────────────
+// ── Page ─────────────────────────────────────────────────────────────────
 export default function WatchlistTreemapPage() {
   useFonts();
   const router = useRouter();
 
-  const [watchlist, setWatchlist] = useState<EnrichedItem[]>([]);
+  const [watchlist, setWatchlist] = useState<WatchlistTickerData[]>([]);
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
   const [loading, setLoading] = useState(true);
-  const [addInput, setAddInput] = useState("");
-  const [adding, setAdding] = useState(false);
+
   const [search, setSearch] = useState("");
-  const [sizeMetric, setSizeMetric] = useState<SizeMetric>("alerts");
   const [dirFilter, setDirFilter] = useState<DirFilter>("all");
 
-  const fetchWatchlist = useCallback(async () => {
+  const [addInput, setAddInput] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const fetchAll = useCallback(async () => {
     try {
-      const [data, fundData] = await Promise.all([
-        api.getWatchlist(),
-        api
-          .getWatchlistFundamentals()
-          .catch(() => ({} as Record<string, Fundamentals>)),
+      const [wl, q] = await Promise.all([
+        api.getWatchlist().catch(() => [] as WatchlistTickerData[]),
+        api.getWatchlistQuotes().catch(() => ({} as Record<string, Quote>)),
       ]);
-      const enriched = data.map((item) => {
-        const f = (fundData as Record<string, Fundamentals>)[item.ticker];
-        if (f) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (item as any).fundamentals = f;
-        }
-        return item as EnrichedItem;
-      });
-      setWatchlist(enriched);
-    } catch {}
+      setWatchlist(wl);
+      setQuotes(q || {});
+    } catch {
+      /* ignore — keep last successful state */
+    }
   }, []);
 
   useEffect(() => {
-    fetchWatchlist().finally(() => setLoading(false));
-  }, [fetchWatchlist]);
+    fetchAll().finally(() => setLoading(false));
+  }, [fetchAll]);
 
   useEffect(() => {
-    const interval = setInterval(fetchWatchlist, 30000);
-    return () => clearInterval(interval);
-  }, [fetchWatchlist]);
-
-  // Filter + sort
-  const visible = useMemo(() => {
-    const needle = search.trim().toUpperCase();
-    const filtered = watchlist.filter((it) => {
-      if (needle && !it.ticker.toUpperCase().includes(needle)) return false;
-      if (dirFilter === "bullish" && it.consensus.direction !== "bullish") return false;
-      if (dirFilter === "bearish" && it.consensus.direction !== "bearish") return false;
-      return true;
-    });
-    return [...filtered].sort(
-      (a, b) => getWeight(b, sizeMetric) - getWeight(a, sizeMetric),
-    );
-  }, [watchlist, search, dirFilter, sizeMetric]);
-
-  const sortedWeights = useMemo(
-    () =>
-      [...visible]
-        .map((it) => getWeight(it, sizeMetric))
-        .sort((a, b) => b - a),
-    [visible, sizeMetric],
-  );
+    const iv = setInterval(fetchAll, 30000);
+    return () => clearInterval(iv);
+  }, [fetchAll]);
 
   const handleAdd = async () => {
-    if (!addInput.trim() || adding) return;
+    const raw = addInput.trim();
+    if (!raw || adding) return;
     setAdding(true);
     try {
-      const tickers = addInput
+      const tickers = raw
         .split(",")
         .map((t) => t.trim().toUpperCase())
         .filter(Boolean);
       if (tickers.length > 0) {
         await api.addWatchlistTickers(tickers);
         setAddInput("");
-        await fetchWatchlist();
+        await fetchAll();
       }
-    } catch {}
+    } catch {
+      /* ignore */
+    }
     setAdding(false);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleAdd();
+  // Build treemap data from watchlist + quotes
+  const tiles: TileDatum[] = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    return watchlist
+      .filter((w) => !q || w.ticker.toUpperCase().includes(q))
+      .map<TileDatum>((w) => {
+        const quote = quotes[w.ticker];
+        const change = quote?.change_pct ?? null;
+        const price = quote?.price ?? null;
+        // Recharts sizes tiles by `size` — use |%change| with a small floor
+        // so tickers with no quote (gray) still appear, and flat movers
+        // (±0.1%) render as small neutral cells instead of disappearing.
+        const baseWeight = change != null ? Math.abs(change) : 0;
+        const size = Math.max(0.25, baseWeight);
+        return {
+          name: w.ticker,
+          size,
+          changePct: change ?? 0,
+          price,
+          totalSignals: w.consensus?.total_signals ?? 0,
+          direction: w.consensus?.direction ?? "no-data",
+        };
+      })
+      .filter((d) => {
+        if (dirFilter === "all") return true;
+        if (dirFilter === "positive") return d.changePct > 0;
+        return d.changePct < 0;
+      });
+  }, [watchlist, quotes, search, dirFilter]);
+
+  const counts = useMemo(() => {
+    let up = 0, down = 0, flat = 0;
+    for (const t of tiles) {
+      if (t.changePct > 0.1) up++;
+      else if (t.changePct < -0.1) down++;
+      else flat++;
     }
-  };
+    return { up, down, flat };
+  }, [tiles]);
 
-  const sizeOptions: Array<{ value: SizeMetric; label: string }> = [
-    { value: "alerts", label: "Alert count" },
-    { value: "signal", label: "Signal strength" },
-    { value: "mcap", label: "Market cap" },
-  ];
-
-  const dirOptions: Array<{ value: DirFilter; label: string }> = [
-    { value: "all", label: "All" },
-    { value: "bullish", label: "Bullish" },
-    { value: "bearish", label: "Bearish" },
-  ];
+  const handleTileClick = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (node: any) => {
+      const name = node?.name || node?.payload?.name;
+      if (name) router.push(`/screener/${name}`);
+    },
+    [router]
+  );
 
   return (
-    <div>
+    <div className="flex flex-col h-[calc(100vh-7rem)] min-h-[520px]">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-1">
-          <h1
-            className="text-3xl font-bold text-white tracking-tight"
-            style={FONT_OUTFIT}
-          >
-            Watchlist
-          </h1>
-          {watchlist.length > 0 && (
-            <span
-              className="text-xs bg-[#1f2937]/60 text-gray-300 border border-border/50 px-2 py-0.5 rounded-md"
-              style={FONT_MONO}
+      <div className="flex items-baseline gap-3 mb-3">
+        <h1 className="text-xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>
+          Watchlist
+        </h1>
+        <span className="text-[11px] text-gray-500" style={FONT_OUTFIT}>
+          Tiles sized by today&apos;s % move. Click to open ticker.
+        </span>
+        <div className="ml-auto flex items-center gap-3 text-[11px] font-mono" style={FONT_MONO}>
+          <span className="text-profit">▲ {counts.up}</span>
+          <span className="text-loss">▼ {counts.down}</span>
+          <span className="text-gray-500">· {counts.flat} flat</span>
+          <span className="text-gray-600">/ {watchlist.length} total</span>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-0">
+          <Search
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 pointer-events-none"
+            strokeWidth={2}
+          />
+          <Input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter tickers..."
+            className="h-9 pl-8 bg-[#1f2937]/40 border-[#374151] text-sm"
+            style={FONT_MONO}
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-300"
+              aria-label="Clear search"
             >
-              {watchlist.length}
-            </span>
+              <X className="w-3.5 h-3.5" strokeWidth={2} />
+            </button>
           )}
         </div>
-        <p className="text-sm text-gray-500" style={FONT_OUTFIT}>
-          Tile size reflects{" "}
-          <span className="text-gray-300">
-            {sizeOptions.find((s) => s.value === sizeMetric)?.label.toLowerCase()}
-          </span>
-          . Color reflects consensus direction. Click any tile for full analysis.
-        </p>
-      </div>
 
-      {/* Controls row 1: add + search */}
-      <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-3 mb-3">
-        <div className="flex items-center gap-2 flex-1">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-            <Input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter by ticker..."
-              className="h-10 pl-9 bg-[#1f2937]/40 border-border/50 text-sm font-mono placeholder:text-gray-600"
-            />
-          </div>
-          <div className="flex items-center gap-2 flex-1 max-w-md">
-            <Input
-              type="text"
-              value={addInput}
-              onChange={(e) => setAddInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Add tickers (e.g. NVDA, AAPL)"
-              className="flex-1 h-10 bg-[#1f2937]/40 border-border/50 text-sm font-mono placeholder:text-gray-600"
-            />
-            <Button
-              onClick={handleAdd}
-              disabled={adding || !addInput.trim()}
-              className="bg-ai-blue/15 text-ai-blue border border-ai-blue/30 hover:bg-ai-blue/25 h-10 px-4 font-semibold"
+        {/* Direction filter */}
+        <div className="flex rounded-lg overflow-hidden border border-[#374151] shrink-0">
+          {(
+            [
+              { value: "all", label: "All" },
+              { value: "positive", label: "Positive" },
+              { value: "negative", label: "Negative" },
+            ] as const
+          ).map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setDirFilter(opt.value)}
+              className={
+                "px-3 py-1.5 text-xs font-medium transition whitespace-nowrap " +
+                (dirFilter === opt.value
+                  ? opt.value === "positive"
+                    ? "bg-profit/20 text-profit"
+                    : opt.value === "negative"
+                    ? "bg-loss/20 text-loss"
+                    : "bg-ai-blue/20 text-ai-blue"
+                  : "bg-[#1f2937]/40 text-gray-500 hover:text-gray-300")
+              }
+              style={FONT_OUTFIT}
             >
-              {adding ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-ai-blue animate-pulse" />
-              ) : (
-                <Plus className="w-4 h-4 mr-1" />
-              )}
-              Add
-            </Button>
-          </div>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Add tickers */}
+        <div className="flex items-center gap-1 shrink-0">
+          <Input
+            type="text"
+            value={addInput}
+            onChange={(e) => setAddInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAdd();
+              }
+            }}
+            placeholder="Add (NVDA, AAPL…)"
+            className="h-9 w-44 bg-[#1f2937]/40 border-[#374151] text-sm font-mono placeholder:text-gray-600"
+          />
+          <Button
+            onClick={handleAdd}
+            disabled={adding || !addInput.trim()}
+            className="h-9 px-3 bg-ai-blue/15 text-ai-blue border border-ai-blue/30 hover:bg-ai-blue/25"
+            aria-label="Add tickers"
+          >
+            <Plus className="w-4 h-4" strokeWidth={2} />
+          </Button>
         </div>
       </div>
 
-      {/* Controls row 2: size metric + direction filter */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6">
-        <div className="flex items-center gap-2">
-          <ArrowUpDown className="w-3.5 h-3.5 text-gray-500" />
-          <span
-            className="text-[10px] text-gray-500 uppercase tracking-wider whitespace-nowrap"
-            style={FONT_OUTFIT}
-          >
-            Size by
-          </span>
-          <div className="flex rounded-lg overflow-hidden border border-border/50">
-            {sizeOptions.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setSizeMetric(opt.value)}
-                className={`px-3 py-1.5 text-xs font-medium transition ${
-                  sizeMetric === opt.value
-                    ? "bg-ai-blue/20 text-ai-blue"
-                    : "bg-[#1f2937]/40 text-gray-500 hover:text-gray-300"
-                }`}
-                style={FONT_OUTFIT}
-              >
-                {opt.label}
-              </button>
+      {/* Treemap — fills remaining viewport height */}
+      <div className="flex-1 min-h-[320px] rounded-xl overflow-hidden border border-[#1f2937] bg-[#0a0a0f]">
+        {loading ? (
+          <div className="w-full h-full grid grid-cols-4 md:grid-cols-6 gap-1 p-1">
+            {Array.from({ length: 18 }).map((_, i) => (
+              <Skeleton key={i} className="w-full h-full rounded-md" />
             ))}
           </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span
-            className="text-[10px] text-gray-500 uppercase tracking-wider whitespace-nowrap"
-            style={FONT_OUTFIT}
-          >
-            Filter
-          </span>
-          <div className="flex rounded-lg overflow-hidden border border-border/50">
-            {dirOptions.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setDirFilter(opt.value)}
-                className={`px-3 py-1.5 text-xs font-medium transition ${
-                  dirFilter === opt.value
-                    ? opt.value === "bullish"
-                      ? "bg-profit/20 text-profit"
-                      : opt.value === "bearish"
-                      ? "bg-loss/20 text-loss"
-                      : "bg-ai-blue/20 text-ai-blue"
-                    : "bg-[#1f2937]/40 text-gray-500 hover:text-gray-300"
-                }`}
-                style={FONT_OUTFIT}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        ) : tiles.length === 0 ? (
+          <EmptyState watchlistSize={watchlist.length} />
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <Treemap
+              data={tiles}
+              dataKey="size"
+              aspectRatio={16 / 9}
+              stroke="#0a0a0f"
+              fill="#111827"
+              isAnimationActive={false}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              content={<TreemapTile /> as any}
+              onClick={handleTileClick}
+            >
+              <Tooltip content={<TreemapTooltip />} />
+            </Treemap>
+          </ResponsiveContainer>
+        )}
       </div>
 
-      {/* Loading State */}
-      {loading && (
-        <div className="grid grid-cols-3 md:grid-cols-6 auto-rows-[84px] md:auto-rows-[110px] gap-2">
-          <Skeleton className="rounded-xl col-span-3 row-span-2" />
-          <Skeleton className="rounded-xl col-span-2 row-span-2" />
-          <Skeleton className="rounded-xl col-span-1 row-span-1" />
-          <Skeleton className="rounded-xl col-span-1 row-span-1" />
-          <Skeleton className="rounded-xl col-span-2 row-span-1" />
-          <Skeleton className="rounded-xl col-span-2 row-span-1" />
-        </div>
-      )}
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-4 mt-3 text-[10px] text-gray-500" style={FONT_OUTFIT}>
+        <LegendSwatch color="rgba(239, 68, 68, 0.85)" label="Large loss" />
+        <LegendSwatch color="rgba(239, 68, 68, 0.35)" label="Small loss" />
+        <LegendSwatch color="rgba(156, 163, 175, 0.35)" label="Flat" />
+        <LegendSwatch color="rgba(34, 197, 94, 0.35)" label="Small gain" />
+        <LegendSwatch color="rgba(34, 197, 94, 0.85)" label="Large gain" />
+        <span className="text-gray-600">· Size = |% change|</span>
+      </div>
+    </div>
+  );
+}
 
-      {/* Empty State */}
-      {!loading && watchlist.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
-          <div className="w-16 h-16 rounded-full bg-[#1f2937]/60 flex items-center justify-center mb-5">
-            <Eye className="w-8 h-8 text-gray-600" />
-          </div>
-          <h2
-            className="text-xl font-bold text-white mb-2"
-            style={FONT_OUTFIT}
-          >
-            No tickers on your watchlist
-          </h2>
-          <p
-            className="text-sm text-gray-500 max-w-md leading-relaxed"
-            style={FONT_OUTFIT}
-          >
-            Add tickers using the input above to start monitoring. The treemap
-            will size each ticker by signal activity and color by consensus
-            direction.
-          </p>
-        </div>
-      )}
+function LegendSwatch({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className="inline-block w-3 h-3 rounded-sm"
+        style={{ backgroundColor: color, border: "1px solid #0a0a0f" }}
+      />
+      {label}
+    </span>
+  );
+}
 
-      {/* Empty filter state */}
-      {!loading && watchlist.length > 0 && visible.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-center rounded-xl border border-border/50 bg-[#0f1522]/40">
-          <Search className="w-6 h-6 text-gray-600 mb-3" />
-          <p className="text-sm text-gray-400" style={FONT_OUTFIT}>
-            No tickers match the current filter.
-          </p>
+function EmptyState({ watchlistSize }: { watchlistSize: number }) {
+  if (watchlistSize === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-center px-6">
+        <div className="w-12 h-12 rounded-full bg-[#1f2937]/70 flex items-center justify-center mb-3">
+          <Eye className="w-5 h-5 text-gray-500" strokeWidth={1.75} />
         </div>
-      )}
-
-      {/* Treemap */}
-      {!loading && visible.length > 0 && (
-        <div className="grid grid-cols-3 md:grid-cols-6 auto-rows-[84px] md:auto-rows-[110px] gap-2 transition-all duration-300">
-          {visible.map((item) => {
-            const weight = getWeight(item, sizeMetric);
-            const { cols, rows } = tileSpan(weight, sortedWeights);
-            return (
-              <Tile
-                key={item.id}
-                item={item}
-                cols={cols}
-                rows={rows}
-                onClick={() => router.push(`/screener/${item.ticker}`)}
-              />
-            );
-          })}
+        <div className="text-sm font-semibold text-white mb-1" style={FONT_OUTFIT}>
+          No tickers on your watchlist
         </div>
-      )}
+        <div className="text-xs text-gray-500 max-w-sm" style={FONT_OUTFIT}>
+          Add tickers above to see live moves. Signals and holdings sync here automatically.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-center px-6">
+      <div className="text-sm font-semibold text-white mb-1" style={FONT_OUTFIT}>
+        No tickers match the current filter
+      </div>
+      <div className="text-xs text-gray-500" style={FONT_OUTFIT}>
+        Try clearing the search or switching direction filter.
+      </div>
     </div>
   );
 }

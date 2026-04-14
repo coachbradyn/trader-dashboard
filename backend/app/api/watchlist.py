@@ -701,6 +701,57 @@ async def sync_watchlist(db: AsyncSession = Depends(get_db)):
     return {"synced": added, "total_tickers": len(all_tickers)}
 
 
+# ── GET /watchlist/quotes — live quotes (price + daily %change) ──────────
+
+@router.get("/quotes")
+async def get_watchlist_quotes(db: AsyncSession = Depends(get_db)):
+    """Return today's live price and percent change for every active watchlist
+    ticker. Used by the treemap view to size/color tiles by daily move.
+
+    Pulls from FMP /stable/batch-quote in chunks of 50 to stay under URL
+    length limits and respect rate-limit budget. Tickers for which FMP
+    returns nothing are omitted; the caller should show those as 'gray'.
+    """
+    try:
+        from app.services.fmp_service import get_batch_quotes
+
+        result = await db.execute(
+            select(WatchlistTicker.ticker).where(WatchlistTicker.is_active == True)  # noqa: E712
+        )
+        tickers = [row[0] for row in result.all()]
+        if not tickers:
+            return {}
+
+        out: dict = {}
+        CHUNK = 50
+        for i in range(0, len(tickers), CHUNK):
+            chunk = tickers[i:i + CHUNK]
+            quotes = await get_batch_quotes(chunk)
+            if not quotes or not isinstance(quotes, list):
+                continue
+            for q in quotes:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+                try:
+                    price = q.get("price")
+                    change_pct = q.get("changesPercentage") or q.get("changePercentage")
+                    change = q.get("change")
+                    out[sym] = {
+                        "price": float(price) if price is not None else None,
+                        "change_pct": float(change_pct) if change_pct is not None else None,
+                        "change": float(change) if change is not None else None,
+                        "volume": q.get("volume"),
+                        "day_high": q.get("dayHigh"),
+                        "day_low": q.get("dayLow"),
+                    }
+                except (TypeError, ValueError):
+                    continue
+        return out
+    except Exception:
+        return {}
+
+
 # ── GET /watchlist/fundamentals — bulk fundamentals for all watchlist tickers ──
 
 @router.get("/fundamentals")

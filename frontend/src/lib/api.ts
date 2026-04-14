@@ -307,6 +307,15 @@ export const api = {
     fetchApi<import("./types").WatchlistTickerDetail>("/watchlist/" + ticker + "/detail"),
   getWatchlistFundamentals: () =>
     fetchApi<Record<string, import("./types").TickerFundamentals>>("/watchlist/fundamentals"),
+  getWatchlistQuotes: () =>
+    fetchApi<Record<string, {
+      price: number | null;
+      change_pct: number | null;
+      change: number | null;
+      volume: number | null;
+      day_high: number | null;
+      day_low: number | null;
+    }>>("/watchlist/quotes"),
   refreshWatchlistSummary: (ticker: string) =>
     fetchApi<{ status: string; ticker: string }>("/watchlist/" + ticker + "/refresh-summary", { method: "POST" }),
   getStrategies: () =>
