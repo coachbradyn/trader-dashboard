@@ -714,6 +714,7 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                         from app.services.trade_processor import _execute_on_alpaca
                         asyncio.create_task(_execute_on_alpaca(
                             port, trade.ticker, qty, "buy", trade.entry_price,
+                            trade_id=trade.id,
                         ))
 
                     try:
@@ -749,6 +750,7 @@ Respond in JSON: {{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "
                                     from app.services.trade_processor import _execute_on_alpaca
                                     asyncio.create_task(_execute_on_alpaca(
                                         port, trade.ticker, qty, "buy", trade.entry_price,
+                                        trade_id=trade.id,
                                     ))
 
                                 try:
@@ -1042,6 +1044,7 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                                 )
                                 asyncio.create_task(_execute_on_alpaca(
                                     portfolio, pos.ticker, pos.qty, "sell", cp,
+                                    trade_id=getattr(pos, "id", None),
                                 ))
 
                             logger.info(

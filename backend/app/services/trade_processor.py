@@ -146,11 +146,13 @@ async def process_webhook(payload: WebhookPayload, db: AsyncSession) -> Trade:
                     if _payload_signal == "entry":
                         asyncio.create_task(_execute_on_alpaca(
                             port, _trade_ticker, _trade_qty, "buy", _trade_entry_price,
+                            trade_id=_trade_id,
                         ))
                     elif _payload_signal == "exit":
                         sell_qty = _trade_qty if _trade_qty and _trade_qty > 0 else _payload_qty
                         asyncio.create_task(_execute_on_alpaca(
                             port, _trade_ticker, sell_qty, "sell", _payload_price,
+                            trade_id=_trade_id,
                         ))
         except Exception as e:
             logger.warning(f"Alpaca auto-execute routing failed: {e}")
@@ -400,6 +402,7 @@ async def _process_exit(trader: Trader, payload: WebhookPayload, db: AsyncSessio
         if port.execution_mode in ("paper", "live") and port.alpaca_api_key:
             asyncio.create_task(_execute_on_alpaca(
                 port, trade.ticker, trade.qty, "sell", trade.exit_price,
+                trade_id=trade.id,
             ))
 
     return trade
@@ -411,12 +414,18 @@ async def _execute_on_alpaca(
     qty: float,
     side: str,
     price: float | None = None,
+    trade_id: str | None = None,
 ) -> None:
     """
     Submit a market order to Alpaca for a live/paper portfolio, poll for fill,
     and update the PortfolioHolding in the DB on confirmation.
 
     Runs as a background task — never raises into the caller.
+
+    When ``trade_id`` is supplied, Alpaca-side failures (rejection,
+    cancellation, timeout) are reflected back onto the Trade row so the
+    portfolio UI does not keep claiming we hold a position the broker
+    never opened. See ``_record_alpaca_failure`` for the bookkeeping.
     """
     from app.services.alpaca_service import alpaca_service
     from app.database import async_session
@@ -434,6 +443,10 @@ async def _execute_on_alpaca(
         order_qty = round(order_qty, 4)
 
         if order_qty <= 0:
+            await _record_alpaca_failure(
+                trade_id, ticker, side, portfolio.name,
+                f"order_qty<=0 after max_order_amount cap (qty={qty}, price={price})",
+            )
             return
 
         result = await alpaca_service.submit_order(
@@ -446,13 +459,21 @@ async def _execute_on_alpaca(
         )
 
         if result.get("status") == "error":
-            logger.error(f"Alpaca order failed: {side} {ticker} x{order_qty} on {portfolio.name} — {result.get('message')}")
+            err = str(result.get("message") or "unknown Alpaca error")
+            logger.error(
+                f"Alpaca order failed: {side} {ticker} x{order_qty} on {portfolio.name} — {err}"
+            )
+            await _record_alpaca_failure(trade_id, ticker, side, portfolio.name, err)
             return
 
         order_id = result.get("order_id")
         logger.info(f"Alpaca auto-{side}: {ticker} x{order_qty} on {portfolio.name} ({portfolio.execution_mode}) — submitted {order_id}")
 
         if not order_id:
+            await _record_alpaca_failure(
+                trade_id, ticker, side, portfolio.name,
+                "Alpaca returned no order_id",
+            )
             return
 
         # Poll for fill: 6 × 0.5s inline, then 30 × 2s background = ~63s total
@@ -471,7 +492,14 @@ async def _execute_on_alpaca(
                 fill_qty = status.get("filled_qty", order_qty)
                 break
             if status.get("status") in ("canceled", "expired", "rejected"):
-                logger.warning(f"Alpaca order {order_id} was {status.get('status')} for {ticker} on {portfolio.name}")
+                terminal = status.get("status")
+                logger.warning(
+                    f"Alpaca order {order_id} was {terminal} for {ticker} on {portfolio.name}"
+                )
+                await _record_alpaca_failure(
+                    trade_id, ticker, side, portfolio.name,
+                    f"Alpaca order {terminal} (id={order_id})",
+                )
                 return
 
         if fill_qty and fill_qty > 0:
@@ -492,10 +520,85 @@ async def _execute_on_alpaca(
             logger.info(f"Alpaca order {order_id} not yet filled — continuing background poll")
             asyncio.create_task(_poll_for_fill(
                 portfolio, order_id, ticker, order_qty, side, is_paper,
+                trade_id=trade_id,
             ))
 
     except Exception as e:
         logger.error(f"Alpaca auto-order failed for {ticker} on {portfolio.name}: {e}")
+        await _record_alpaca_failure(
+            trade_id, ticker, side, portfolio.name,
+            f"{type(e).__name__}: {str(e)[:200]}",
+        )
+
+
+async def _record_alpaca_failure(
+    trade_id: str | None,
+    ticker: str,
+    side: str,
+    portfolio_name: str,
+    error: str,
+) -> None:
+    """Surface an Alpaca-side failure so it stops being invisible.
+
+    - Always writes a trade_rejected entry to the Henry activity feed so
+      the user sees the failure on the dashboard.
+    - For buy-side failures with a known Trade id, flips the Trade to
+      ``status="rejected"`` and refunds the optimistically-debited cash
+      back to every portfolio that took a position cost. Without this
+      the home page keeps showing an "open position" for something the
+      broker never actually bought.
+    - Sell-side failures leave the Trade in ``closed`` (the book update
+      already happened) and rely on the activity-feed entry for
+      visibility — the user needs to manually reconcile the broker leg.
+    """
+    try:
+        from app.services.henry_activity import log_activity
+        await log_activity(
+            f"ALPACA REJECTED: {side.upper()} {ticker} on {portfolio_name} — {error}",
+            "trade_rejected",
+            ticker=ticker,
+        )
+    except Exception as e:
+        logger.warning(f"Could not log Alpaca rejection to activity feed: {e}")
+
+    if not trade_id or side.lower() != "buy":
+        return
+
+    try:
+        from app.database import async_session
+        async with async_session() as db:
+            trade = (
+                await db.execute(select(Trade).where(Trade.id == trade_id))
+            ).scalar_one_or_none()
+            if not trade or trade.status != "open":
+                return
+
+            # Refund cash to every portfolio that paid for this entry.
+            # Simulated / AI-managed portfolios still debit cash at entry
+            # (see _process_entry and autonomous _execute_autonomous_trade),
+            # so the refund applies uniformly.
+            refund = (trade.entry_price or 0.0) * (trade.qty or 0.0)
+            if refund > 0:
+                links = (
+                    await db.execute(
+                        select(PortfolioTrade)
+                        .where(PortfolioTrade.trade_id == trade.id)
+                        .options(selectinload(PortfolioTrade.portfolio))
+                    )
+                ).scalars().all()
+                for pt in links:
+                    if pt.portfolio is not None:
+                        pt.portfolio.cash = (pt.portfolio.cash or 0.0) + refund
+
+            trade.status = "rejected"
+            trade.exit_reason = f"alpaca_rejected: {error[:80]}"
+            trade.exit_time = utcnow()
+            payload = dict(trade.raw_entry_payload or {})
+            payload["alpaca_error"] = error[:500]
+            trade.raw_entry_payload = payload
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"Could not mark trade {trade_id} rejected: {e}")
 
 
 async def _poll_for_fill(
@@ -505,6 +608,7 @@ async def _poll_for_fill(
     expected_qty: float,
     side: str,
     is_paper: bool,
+    trade_id: str | None = None,
 ) -> None:
     """Extended background poll for delayed Alpaca fills (up to 60s)."""
     from app.services.alpaca_service import alpaca_service
@@ -536,10 +640,19 @@ async def _poll_for_fill(
                         pass
                 return
             if status.get("status") in ("canceled", "expired", "rejected"):
-                logger.warning(f"Alpaca order {order_id} was {status.get('status')} for {ticker}")
+                terminal = status.get("status")
+                logger.warning(f"Alpaca order {order_id} was {terminal} for {ticker}")
+                await _record_alpaca_failure(
+                    trade_id, ticker, side, portfolio.name,
+                    f"Alpaca order {terminal} (id={order_id})",
+                )
                 return
 
         logger.warning(f"Alpaca order {order_id} for {ticker} did not fill within 60s — verify manually")
+        await _record_alpaca_failure(
+            trade_id, ticker, side, portfolio.name,
+            f"no fill within 60s (order_id={order_id})",
+        )
     except Exception as e:
         logger.error(f"Background fill poll failed for {order_id}: {e}")
 

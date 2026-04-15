@@ -790,6 +790,7 @@ async def _liquidate_for_capital(
             from app.services.trade_processor import _execute_on_alpaca
             asyncio.create_task(_execute_on_alpaca(
                 portfolio, pos.ticker, pos.qty, "sell", cp,
+                trade_id=pos.id,
             ))
 
     # Enrich positions with current price and P&L
@@ -1072,6 +1073,7 @@ async def _execute_autonomous_trade(
                 from app.services.trade_processor import _execute_on_alpaca
                 asyncio.create_task(_execute_on_alpaca(
                     port_obj, ticker, round(qty, 4), "buy", price,
+                    trade_id=sim_trade.id,
                 ))
 
             from app.services.henry_activity import log_activity as _log
@@ -1240,6 +1242,7 @@ async def check_autonomous_exits() -> int:
                         from app.services.trade_processor import _execute_on_alpaca
                         asyncio.create_task(_execute_on_alpaca(
                             portfolio, pos.ticker, pos.qty, "sell", current_price,
+                            trade_id=pos.id,
                         ))
 
                     closed += 1
