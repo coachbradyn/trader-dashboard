@@ -219,6 +219,21 @@ async def _ensure_schema():
                         connection.execute(text(sql))
                         logger.info(f"Added missing column: portfolios.{col_name}")
 
+                # Portfolio action columns added for the options layer.
+                # Without these the decisions endpoint 500s with
+                # UndefinedColumnError because SQLAlchemy's SELECT
+                # includes every mapped column.
+                if "portfolio_actions" in tables:
+                    action_cols = [c["name"] for c in insp.get_columns("portfolio_actions")]
+                    new_action_cols = {
+                        "instrument_type": "ALTER TABLE portfolio_actions ADD COLUMN instrument_type VARCHAR(10) DEFAULT 'equity'",
+                        "options_strategy": "ALTER TABLE portfolio_actions ADD COLUMN options_strategy JSONB",
+                    }
+                    for col_name, sql in new_action_cols.items():
+                        if col_name not in action_cols:
+                            connection.execute(text(sql))
+                            logger.info(f"Added missing column: portfolio_actions.{col_name}")
+
                 # Options trades table (fallback when Alembic didn't run)
                 if "options_trades" not in tables:
                     connection.execute(text("""

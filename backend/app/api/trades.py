@@ -29,8 +29,29 @@ async def get_trades(
         # When filtering by portfolio, show ALL trades linked to it (including simulated)
         query = query.join(PortfolioTrade).where(PortfolioTrade.portfolio_id == portfolio_id)
     else:
-        # Global trade list: hide simulated trades
-        query = query.where(Trade.is_simulated == False)
+        # Global trade list: include simulated trades that Henry ran on
+        # an AI-managed / ai-evaluation portfolio (they're real paper
+        # trades, not test data), but keep unlinked simulated rows
+        # hidden. The Live Feed page showed "No trades yet" even while
+        # Henry was actively trading his paper book because the old
+        # blanket is_simulated=False filter excluded all of them.
+        from sqlalchemy import or_
+        from app.models.portfolio import Portfolio as _P
+        ai_portfolio_ids = (await db.execute(
+            select(_P.id).where(
+                or_(_P.is_ai_managed == True, _P.ai_evaluation_enabled == True),
+            )
+        )).scalars().all()
+        if ai_portfolio_ids:
+            ai_trade_ids = (await db.execute(
+                select(PortfolioTrade.trade_id)
+                .where(PortfolioTrade.portfolio_id.in_(ai_portfolio_ids))
+            )).scalars().all()
+            query = query.where(
+                or_(Trade.is_simulated == False, Trade.id.in_(ai_trade_ids))
+            )
+        else:
+            query = query.where(Trade.is_simulated == False)
 
     if trader_id:
         query = query.join(Trader).where(Trader.trader_id == trader_id)

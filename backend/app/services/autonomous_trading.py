@@ -1215,6 +1215,28 @@ async def check_autonomous_exits() -> int:
 
                     portfolio.cash += position_value + pos.pnl_dollars
 
+                    # Also mark the matching PortfolioHolding inactive so
+                    # the Holdings list updates immediately. Without this
+                    # the row lingered until Alpaca filled the async sell
+                    # (or forever, if the fill failed), which is why the
+                    # user saw "Henry closed X" in activity but no change
+                    # on the portfolio page. If Alpaca later reports the
+                    # position still open, the reconciler will reactivate.
+                    hld_rows = await db.execute(
+                        select(PortfolioHolding).where(
+                            PortfolioHolding.portfolio_id == portfolio.id,
+                            PortfolioHolding.ticker == pos.ticker,
+                            PortfolioHolding.direction == pos.direction,
+                            PortfolioHolding.is_active == True,
+                        )
+                    )
+                    for h in hld_rows.scalars().all():
+                        if h.qty and h.qty > pos.qty:
+                            h.qty -= pos.qty
+                        else:
+                            h.is_active = False
+                            h.notes = (h.notes or "") + f" | autonomous_exit:{exit_reason}"
+
                     # Log
                     db.add(PortfolioAction(
                         portfolio_id=portfolio.id,

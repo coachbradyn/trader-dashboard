@@ -1074,6 +1074,25 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
 
                     portfolio.cash += position_value + pos.pnl_dollars
 
+                    # Close any PortfolioHolding that mirrors this Trade so
+                    # the Holdings list reflects the close immediately —
+                    # previously the row lingered until Alpaca confirmed
+                    # the sell fill (or forever, on a rejection).
+                    hld_rows = await db.execute(
+                        select(PortfolioHolding).where(
+                            PortfolioHolding.portfolio_id == portfolio.id,
+                            PortfolioHolding.ticker == pos.ticker,
+                            PortfolioHolding.direction == pos.direction,
+                            PortfolioHolding.is_active == True,
+                        )
+                    )
+                    for h in hld_rows.scalars().all():
+                        if h.qty and h.qty > pos.qty:
+                            h.qty -= pos.qty
+                        else:
+                            h.is_active = False
+                            h.notes = (h.notes or "") + " | ai_review_close"
+
                     db.add(PortfolioAction(
                         portfolio_id=portfolio.id,
                         ticker=ticker,
