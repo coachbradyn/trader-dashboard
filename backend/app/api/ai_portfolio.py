@@ -278,80 +278,99 @@ async def get_decisions(
 ):
     """Get Henry's decision log across all AI-enabled portfolios.
 
-    Previously scoped to the single `is_ai_managed=True` portfolio and
-    raised 404 when none existed — the frontend's `.catch` swallowed
-    that, which is why the Decisions tab showed "No decisions yet" even
-    when Henry had been logging actions against other AI-enabled
-    portfolios (paper/live Alpaca accounts with
-    `ai_evaluation_enabled=True`).
-
-    Now returns actions from every portfolio with either flag set, with
-    an optional `portfolio_id` filter for per-portfolio drill-down.
+    Collects actions from every portfolio with `is_ai_managed=True` or
+    `ai_evaluation_enabled=True`, with an optional `portfolio_id`
+    filter. Degrades gracefully if `ai_evaluation_enabled` is missing
+    on an older DB: falls back to the legacy `is_ai_managed`-only
+    lookup rather than 500-ing.
     """
     from sqlalchemy import or_
 
-    # Collect every portfolio Henry makes decisions on. If
-    # portfolio_id is provided, scope to that one portfolio regardless
-    # of its flags (user may be asking about a specific book).
-    if portfolio_id:
-        port_q = select(Portfolio).where(Portfolio.id == portfolio_id)
-    else:
-        port_q = select(Portfolio).where(
-            Portfolio.is_active == True,
-            or_(
-                Portfolio.is_ai_managed == True,
-                Portfolio.ai_evaluation_enabled == True,
-            ),
-        )
-    portfolio_rows = (await db.execute(port_q)).scalars().all()
+    # 1. Resolve candidate portfolios. The `or_` path can 500 if the
+    #    ai_evaluation_enabled column doesn't exist on the deployed DB
+    #    (older migrations), so we catch and fall back to a query that
+    #    touches only is_ai_managed. Any remaining failure is re-raised
+    #    as a 500 with the error body so the frontend can show it.
+    portfolio_rows = []
+    try:
+        if portfolio_id:
+            port_q = select(Portfolio).where(Portfolio.id == portfolio_id)
+        else:
+            port_q = select(Portfolio).where(
+                or_(
+                    Portfolio.is_ai_managed == True,
+                    Portfolio.ai_evaluation_enabled == True,
+                ),
+            )
+        portfolio_rows = (await db.execute(port_q)).scalars().all()
+    except Exception as e:
+        logger.warning(f"decisions: primary portfolio lookup failed, falling back — {e}")
+        try:
+            legacy_q = select(Portfolio).where(Portfolio.is_ai_managed == True)
+            portfolio_rows = (await db.execute(legacy_q)).scalars().all()
+        except Exception as e2:
+            logger.error(f"decisions: legacy portfolio lookup also failed — {e2}")
+            raise HTTPException(500, f"Portfolio lookup failed: {e2}")
+
     if not portfolio_rows:
-        # Empty list — not a 404. The frontend renders "No decisions
-        # yet" from an empty array; raising 404 was getting swallowed
-        # by the client's catch and producing the same UX either way,
-        # but without a debuggable signal.
+        # Empty list instead of 404 — the frontend's `.catch` turns 404
+        # into the same empty-state UX, but without a debuggable signal.
         return []
     portfolio_ids = [p.id for p in portfolio_rows]
     portfolio_names = {p.id: p.name for p in portfolio_rows}
 
-    query = select(PortfolioAction).where(PortfolioAction.portfolio_id.in_(portfolio_ids))
-
-    if filter == "taken":
-        query = query.where(PortfolioAction.status == "approved", PortfolioAction.action_type != "SKIP")
-    elif filter == "skipped":
-        query = query.where(
-            (PortfolioAction.status == "rejected") | (PortfolioAction.action_type == "SKIP")
+    # 2. Pull actions for those portfolios.
+    try:
+        query = select(PortfolioAction).where(
+            PortfolioAction.portfolio_id.in_(portfolio_ids)
         )
 
-    query = query.order_by(desc(PortfolioAction.created_at)).limit(limit)
-    result = await db.execute(query)
-    actions = result.scalars().all()
+        if filter == "taken":
+            query = query.where(
+                PortfolioAction.status == "approved",
+                PortfolioAction.action_type != "SKIP",
+            )
+        elif filter == "skipped":
+            query = query.where(
+                (PortfolioAction.status == "rejected")
+                | (PortfolioAction.action_type == "SKIP")
+            )
+
+        query = query.order_by(desc(PortfolioAction.created_at)).limit(limit)
+        actions = (await db.execute(query)).scalars().all()
+    except Exception as e:
+        logger.error(f"decisions: action query failed — {e}")
+        raise HTTPException(500, f"Action query failed: {e}")
 
     decisions = []
     for a in actions:
-        # Get trade outcome if this was an executed BUY
+        # Resolve trade outcome for executed BUYs. Any per-row failure
+        # is logged but doesn't abort the whole response — the user
+        # should see decisions even when outcome resolution hiccups.
         outcome = None
         if a.status == "approved" and a.action_type != "SKIP" and a.trigger_ref:
-            # Find the simulated trade created from this action
-            trade_result = await db.execute(
-                select(Trade)
-                .join(PortfolioTrade)
-                .where(
-                    PortfolioTrade.portfolio_id == a.portfolio_id,
-                    Trade.ticker == a.ticker,
-                    # Include both simulated and real trades linked to this portfolio
-                    Trade.status == "closed",
-                    Trade.entry_time >= a.created_at - timedelta(seconds=60),
-                    Trade.entry_time <= a.created_at + timedelta(seconds=60),
+            try:
+                trade_result = await db.execute(
+                    select(Trade)
+                    .join(PortfolioTrade)
+                    .where(
+                        PortfolioTrade.portfolio_id == a.portfolio_id,
+                        Trade.ticker == a.ticker,
+                        Trade.status == "closed",
+                        Trade.entry_time >= a.created_at - timedelta(seconds=60),
+                        Trade.entry_time <= a.created_at + timedelta(seconds=60),
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-            closed_trade = trade_result.scalar_one_or_none()
-            if closed_trade:
-                outcome = {
-                    "pnl_pct": round(closed_trade.pnl_percent or 0, 2),
-                    "pnl_dollars": round(closed_trade.pnl_dollars or 0, 2),
-                    "correct": (closed_trade.pnl_dollars or 0) > 0,
-                }
+                closed_trade = trade_result.scalar_one_or_none()
+                if closed_trade:
+                    outcome = {
+                        "pnl_pct": round(closed_trade.pnl_percent or 0, 2),
+                        "pnl_dollars": round(closed_trade.pnl_dollars or 0, 2),
+                        "correct": (closed_trade.pnl_dollars or 0) > 0,
+                    }
+            except Exception as e:
+                logger.debug(f"decisions: outcome lookup for action {a.id} failed — {e}")
 
         decisions.append({
             "id": a.id,
@@ -362,11 +381,7 @@ async def get_decisions(
             "reasoning": a.reasoning,
             "status": a.status,
             "outcome": outcome,
-            "created_at": a.created_at.isoformat(),
-            # Per-portfolio attribution so the UI can show which book
-            # each decision targeted. Henry may be running on three
-            # portfolios at once; "BUY NOK" means different things
-            # depending on which account executed it.
+            "created_at": a.created_at.isoformat() if a.created_at else None,
             "portfolio_id": a.portfolio_id,
             "portfolio_name": portfolio_names.get(a.portfolio_id, ""),
         })
