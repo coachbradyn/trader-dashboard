@@ -672,8 +672,151 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
 
             await db.commit()
 
+        # After the AI-managed portfolio commits its decision, mirror an
+        # approved BUY out to every OTHER AI-enabled portfolio (paper/
+        # live Alpaca books, etc.). Each mirror is sized independently
+        # against its own cash + risk limits, routes through Alpaca when
+        # the book is in paper/live mode, and is skipped when the book
+        # already holds the ticker. Runs outside the primary session
+        # because _execute_autonomous_trade opens its own. Failures on
+        # one book don't affect the others or the primary AI portfolio.
+        if action == "BUY" and confidence >= min_conf:
+            try:
+                await _mirror_buy_to_live_portfolios(
+                    origin_portfolio_id=portfolio.id,
+                    trade=trade,
+                    trader=trader,
+                    confidence=confidence,
+                    reasoning=reasoning,
+                )
+            except Exception as e:
+                logger.error(f"Mirror fan-out failed for {trade.ticker}: {e}")
+
     except Exception as e:
         logger.error(f"AI portfolio signal evaluation failed: {e}", exc_info=True)
+
+
+async def _mirror_buy_to_live_portfolios(
+    origin_portfolio_id: str,
+    trade: Trade,
+    trader: Trader,
+    confidence: int,
+    reasoning: str,
+) -> None:
+    """Replicate an approved signal-driven BUY from Henry's AI paper
+    portfolio to every other active AI-enabled portfolio.
+
+    Each mirror book sizes independently from its own cash balance and
+    max_pct_per_trade setting, skips when the ticker is already open on
+    that book (no pyramiding off a webhook), and for paper/live books
+    routes the order through `_execute_autonomous_trade` which in turn
+    submits to Alpaca via _execute_on_alpaca. Failures are swallowed
+    per-portfolio so one broker rejection doesn't cascade.
+
+    Spec: "Any trades on the Henry AI portfolio should be considered
+    for the lives, with available cash balance or stock amount being
+    the qualifiers."
+    """
+    from sqlalchemy import or_
+    from app.services.autonomous_trading import _execute_autonomous_trade
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Portfolio).where(
+                Portfolio.is_active == True,
+                Portfolio.id != origin_portfolio_id,
+                or_(
+                    Portfolio.is_ai_managed == True,
+                    Portfolio.ai_evaluation_enabled == True,
+                ),
+            )
+        )
+        mirrors = list(result.scalars().all())
+
+    if not mirrors:
+        return
+
+    cfg = get_ai_config()
+    logger.info(
+        f"Mirror fan-out: replicating {trade.ticker} BUY (conf {confidence}) "
+        f"to {len(mirrors)} AI-enabled portfolio(s)"
+    )
+
+    for mp in mirrors:
+        try:
+            # Dedup: skip books that already have an open Trade or an
+            # active PortfolioHolding on this ticker+direction. The
+            # "available stock amount" qualifier from the spec — we
+            # don't stack on top of an existing position via a webhook.
+            async with async_session() as db:
+                existing_trade = await db.execute(
+                    select(Trade.id)
+                    .join(PortfolioTrade, PortfolioTrade.trade_id == Trade.id)
+                    .where(
+                        PortfolioTrade.portfolio_id == mp.id,
+                        Trade.ticker == trade.ticker,
+                        Trade.direction == trade.direction,
+                        Trade.status == "open",
+                    )
+                    .limit(1)
+                )
+                if existing_trade.scalar_one_or_none():
+                    logger.debug(f"Mirror: {mp.name} already holds {trade.ticker} (trade) — skipping")
+                    continue
+                existing_hld = await db.execute(
+                    select(PortfolioHolding.id)
+                    .where(
+                        PortfolioHolding.portfolio_id == mp.id,
+                        PortfolioHolding.ticker == trade.ticker,
+                        PortfolioHolding.direction == trade.direction,
+                        PortfolioHolding.is_active == True,
+                    )
+                    .limit(1)
+                )
+                if existing_hld.scalar_one_or_none():
+                    logger.debug(f"Mirror: {mp.name} already holds {trade.ticker} (holding) — skipping")
+                    continue
+
+                # Equity for sizing — use cash for non-AI-managed books,
+                # full equity (cash + realised + unrealised) for AI-managed.
+                if getattr(mp, "is_ai_managed", False):
+                    mp_equity = await _get_ai_portfolio_equity(mp, db)
+                else:
+                    mp_equity = float(mp.cash or 0)
+
+            success = await _execute_autonomous_trade(
+                portfolio=mp,
+                ticker=trade.ticker,
+                direction=trade.direction,
+                price=trade.entry_price,
+                confidence=confidence,
+                reasoning=f"[Mirror from signal] {reasoning}",
+                equity=mp_equity,
+                cfg=cfg,
+                source=f"signal_mirror:{trader.trader_id}",
+                stop_price=trade.stop_price,
+            )
+            if success:
+                logger.info(
+                    f"Mirror: executed {trade.ticker} on {mp.name} "
+                    f"(mode={mp.execution_mode})"
+                )
+                try:
+                    from app.services.henry_activity import log_activity
+                    await log_activity(
+                        f"MIRROR BUY: {trade.ticker} on {mp.name} "
+                        f"(mode={mp.execution_mode}, conf {confidence}/10)",
+                        "trade_execute", ticker=trade.ticker,
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    f"Mirror: {trade.ticker} not executed on {mp.name} "
+                    f"(rejected by sizing / cash / safety check)"
+                )
+        except Exception as e:
+            logger.error(f"Mirror to {mp.name} failed: {e}")
 
 
 async def evaluate_signal_for_portfolio(
