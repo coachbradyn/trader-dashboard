@@ -125,7 +125,7 @@ function PerformanceGrid({ perf }: { perf: Performance }) {
 
 // ── Equity Curve Chart ──────────────────────────────────────────────
 
-function ChartCard({ title, children, empty }: { title: string; children: React.ReactNode; empty?: string }) {
+function ChartCard({ title, children, empty }: { title: string; children?: React.ReactNode; empty?: string }) {
   if (empty) {
     return (
       <div className="bg-[#0f0f19]/80 rounded-2xl border border-[#1e1e3a]/60 p-6">
