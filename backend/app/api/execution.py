@@ -1,9 +1,10 @@
 import asyncio
+import os
 from app.utils.utc import utcnow
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta as _timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,21 @@ logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task] = set()
 
 router = APIRouter(prefix="/execution", tags=["execution"])
+
+
+# Defined up-here so reconcile-all (and any future privileged endpoint
+# defined before the kill-switch block) can reference it as a Depends.
+def _verify_kill_switch_token(authorization: str = Header(None)):
+    """Require a bearer token for kill-switch / reconcile operations.
+    Falls back to allow-all when no token is configured so local dev
+    isn't blocked, matching the original kill-switch behavior."""
+    token = os.environ.get("KILL_SWITCH_TOKEN") or os.environ.get("DASHBOARD_API_KEY")
+    if not token:
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(403, "Endpoint requires Authorization: Bearer <token>")
+    if authorization.split(" ", 1)[1] != token:
+        raise HTTPException(403, "Invalid token")
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -585,19 +601,195 @@ async def sync_positions(body: SyncRequest, db: AsyncSession = Depends(get_db)):
     }
 
 
-import os
-from fastapi import Header
+# ─────────────────────────────────────────────────────────────────────
+# Reconcile-all: heal residual drift left behind by older bugs
+# ─────────────────────────────────────────────────────────────────────
+
+async def _alpaca_sync_one(portfolio: Portfolio, db: AsyncSession) -> dict:
+    """Run the same body as sync_positions for a single portfolio,
+    but as a callable instead of an HTTP handler. Returns the same
+    summary dict the /execution/sync endpoint produces.
+
+    Reused by /execution/reconcile-all so paper/live portfolios get
+    the broker-canonical reconciliation in the same sweep.
+    """
+    if not portfolio.alpaca_api_key or not portfolio.alpaca_secret_key:
+        return {"status": "skipped", "reason": "no_alpaca_creds"}
+    is_paper = (portfolio.execution_mode or "").lower() == "paper"
+    alpaca_positions = await alpaca_service.get_positions(
+        api_key=portfolio.alpaca_api_key_decrypted,
+        secret_key=portfolio.alpaca_secret_key_decrypted,
+        paper=is_paper,
+    )
+
+    holdings_result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.portfolio_id == portfolio.id,
+            PortfolioHolding.is_active == True,
+        )
+    )
+    existing_holdings = {h.ticker: h for h in holdings_result.scalars().all()}
+
+    synced = 0
+    created = 0
+    for pos in alpaca_positions:
+        ticker = pos["symbol"]
+        qty = pos["qty"]
+        entry_price = pos["avg_entry_price"]
+        if ticker in existing_holdings:
+            h = existing_holdings[ticker]
+            h.qty = qty
+            h.entry_price = entry_price
+            synced += 1
+        else:
+            db.add(PortfolioHolding(
+                portfolio_id=portfolio.id,
+                ticker=ticker,
+                direction="long" if pos.get("side", "long") == "long" else "short",
+                entry_price=entry_price,
+                qty=qty,
+                entry_date=utcnow(),
+                is_active=True,
+                notes="alpaca_sync",
+            ))
+            created += 1
+
+    alpaca_tickers = {pos["symbol"] for pos in alpaca_positions}
+    closed = 0
+    for ticker, holding in existing_holdings.items():
+        if ticker not in alpaca_tickers:
+            holding.is_active = False
+            holding.notes = (holding.notes or "") + " | closed_by_alpaca_sync"
+            closed += 1
+
+    cash_synced = False
+    alpaca_cash = None
+    try:
+        account_info = await alpaca_service.get_account_info(
+            api_key=portfolio.alpaca_api_key_decrypted,
+            secret_key=portfolio.alpaca_secret_key_decrypted,
+            paper=is_paper,
+        )
+        if account_info.get("status") == "connected":
+            alpaca_cash = account_info.get("cash")
+            if alpaca_cash is not None:
+                portfolio.cash = alpaca_cash
+                cash_synced = True
+    except Exception as e:
+        logger.warning(f"Cash sync failed for portfolio {portfolio.id}: {e}")
+
+    return {
+        "status": "synced",
+        "synced": synced,
+        "created": created,
+        "closed": closed,
+        "alpaca_positions": len(alpaca_positions),
+        "cash_synced": cash_synced,
+        "alpaca_cash": alpaca_cash,
+    }
 
 
-def _verify_kill_switch_token(authorization: str = Header(None)):
-    """Require a bearer token for kill-switch operations."""
-    token = os.environ.get("KILL_SWITCH_TOKEN") or os.environ.get("DASHBOARD_API_KEY")
-    if not token:
-        return  # No token configured — allow (backwards-compatible)
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(403, "Kill switch requires Authorization: Bearer <token>")
-    if authorization.split(" ", 1)[1] != token:
-        raise HTTPException(403, "Invalid kill switch token")
+async def _close_orphan_holdings(portfolio: Portfolio, db: AsyncSession) -> dict:
+    """Close any active PortfolioHolding whose ticker+direction matches
+    a recently-closed Trade on the same portfolio. This is the residual
+    drift the older autonomous-close path left behind: the Trade row
+    was flipped to closed but the corresponding PortfolioHolding was
+    never updated, so the Holdings list kept rendering positions Henry
+    had already exited.
+
+    Idempotent — runs against the same set every time and only acts
+    when there's still drift. Limited to closes within the last 30
+    days to keep the join cheap and avoid resurrecting ancient state.
+    """
+    from app.models import Trade, PortfolioTrade
+    cutoff = utcnow() - _timedelta(days=30)
+
+    closed_trade_rows = (await db.execute(
+        select(Trade.ticker, Trade.direction)
+        .join(PortfolioTrade, PortfolioTrade.trade_id == Trade.id)
+        .where(
+            PortfolioTrade.portfolio_id == portfolio.id,
+            Trade.status == "closed",
+            Trade.exit_time != None,
+            Trade.exit_time >= cutoff,
+        )
+    )).all()
+    closed_keys = {(t, d) for t, d in closed_trade_rows}
+
+    if not closed_keys:
+        return {"closed_orphan_holdings": 0}
+
+    holdings_result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.portfolio_id == portfolio.id,
+            PortfolioHolding.is_active == True,
+        )
+    )
+    closed = 0
+    for h in holdings_result.scalars().all():
+        if (h.ticker, h.direction) in closed_keys:
+            h.is_active = False
+            h.notes = (h.notes or "") + " | reconcile_all_orphan_close"
+            closed += 1
+    return {"closed_orphan_holdings": closed}
+
+
+@router.post("/reconcile-all")
+async def reconcile_all(
+    db: AsyncSession = Depends(get_db),
+    _auth=Depends(_verify_kill_switch_token),
+):
+    """One-shot sweep that brings every portfolio's holdings into
+    alignment. Two passes per portfolio:
+
+      1. Paper/live portfolios with Alpaca creds — pull broker
+         positions and rewrite DB holdings + cash to match.
+      2. Every portfolio (including local AI-managed) — close any
+         active PortfolioHolding whose ticker+direction matches a
+         Trade that's already closed on the same portfolio. This
+         cleans up the residual drift from before the sync-close
+         fix in autonomous_trading + ai_portfolio.
+
+    Returns a per-portfolio diff. Both passes are idempotent so this
+    is safe to re-run any time state drifts. Token-gated like the
+    kill switch (Authorization: Bearer <KILL_SWITCH_TOKEN>) since it
+    can move cash + close positions across every account.
+    """
+    result = await db.execute(select(Portfolio).where(Portfolio.is_active == True))
+    portfolios = result.scalars().all()
+
+    report = []
+    for p in portfolios:
+        per: dict = {
+            "portfolio_id": p.id,
+            "portfolio_name": p.name,
+            "execution_mode": p.execution_mode,
+        }
+        # Pass 1: Alpaca sync (paper/live only)
+        if (p.execution_mode or "").lower() in ("paper", "live") and p.alpaca_api_key:
+            try:
+                per["alpaca"] = await _alpaca_sync_one(p, db)
+            except Exception as e:
+                logger.error(f"reconcile-all alpaca sync failed for {p.id}: {e}")
+                per["alpaca"] = {"status": "error", "error": str(e)[:200]}
+        else:
+            per["alpaca"] = {"status": "skipped", "reason": "local_or_no_creds"}
+
+        # Pass 2: orphan-holding sweep (every portfolio).
+        try:
+            per["orphan_sweep"] = await _close_orphan_holdings(p, db)
+        except Exception as e:
+            logger.error(f"reconcile-all orphan sweep failed for {p.id}: {e}")
+            per["orphan_sweep"] = {"status": "error", "error": str(e)[:200]}
+
+        report.append(per)
+
+    await db.commit()
+    logger.warning(
+        f"RECONCILE-ALL ran across {len(portfolios)} portfolios — "
+        f"orphans closed: {sum((r.get('orphan_sweep', {}).get('closed_orphan_holdings') or 0) for r in report)}"
+    )
+    return {"portfolios_processed": len(portfolios), "report": report}
 
 
 @router.get("/kill-switch")
