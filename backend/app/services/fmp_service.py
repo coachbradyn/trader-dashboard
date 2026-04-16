@@ -31,14 +31,37 @@ logger = logging.getLogger(__name__)
 FMP_BASE = "https://financialmodelingprep.com"
 
 # ══════════════════════════════════════════════════════════════════════
-# RATE-LIMIT TRACKING (in-memory, resets daily)
+# RATE-LIMIT TRACKING
 # ══════════════════════════════════════════════════════════════════════
+#
+# FMP Starter plan: 300 requests/minute, no daily cap.
+# (Previously this limiter tracked a 1000/day budget, which throttled us
+# well under FMP's actual ceiling. Now we honor the published per-minute
+# limit and track daily counts purely as a usage metric, not a gate.)
+#
+# The limiter uses a rolling one-minute counter with a soft warn
+# threshold. `_is_throttled(essential=True)` is stricter — essential
+# calls (autonomous exits, live prices feeding open-position math) get
+# priority headroom up to the hard ceiling.
+
+import collections
+import time
+
+_RATE_PER_MINUTE_LIMIT = 300          # FMP Starter plan ceiling
+_RATE_PER_MINUTE_SOFT = 240           # throttle normal calls above this
+_RATE_WINDOW_SECONDS = 60
+
+_minute_timestamps: collections.deque = collections.deque()
 
 _rate_limit_date: str = ""
-_rate_limit_count: int = 0
-_RATE_WARN = 700
-_RATE_HARD = 900
-_RATE_DAILY_LIMIT = 1000
+_rate_limit_count: int = 0           # daily counter, informational only
+
+
+def _prune_minute_window() -> None:
+    """Drop timestamps older than 60s so the window slides."""
+    cutoff = time.monotonic() - _RATE_WINDOW_SECONDS
+    while _minute_timestamps and _minute_timestamps[0] < cutoff:
+        _minute_timestamps.popleft()
 
 
 def _increment_rate_counter() -> None:
@@ -48,35 +71,54 @@ def _increment_rate_counter() -> None:
         _rate_limit_date = today
         _rate_limit_count = 0
     _rate_limit_count += 1
-    if _rate_limit_count == _RATE_WARN:
-        logger.warning(f"FMP API usage warning: {_rate_limit_count} calls today (limit {_RATE_DAILY_LIMIT})")
+    _minute_timestamps.append(time.monotonic())
+    _prune_minute_window()
 
 
 def _is_throttled(essential: bool = False) -> bool:
-    """Return True if we should skip this call. Essential calls are allowed up to hard limit."""
+    """Return True if we should skip this call.
+
+    Gate is the rolling 60-second window against FMP's 300/min ceiling.
+    Essential calls are allowed all the way up to the hard ceiling;
+    normal calls throttle at the soft limit to leave headroom for
+    priority traffic (exits, reconciliation).
+    """
+    _prune_minute_window()
+    in_window = len(_minute_timestamps)
+    if essential:
+        return in_window >= _RATE_PER_MINUTE_LIMIT
+    return in_window >= _RATE_PER_MINUTE_SOFT
+
+
+def get_api_usage() -> dict:
+    """Return current FMP API usage stats.
+
+    Exposed in two dimensions:
+      - `rpm`: current rolling-minute request count vs. FMP's limit.
+      - `calls_today`: daily counter kept purely for reporting; the
+        Starter plan has no daily cap so this is not a gate.
+    """
     global _rate_limit_date, _rate_limit_count
     today = date.today().isoformat()
     if _rate_limit_date != today:
         _rate_limit_date = today
         _rate_limit_count = 0
-        return False
-    if essential:
-        return _rate_limit_count >= _RATE_DAILY_LIMIT
-    return _rate_limit_count >= _RATE_HARD
-
-
-def get_api_usage() -> dict:
-    """Return current FMP API usage stats."""
-    global _rate_limit_date, _rate_limit_count
-    today = date.today().isoformat()
-    if _rate_limit_date != today:
-        return {"calls_today": 0, "limit": _RATE_DAILY_LIMIT, "remaining": _RATE_DAILY_LIMIT, "throttled": False}
-    remaining = max(0, _RATE_DAILY_LIMIT - _rate_limit_count)
+    _prune_minute_window()
+    in_window = len(_minute_timestamps)
     return {
+        # Per-minute (the actual gate).
+        "rpm": in_window,
+        "rpm_limit": _RATE_PER_MINUTE_LIMIT,
+        "rpm_soft": _RATE_PER_MINUTE_SOFT,
+        "remaining_this_minute": max(0, _RATE_PER_MINUTE_LIMIT - in_window),
+        "throttled": in_window >= _RATE_PER_MINUTE_SOFT,
+        # Daily (informational only — plan has no daily cap).
         "calls_today": _rate_limit_count,
-        "limit": _RATE_DAILY_LIMIT,
-        "remaining": remaining,
-        "throttled": _rate_limit_count >= _RATE_HARD,
+        # Legacy field kept for callers that still compute `remaining` off
+        # an imagined daily budget. Report the minute-headroom so they
+        # behave sensibly without forcing an update.
+        "remaining": max(0, _RATE_PER_MINUTE_LIMIT - in_window),
+        "limit": _RATE_PER_MINUTE_LIMIT,
     }
 
 

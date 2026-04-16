@@ -50,10 +50,12 @@ DEFAULT_SCANNER_CRITERIA = {
         "isEtf": False,
         "isFund": False,
         "isActivelyTrading": True,
-        # Pull a wide net — FMP's screener sorts by market cap desc by default,
-        # so 50 always returned the MAG 7 + megacaps. 200 gives diversity, and
-        # _filter_by_momentum() below sorts by daily %change to surface movers.
-        "limit": 200,
+        # Wide pool → diverse candidates. FMP returns up to 500 results
+        # per screener call; with the Starter plan's 300/min headroom we
+        # can afford to pull the full 500 and let the momentum/technical
+        # filters narrow it. Previously capped at 200, which left mid-caps
+        # and small-caps under-represented.
+        "limit": 500,
     },
     # ── Momentum post-filter (applied after FMP screener, before technical
     # rules). The FMP screener alone biases toward mega-caps; this filter
@@ -61,8 +63,15 @@ DEFAULT_SCANNER_CRITERIA = {
     # ──────────────────────────────────────────────────────────────────────
     "momentum_filter": {
         "enabled": True,
-        "min_change_pct": 1.5,   # stocks must have moved at least 1.5% today
-        "top_n": 40,              # take top N by |change_pct| after filtering
+        # Raised from 1.5% → 2.0% to filter noise. Stocks moving <2% on
+        # a typical day aren't actionable setups at our timeframe; this
+        # trims the candidate pool for technical-rule evaluation so each
+        # remaining name is a real mover.
+        "min_change_pct": 2.0,
+        # Bumped the post-filter cap from 40 → 60. With a wider screener
+        # pool (500 vs 200) and a tighter momentum floor, 60 gives
+        # Henry more genuinely-moving names to evaluate technically.
+        "top_n": 60,
     },
     # ── Technical filter rules (evaluated in sequence, all must pass) ──
     "technical_rules": [

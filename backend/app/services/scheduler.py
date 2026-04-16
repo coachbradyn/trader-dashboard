@@ -759,10 +759,14 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Screener analysis every 30 minutes during market hours
+    # Screener analysis every 15 minutes during market hours. The old
+    # 30m cadence was anchored to a stingy 1000-calls/day FMP budget;
+    # with the Starter plan (300 req/min, no daily cap) we have plenty
+    # of headroom to scan more frequently and surface opportunities
+    # closer to real-time.
     scheduler.add_job(
         _refresh_screener_analysis,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=15),
         id="screener_refresh",
         replace_existing=True,
     )
@@ -855,12 +859,15 @@ def start_scheduler():
             replace_existing=True,
         )
 
-    # Intraday monitor: every 5 minutes during market hours (9:30 AM - 4:00 PM ET, M-F)
+    # Intraday monitor: every 3 minutes during market hours (9:30 AM - 4:00 PM ET, M-F).
+    # Tightened from 5m so entry-zone proximity alerts fire faster after
+    # an opportunity action posts. Each tick is O(open-positions) in FMP
+    # calls, which is comfortably inside the 300/min ceiling.
     scheduler.add_job(
         _run_intraday_monitor,
         CronTrigger(
             hour="9-15",
-            minute="*/5",
+            minute="*/3",
             timezone=ET,
             day_of_week="mon-fri",
         ),
@@ -868,10 +875,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Henry autonomous trading: scan + pattern detect + execute at 10:15 AM and 1:15 PM ET
+    # Henry autonomous trading: scan + pattern detect + execute.
+    # Bumped from twice-daily (10:15, 13:15) to four passes — mid-morning
+    # after the open settles, pre-lunch, post-lunch, and an afternoon
+    # look — so Henry catches intraday setups the two-pass cadence was
+    # missing. Still well under FMP headroom; each pass draws ~30-60
+    # calls, giving us room on the 300/min ceiling even with concurrent
+    # intraday monitors and scanner refreshes.
     scheduler.add_job(
         _run_autonomous_trading,
-        CronTrigger(hour="10,13", minute=15, timezone=ET, day_of_week="mon-fri"),
+        CronTrigger(hour="10,11,13,14", minute=15, timezone=ET, day_of_week="mon-fri"),
         id="autonomous_trading",
         replace_existing=True,
     )
