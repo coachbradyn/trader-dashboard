@@ -23,6 +23,7 @@ from app.models import (
     Portfolio, Trade, Trader, PortfolioTrade, PortfolioSnapshot,
     PortfolioAction,
 )
+from app.models.portfolio_holding import PortfolioHolding
 from app.services.price_service import price_service
 
 logger = logging.getLogger(__name__)
@@ -1253,6 +1254,19 @@ async def check_autonomous_exits() -> int:
                         "trade_exit", ticker=pos.ticker,
                     )
 
+                # ── Manual holdings (PortfolioHolding rows) ────────────
+                # Trade rows cover webhook/strategy positions; PortfolioHolding
+                # rows cover manual entries + Alpaca sync. Without this
+                # block Henry never considered selling manual holdings in
+                # an AI-managed account (e.g. the ASTS position on the
+                # Alpaca portfolio), so they drifted outside his risk
+                # discipline. Same rule set as Trade above, minus stop
+                # loss (holdings don't carry a stop_price).
+                manual_closed = await _review_manual_holdings(
+                    db, portfolio, get_quote, get_technical_indicator,
+                )
+                closed += manual_closed
+
                 if closed > 0:
                     await _take_ai_snapshot(portfolio, db)
 
@@ -1263,6 +1277,141 @@ async def check_autonomous_exits() -> int:
             logger.error(f"Autonomous exit check failed for {portfolio.name}: {e}")
 
     return total_closed
+
+
+async def _review_manual_holdings(
+    db, portfolio, get_quote, get_technical_indicator,
+) -> int:
+    """Apply the same exit rules to manual PortfolioHolding rows.
+
+    Closes mark the holding inactive, credit cash for AI-managed local
+    portfolios, log a PortfolioAction, and — when the portfolio is wired
+    to paper/live — submit a SELL to Alpaca. Returns the number closed.
+    """
+    result = await db.execute(
+        select(PortfolioHolding).where(
+            PortfolioHolding.portfolio_id == portfolio.id,
+            PortfolioHolding.is_active == True,
+        )
+    )
+    holdings = list(result.scalars().all())
+    if not holdings:
+        return 0
+
+    closed = 0
+    for h in holdings:
+        if not h.qty or h.qty <= 0:
+            continue
+
+        # Current price — prefer FMP quote when the USAGE cap allows,
+        # fall back to the process-cached price_service, then entry_price.
+        current_price = None
+        try:
+            quote = await get_quote(h.ticker)
+            if quote and isinstance(quote, list) and len(quote) > 0:
+                current_price = quote[0].get("price")
+        except Exception:
+            current_price = None
+        if not current_price:
+            current_price = price_service.get_price(h.ticker) or h.entry_price
+        if not current_price:
+            continue
+
+        if h.direction == "long":
+            pnl_pct = (current_price - h.entry_price) / h.entry_price * 100 if h.entry_price else 0.0
+        else:
+            pnl_pct = (h.entry_price - current_price) / h.entry_price * 100 if h.entry_price else 0.0
+
+        hold_days = (utcnow().date() - h.entry_date.date()).days if h.entry_date else 0
+
+        should_close = False
+        exit_reason = ""
+
+        # Profit target — match Trade rules.
+        if pnl_pct >= 15:
+            should_close = True
+            exit_reason = f"profit_target ({pnl_pct:+.1f}%)"
+
+        # Overbought exit on profitable longs.
+        if not should_close and h.direction == "long" and pnl_pct > 0:
+            try:
+                rsi_data = await get_technical_indicator(h.ticker, "rsi", period=14, interval="daily")
+                if rsi_data and isinstance(rsi_data, list) and len(rsi_data) > 0:
+                    rsi = rsi_data[0].get("rsi") or rsi_data[0].get("value")
+                    if rsi and rsi > 80:
+                        should_close = True
+                        exit_reason = f"overbought_exit (RSI {rsi:.0f}, P&L {pnl_pct:+.1f}%)"
+            except Exception:
+                pass
+
+        # Loss limit.
+        if not should_close and pnl_pct <= -8:
+            should_close = True
+            exit_reason = f"loss_limit ({pnl_pct:+.1f}%)"
+
+        # Dead money.
+        if not should_close and hold_days > 10 and pnl_pct < 2:
+            should_close = True
+            exit_reason = f"dead_money ({hold_days}d, {pnl_pct:+.1f}%)"
+
+        if not should_close:
+            continue
+
+        # Close the holding locally.
+        h.is_active = False
+        h.notes = (h.notes or "") + f" | autonomous_exit:{exit_reason}"
+        pnl_dollars = (
+            (current_price - h.entry_price) if h.direction == "long"
+            else (h.entry_price - current_price)
+        ) * h.qty
+        position_value = h.entry_price * h.qty
+        portfolio.cash = (portfolio.cash or 0.0) + position_value + pnl_dollars
+
+        db.add(PortfolioAction(
+            portfolio_id=portfolio.id,
+            ticker=h.ticker,
+            direction=h.direction,
+            action_type="CLOSE",
+            confidence=7,
+            reasoning=f"[Autonomous Exit — Manual Holding] {exit_reason}",
+            trigger_type="SCANNER",
+            current_price=current_price,
+            priority_score=10.5,
+            status="approved",
+            resolved_at=utcnow(),
+        ))
+
+        from app.services.ai_service import save_context
+        import asyncio as _asyncio
+        _asyncio.create_task(save_context(
+            content=(
+                f"AUTONOMOUS EXIT (manual): {h.ticker} {h.direction.upper()} | "
+                f"PnL: {pnl_pct:+.2f}% (${pnl_dollars:+.2f}) | Reason: {exit_reason}"
+            ),
+            context_type="outcome",
+            ticker=h.ticker,
+        ))
+
+        # Send the sell to Alpaca when the portfolio is wired to it.
+        if (portfolio.execution_mode or "local").lower() in ("paper", "live") and portfolio.alpaca_api_key:
+            from app.services.trade_processor import _execute_on_alpaca
+            _asyncio.create_task(_execute_on_alpaca(
+                portfolio, h.ticker, h.qty, "sell", current_price,
+            ))
+
+        from app.services.henry_activity import log_activity as _log_exit
+        try:
+            await _log_exit(
+                f"CLOSED {h.ticker} (manual) | PnL: {pnl_pct:+.2f}% (${pnl_dollars:+.2f}) | Reason: {exit_reason}",
+                "trade_exit", ticker=h.ticker,
+            )
+        except Exception:
+            pass
+
+        closed += 1
+        logger.info(f"Autonomous exit (manual): {h.ticker} | {exit_reason} | PnL: {pnl_pct:+.2f}%")
+
+    return closed
 
 
 # ══════════════════════════════════════════════════════════════════════

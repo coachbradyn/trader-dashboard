@@ -287,6 +287,33 @@ async def evaluate_signal_for_ai_portfolio(
                     f"  {pos.trader.trader_id}: {pos.direction.upper()} {pos.ticker} "
                     f"x{pos.qty:.2f} @ ${pos.entry_price:.2f} (now ${cp:.2f}, {pnl:+.2f}%)"
                 )
+
+            # Include manual PortfolioHolding rows. Without them Henry
+            # evaluated new signals against only the Trade-tracked
+            # positions, so e.g. a manual ASTS holding didn't count
+            # toward concentration or duplicate-ticker checks.
+            manual_result = await db.execute(
+                select(PortfolioHolding).where(
+                    PortfolioHolding.portfolio_id == portfolio.id,
+                    PortfolioHolding.is_active == True,
+                )
+            )
+            for h in manual_result.scalars().all():
+                cp = price_service.get_price(h.ticker) or h.entry_price
+                pos_val = cp * h.qty
+                total_exposure += pos_val
+                ticker_exposure[h.ticker] = ticker_exposure.get(h.ticker, 0) + pos_val
+                if h.entry_price and h.entry_price > 0:
+                    if h.direction == "long":
+                        pnl = ((cp - h.entry_price) / h.entry_price * 100)
+                    else:
+                        pnl = ((h.entry_price - cp) / h.entry_price * 100)
+                else:
+                    pnl = 0.0
+                holdings_lines.append(
+                    f"  manual: {h.direction.upper()} {h.ticker} "
+                    f"x{h.qty:.4f} @ ${h.entry_price:.2f} (now ${cp:.2f}, {pnl:+.2f}%)"
+                )
             holdings_text = "\n".join(holdings_lines) if holdings_lines else "  No open positions."
 
             # Concentration
@@ -902,7 +929,7 @@ async def _review_single_portfolio(portfolio: Portfolio) -> None:
 
             equity = await _get_ai_portfolio_equity(portfolio, db)
 
-            # Get open positions
+            # Get open positions (webhook/strategy Trades)
             result = await db.execute(
                 select(Trade)
                 .join(PortfolioTrade)
@@ -914,13 +941,26 @@ async def _review_single_portfolio(portfolio: Portfolio) -> None:
             )
             open_positions = result.scalars().all()
 
-            if not open_positions:
+            # Get manual holdings. These used to be invisible to this
+            # review, which meant Henry couldn't recommend closing e.g.
+            # an ASTS position that was manually added or Alpaca-synced
+            # into an AI-managed portfolio. Treat them as first-class
+            # positions alongside Trade rows.
+            manual_result = await db.execute(
+                select(PortfolioHolding).where(
+                    PortfolioHolding.portfolio_id == portfolio.id,
+                    PortfolioHolding.is_active == True,
+                )
+            )
+            manual_holdings = list(manual_result.scalars().all())
+
+            if not open_positions and not manual_holdings:
                 logger.info(
                     f"AI portfolio review ({portfolio.name}): no open positions"
                 )
                 return
 
-            # Format positions
+            # Format positions (Trades + manual holdings together).
             pos_lines = []
             for pos in open_positions:
                 cp = price_service.get_price(pos.ticker) or pos.entry_price
@@ -936,6 +976,21 @@ async def _review_single_portfolio(portfolio: Portfolio) -> None:
                     f"  {pos.trader.trader_id}: {pos.direction.upper()} {pos.ticker} "
                     f"x{pos.qty:.2f} @ ${pos.entry_price:.2f} → ${cp:.2f} ({pnl:+.2f}%) "
                     f"held {hold_hours:.0f}h"
+                )
+            for h in manual_holdings:
+                cp = price_service.get_price(h.ticker) or h.entry_price
+                if h.entry_price and h.entry_price > 0:
+                    if h.direction == "long":
+                        pnl = ((cp - h.entry_price) / h.entry_price * 100)
+                    else:
+                        pnl = ((h.entry_price - cp) / h.entry_price * 100)
+                else:
+                    pnl = 0.0
+                hold_days = (utcnow().date() - h.entry_date.date()).days if h.entry_date else 0
+                pos_lines.append(
+                    f"  manual: {h.direction.upper()} {h.ticker} "
+                    f"x{h.qty:.4f} @ ${h.entry_price:.2f} → ${cp:.2f} ({pnl:+.2f}%) "
+                    f"held {hold_days}d"
                 )
             positions_text = "\n".join(pos_lines)
 
@@ -990,69 +1045,115 @@ Respond in EXACTLY this JSON format (no markdown, no backticks):
                 return
 
             # Execute recommendations
+            exec_mode = (portfolio.execution_mode or "local").lower()
             for rec in review.get("positions", []):
                 action = rec.get("action", "HOLD").upper()
                 ticker = rec.get("ticker", "")
                 reasoning = rec.get("reasoning", "")
 
-                if action == "CLOSE":
-                    # Find matching position
-                    for pos in open_positions:
-                        if pos.ticker == ticker and pos.status == "open":
-                            cp = price_service.get_price(pos.ticker) or pos.entry_price
-                            pos.exit_price = cp
-                            pos.exit_reason = "ai_review_close"
-                            pos.exit_time = utcnow()
-                            pos.status = "closed"
+                if action != "CLOSE":
+                    continue
 
-                            if pos.direction == "long":
-                                pos.pnl_dollars = (cp - pos.entry_price) * pos.qty
-                            else:
-                                pos.pnl_dollars = (pos.entry_price - cp) * pos.qty
-                            position_value = pos.entry_price * pos.qty
-                            pos.pnl_percent = (pos.pnl_dollars / position_value * 100) if position_value > 0 else 0.0
+                # 1. Try to close a matching Trade first.
+                trade_closed = False
+                for pos in open_positions:
+                    if pos.ticker != ticker or pos.status != "open":
+                        continue
+                    cp = price_service.get_price(pos.ticker) or pos.entry_price
+                    pos.exit_price = cp
+                    pos.exit_reason = "ai_review_close"
+                    pos.exit_time = utcnow()
+                    pos.status = "closed"
 
-                            portfolio.cash += position_value + pos.pnl_dollars
+                    if pos.direction == "long":
+                        pos.pnl_dollars = (cp - pos.entry_price) * pos.qty
+                    else:
+                        pos.pnl_dollars = (pos.entry_price - cp) * pos.qty
+                    position_value = pos.entry_price * pos.qty
+                    pos.pnl_percent = (pos.pnl_dollars / position_value * 100) if position_value > 0 else 0.0
 
-                            # Log action
-                            db.add(PortfolioAction(
-                                portfolio_id=portfolio.id,
-                                ticker=ticker,
-                                direction=pos.direction,
-                                action_type="CLOSE",
-                                confidence=7,
-                                reasoning=f"[Scheduled Review] {reasoning}",
-                                trigger_type="SCHEDULED_REVIEW",
-                                current_price=cp,
-                                priority_score=7.0,
-                                status="approved",
-                                resolved_at=utcnow(),
-                            ))
+                    portfolio.cash += position_value + pos.pnl_dollars
 
-                            # PARITY FIX: For live/paper portfolios, the
-                            # DB close above must be mirrored by an actual
-                            # Alpaca sell — otherwise the broker keeps the
-                            # position open while our books say closed.
-                            # check_autonomous_exits already does this; the
-                            # scheduled review was missing it.
-                            if (
-                                portfolio.execution_mode in ("paper", "live")
-                                and portfolio.alpaca_api_key
-                            ):
-                                from app.services.trade_processor import (
-                                    _execute_on_alpaca,
-                                )
-                                asyncio.create_task(_execute_on_alpaca(
-                                    portfolio, pos.ticker, pos.qty, "sell", cp,
-                                    trade_id=getattr(pos, "id", None),
-                                ))
+                    db.add(PortfolioAction(
+                        portfolio_id=portfolio.id,
+                        ticker=ticker,
+                        direction=pos.direction,
+                        action_type="CLOSE",
+                        confidence=7,
+                        reasoning=f"[Scheduled Review] {reasoning}",
+                        trigger_type="SCHEDULED_REVIEW",
+                        current_price=cp,
+                        priority_score=7.0,
+                        status="approved",
+                        resolved_at=utcnow(),
+                    ))
 
-                            logger.info(
-                                f"AI portfolio review ({portfolio.name}): "
-                                f"CLOSED {ticker} | PnL: {pos.pnl_percent:+.2f}% "
-                                f"| mode={portfolio.execution_mode}"
-                            )
-                            break
+                    # PARITY FIX: For live/paper portfolios, the DB close
+                    # above must be mirrored by an actual Alpaca sell.
+                    if exec_mode in ("paper", "live") and portfolio.alpaca_api_key:
+                        from app.services.trade_processor import _execute_on_alpaca
+                        asyncio.create_task(_execute_on_alpaca(
+                            portfolio, pos.ticker, pos.qty, "sell", cp,
+                            trade_id=getattr(pos, "id", None),
+                        ))
+
+                    logger.info(
+                        f"AI portfolio review ({portfolio.name}): "
+                        f"CLOSED trade {ticker} | PnL: {pos.pnl_percent:+.2f}% "
+                        f"| mode={portfolio.execution_mode}"
+                    )
+                    trade_closed = True
+                    break
+
+                if trade_closed:
+                    continue
+
+                # 2. Otherwise try to close a matching manual holding.
+                #    This is the ASTS-style case: the holding isn't tied
+                #    to a Trade row, so the Trade loop above can't resolve
+                #    it. Mark inactive, credit cash, log the action, and
+                #    fire the sell to Alpaca for paper/live.
+                for h in manual_holdings:
+                    if h.ticker != ticker or not h.is_active:
+                        continue
+                    cp = price_service.get_price(h.ticker) or h.entry_price
+                    if h.direction == "long":
+                        pnl_dollars = (cp - h.entry_price) * h.qty
+                    else:
+                        pnl_dollars = (h.entry_price - cp) * h.qty
+                    position_value = h.entry_price * h.qty
+                    pnl_percent = (pnl_dollars / position_value * 100) if position_value > 0 else 0.0
+
+                    h.is_active = False
+                    h.notes = (h.notes or "") + " | ai_review_close"
+                    portfolio.cash = (portfolio.cash or 0.0) + position_value + pnl_dollars
+
+                    db.add(PortfolioAction(
+                        portfolio_id=portfolio.id,
+                        ticker=ticker,
+                        direction=h.direction,
+                        action_type="CLOSE",
+                        confidence=7,
+                        reasoning=f"[Scheduled Review — Manual Holding] {reasoning}",
+                        trigger_type="SCHEDULED_REVIEW",
+                        current_price=cp,
+                        priority_score=7.0,
+                        status="approved",
+                        resolved_at=utcnow(),
+                    ))
+
+                    if exec_mode in ("paper", "live") and portfolio.alpaca_api_key:
+                        from app.services.trade_processor import _execute_on_alpaca
+                        asyncio.create_task(_execute_on_alpaca(
+                            portfolio, h.ticker, h.qty, "sell", cp,
+                        ))
+
+                    logger.info(
+                        f"AI portfolio review ({portfolio.name}): "
+                        f"CLOSED manual holding {ticker} | PnL: {pnl_percent:+.2f}% "
+                        f"| mode={portfolio.execution_mode}"
+                    )
+                    break
 
             # Save portfolio health observation
             health = review.get("portfolio_health", "")
