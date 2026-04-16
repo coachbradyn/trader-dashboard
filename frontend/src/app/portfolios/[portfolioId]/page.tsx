@@ -38,7 +38,14 @@ function useFonts() {
   }, []);
 }
 
-const CHART_TOOLTIP = { background: "#1f2937", border: "1px solid #374151", borderRadius: 8 };
+const CHART_TOOLTIP = {
+  background: "rgba(15, 15, 25, 0.95)",
+  border: "1px solid rgba(99, 102, 241, 0.2)",
+  borderRadius: 12,
+  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+  backdropFilter: "blur(12px)",
+  padding: "10px 14px",
+};
 
 // ── Alpaca Sync Button ─────────────────────────────────────────────
 
@@ -78,12 +85,15 @@ function AlpacaSyncButton({ portfolioId }: { portfolioId: string }) {
 // ── Stat Card ───────────────────────────────────────────────────────
 
 function StatCard({ label, value, color = "text-white", sub, tip }: { label: string; value: string; color?: string; sub?: string; tip?: string }) {
-  const labelEl = <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1" style={FONT_OUTFIT}>{label}</div>;
+  const labelEl = <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5 font-medium" style={FONT_OUTFIT}>{label}</div>;
   return (
-    <div className="bg-surface-light/30 rounded-xl p-4 border border-border">
-      {tip ? <MetricTooltip tip={tip}>{labelEl}</MetricTooltip> : labelEl}
-      <div className={`text-lg font-mono font-semibold ${color}`} style={FONT_MONO}>{value}</div>
-      {sub && <div className="text-[10px] text-gray-600 font-mono mt-0.5">{sub}</div>}
+    <div className="relative overflow-hidden bg-[#0f0f19]/80 rounded-xl p-4 border border-[#1e1e3a]/60 hover:border-[#6366f1]/20 transition-colors group">
+      <div className="absolute inset-0 bg-gradient-to-br from-[#6366f1]/[0.03] to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+      <div className="relative">
+        {tip ? <MetricTooltip tip={tip}>{labelEl}</MetricTooltip> : labelEl}
+        <div className={`text-xl font-mono font-bold tracking-tight ${color}`} style={FONT_MONO}>{value}</div>
+        {sub && <div className="text-[10px] text-gray-600 font-mono mt-1">{sub}</div>}
+      </div>
     </div>
   );
 }
@@ -115,17 +125,25 @@ function PerformanceGrid({ perf }: { perf: Performance }) {
 
 // ── Equity Curve Chart ──────────────────────────────────────────────
 
-function EquityCurveChart({ data, initialCapital }: { data: EquityPoint[]; initialCapital: number }) {
-  if (!data.length) {
+function ChartCard({ title, children, empty }: { title: string; children: React.ReactNode; empty?: string }) {
+  if (empty) {
     return (
-      <Card className="bg-surface-light/20 border-border">
-        <CardContent className="p-5">
-          <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Equity Curve</h3>
-          <p className="text-gray-500 text-sm text-center py-12">No equity data yet — trades will populate this chart</p>
-        </CardContent>
-      </Card>
+      <div className="bg-[#0f0f19]/80 rounded-2xl border border-[#1e1e3a]/60 p-6">
+        <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>{title}</h3>
+        <p className="text-gray-600 text-xs text-center py-10">{empty}</p>
+      </div>
     );
   }
+  return (
+    <div className="bg-[#0f0f19]/80 rounded-2xl border border-[#1e1e3a]/60 p-6">
+      <h3 className="font-semibold text-white text-sm mb-5" style={FONT_OUTFIT}>{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function EquityCurveChart({ data, initialCapital }: { data: EquityPoint[]; initialCapital: number }) {
+  if (!data.length) return <ChartCard title="Equity Curve" empty="No equity data yet — trades will populate this chart" />;
 
   const chartData = data.map((d) => ({
     date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -134,47 +152,36 @@ function EquityCurveChart({ data, initialCapital }: { data: EquityPoint[]; initi
   }));
 
   return (
-    <Card className="bg-surface-light/20 border-border">
-      <CardContent className="p-5">
-        <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Equity Curve</h3>
-        <ResponsiveContainer width="100%" height={280}>
-          <AreaChart data={chartData}>
-            <defs>
-              <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-            <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
-            <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
-            <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af" }}
-              formatter={(value: number, name: string) => [
-                name === "equity" ? formatCurrency(value) : formatPercent(value),
-                name === "equity" ? "Equity" : "Return",
-              ]} />
-            <ReferenceLine y={initialCapital} stroke="#374151" strokeDasharray="3 3" />
-            <Area type="monotone" dataKey="equity" stroke="#6366f1" strokeWidth={2} fill="url(#equityGrad)" dot={false} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
+    <ChartCard title="Equity Curve">
+      <ResponsiveContainer width="100%" height={300}>
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
+              <stop offset="40%" stopColor="#818cf8" stopOpacity={0.12} />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(99, 102, 241, 0.06)" vertical={false} />
+          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} />
+          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
+          <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af", fontSize: 11 }}
+            formatter={(value: number, name: string) => [
+              name === "equity" ? formatCurrency(value) : formatPercent(value),
+              name === "equity" ? "Equity" : "Return",
+            ]} />
+          <ReferenceLine y={initialCapital} stroke="rgba(99, 102, 241, 0.15)" strokeDasharray="4 4" />
+          <Area type="monotone" dataKey="equity" stroke="#818cf8" strokeWidth={2} fill="url(#equityGrad)" dot={false} animationDuration={800} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </ChartCard>
   );
 }
 
 // ── Drawdown Chart ──────────────────────────────────────────────────
 
 function DrawdownChart({ data }: { data: EquityPoint[] }) {
-  if (!data.length) {
-    return (
-      <Card className="bg-surface-light/20 border-border">
-        <CardContent className="p-5">
-          <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Drawdown</h3>
-          <p className="text-gray-500 text-sm text-center py-12">No drawdown data yet</p>
-        </CardContent>
-      </Card>
-    );
-  }
+  if (!data.length) return <ChartCard title="Drawdown" empty="No drawdown data yet" />;
 
   const chartData = data.map((d) => ({
     date: new Date(d.time).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -182,24 +189,23 @@ function DrawdownChart({ data }: { data: EquityPoint[] }) {
   }));
 
   return (
-    <Card className="bg-surface-light/20 border-border">
-      <CardContent className="p-5">
-        <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Drawdown</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <AreaChart data={chartData}>
-            <defs>
-              <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
-              </linearGradient>
+    <ChartCard title="Drawdown">
+      <ResponsiveContainer width="100%" height={300}>
+        <AreaChart data={chartData}>
+          <defs>
+            <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#ef4444" stopOpacity={0.3} />
+              <stop offset="50%" stopColor="#f87171" stopOpacity={0.08} />
+              <stop offset="100%" stopColor="#ef4444" stopOpacity={0} />
+            </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-            <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
-            <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `${v.toFixed(1)}%`} />
-            <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af" }}
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(239, 68, 68, 0.06)" vertical={false} />
+            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} tickFormatter={(v) => `${v.toFixed(1)}%`} />
+            <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af", fontSize: 11 }}
               formatter={(value: number) => [`${value.toFixed(2)}%`, "Drawdown"]} />
-            <ReferenceLine y={0} stroke="#374151" />
-            <Area type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} />
+            <ReferenceLine y={0} stroke="rgba(239, 68, 68, 0.15)" strokeDasharray="4 4" />
+            <Area type="monotone" dataKey="drawdown" stroke="#f87171" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} animationDuration={800} />
           </AreaChart>
         </ResponsiveContainer>
       </CardContent>
@@ -220,18 +226,18 @@ function DailyPnlChart({ data }: { data: DailyStats[] }) {
   }));
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Daily P&L</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-            <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
-            <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `$${v}`} />
-            <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af" }}
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={chartData} barCategoryGap="20%">
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(99, 102, 241, 0.06)" vertical={false} />
+            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} tickFormatter={(v) => `$${v}`} />
+            <Tooltip contentStyle={CHART_TOOLTIP} labelStyle={{ color: "#9ca3af", fontSize: 11 }}
               formatter={(value: number) => [formatCurrency(value), "P&L"]} />
-            <ReferenceLine y={0} stroke="#374151" />
-            <Bar dataKey="pnl" radius={[3, 3, 0, 0]}>
+            <ReferenceLine y={0} stroke="rgba(99, 102, 241, 0.12)" />
+            <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
               {chartData.map((d, i) => (
                 <rect key={i} fill={d.fill} />
               ))}
@@ -248,7 +254,7 @@ function DailyPnlChart({ data }: { data: DailyStats[] }) {
 function OpenPositions({ positions }: { positions: Position[] }) {
   if (!positions.length) {
     return (
-      <Card className="bg-surface-light/20 border-border">
+      <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
         <CardContent className="p-5">
           <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Open Positions</h3>
           <p className="text-gray-500 text-sm text-center py-6">No open positions</p>
@@ -258,7 +264,7 @@ function OpenPositions({ positions }: { positions: Position[] }) {
   }
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>
           Open Positions <span className="text-gray-500 font-normal">({positions.length})</span>
@@ -297,7 +303,7 @@ function TradeHistorySection({ trades }: { trades: Trade[] }) {
 
   if (!trades.length) {
     return (
-      <Card className="bg-surface-light/20 border-border">
+      <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
         <CardContent className="p-5">
           <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Trade History</h3>
           <p className="text-gray-500 text-sm text-center py-6">No trades yet</p>
@@ -307,7 +313,7 @@ function TradeHistorySection({ trades }: { trades: Trade[] }) {
   }
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>
           Trade History <span className="text-gray-500 font-normal">({trades.length})</span>
@@ -383,7 +389,7 @@ function BacktestSummary({ imports }: { imports: BacktestImportData[] }) {
   if (!imports.length) return null;
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>
           Backtest Intelligence <span className="text-gray-500 font-normal">({imports.length} imports)</span>
@@ -570,7 +576,7 @@ function AllocationChart({ holdings }: { holdings: PortfolioHolding[] }) {
   }));
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Allocation</h3>
@@ -631,7 +637,7 @@ function HoldingsPerformanceBars({ holdings }: { holdings: PortfolioHolding[] })
   if (!chartData.length) return null;
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Holdings Performance</h3>
         <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 36)}>
@@ -662,7 +668,7 @@ function HoldingsPerformanceBars({ holdings }: { holdings: PortfolioHolding[] })
 function PortfolioValueChart({ data }: { data: { date: string; value: number; cost_basis: number }[] }) {
   if (!data.length) {
     return (
-      <Card className="bg-surface-light/20 border-border">
+      <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
         <CardContent className="p-5">
           <h3 className="font-semibold text-white text-sm mb-3" style={FONT_OUTFIT}>Portfolio Value</h3>
           <p className="text-gray-500 text-sm text-center py-12">No holdings data yet — add holdings to see portfolio value over time</p>
@@ -683,7 +689,7 @@ function PortfolioValueChart({ data }: { data: { date: string; value: number; co
   const latestPnlPct = chartData.length > 0 ? chartData[chartData.length - 1].pnlPct : 0;
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Value</h3>
@@ -698,22 +704,23 @@ function PortfolioValueChart({ data }: { data: { date: string; value: number; co
           <AreaChart data={chartData}>
             <defs>
               <linearGradient id="portfolioValueGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
+                <stop offset="40%" stopColor="#818cf8" stopOpacity={0.12} />
+                <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-            <XAxis dataKey="date" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} />
-            <YAxis stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(99, 102, 241, 0.06)" vertical={false} />
+            <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#4b5563" }} tickFormatter={(v) => `$${(v / 1000).toFixed(1)}k`} />
             <Tooltip
               contentStyle={CHART_TOOLTIP}
-              labelStyle={{ color: "#9ca3af" }}
+              labelStyle={{ color: "#9ca3af", fontSize: 11 }}
               formatter={(value: number, name: string) => [
                 formatCurrency(value),
                 name === "value" ? "Portfolio Value" : "Cost Basis",
               ]}
             />
-            <Area type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2} fill="url(#portfolioValueGrad)" dot={false} name="value" />
+            <Area type="monotone" dataKey="value" stroke="#818cf8" strokeWidth={2} fill="url(#portfolioValueGrad)" dot={false} name="value" animationDuration={800} />
             <Line type="monotone" dataKey="costBasis" stroke="#fbbf24" strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="costBasis" />
           </AreaChart>
         </ResponsiveContainer>
@@ -741,7 +748,7 @@ function HoldingsSummary({ holdings }: { holdings: PortfolioHolding[] }) {
   const totalUnrealized = holdings.reduce((sum, h) => sum + (h.unrealized_pnl ?? 0), 0);
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>
@@ -909,7 +916,7 @@ function ActionQueue({ portfolioId }: { portfolioId: string }) {
   };
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-center gap-3 mb-4">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Henry&apos;s Recommendations</h3>
@@ -1253,7 +1260,7 @@ function PositionsManager({ portfolioId, holdings, positions, onRefresh, executi
   };
 
   return (
-    <Card className="bg-surface-light/20 border-border">
+    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>
@@ -2147,7 +2154,7 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
 
   if (!portfolio) {
     return (
-      <Card className="bg-surface-light/20 border-border">
+      <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
         <CardContent className="text-loss text-center py-12" style={FONT_OUTFIT}>
           Portfolio not found
         </CardContent>
@@ -2156,70 +2163,66 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
   }
 
   return (
-    <div className="space-y-4 pb-12">
+    <div className="max-w-7xl mx-auto space-y-5 pb-12">
       {/* ═══ HERO ═══ */}
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <a href="/portfolios" className="text-gray-500 hover:text-white transition">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-            </svg>
-          </a>
-          <span className="text-xs text-gray-500" style={FONT_OUTFIT}>Portfolios</span>
-        </div>
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>{portfolio.name}</h1>
-            {portfolio.description && (
-              <p className="text-xs text-gray-500 mt-1 max-w-2xl" style={FONT_OUTFIT}>{portfolio.description}</p>
-            )}
-            <div className="flex items-baseline gap-3 mt-2">
-              <span className="text-4xl font-bold text-white" style={FONT_MONO}>{formatCurrency(portfolio.equity)}</span>
-              <span className={`text-lg font-semibold ${pnlColor(portfolio.total_return_pct)}`} style={FONT_MONO}>
-                {formatPercent(portfolio.total_return_pct)}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 mt-3">
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                <span className="text-gray-500">Initial</span>
-                <span className="font-mono text-white">{formatCurrency(portfolio.initial_capital)}</span>
-              </span>
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                <span className="text-gray-500">Cash</span>
-                <span className="font-mono text-white">{formatCurrency(portfolio.cash)}</span>
-              </span>
-              {performance && (
-                <>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                    <span className="text-gray-500">Drawdown</span>
-                    <span className="font-mono text-loss">{formatPercent(-Math.abs(performance.max_drawdown_pct))}</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                    <MetricTooltip tip="Percentage of closed trades that were profitable"><span className="text-gray-500">Win Rate</span></MetricTooltip>
-                    <span className={`font-mono ${performance.win_rate >= 50 ? "text-profit" : "text-loss"}`}>{performance.win_rate.toFixed(1)}%</span>
-                  </span>
-                </>
-              )}
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1f2937] border border-[#374151] text-[10px] text-gray-400" style={FONT_OUTFIT}>
-                <span className="text-gray-500">Positions</span>
-                <span className="font-mono text-white">{portfolio.open_positions}</span>
-              </span>
+      <div className="relative overflow-hidden rounded-2xl bg-[#0f0f19]/90 border border-[#1e1e3a]/60 p-6 sm:p-8">
+        <div className="absolute inset-0 bg-gradient-to-br from-[#6366f1]/[0.04] via-transparent to-[#8b5cf6]/[0.02]" />
+        <div className="relative">
+          <div className="flex items-center gap-2 mb-3">
+            <a href="/portfolios" className="text-gray-500 hover:text-white transition">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+              </svg>
+            </a>
+            <span className="text-xs text-gray-500" style={FONT_OUTFIT}>Portfolios</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              {portfolio.execution_mode === "paper" && <Badge className="bg-amber-500/15 text-amber-400 text-[9px]">PAPER</Badge>}
+              {portfolio.execution_mode === "live" && <Badge className="bg-loss/15 text-loss text-[9px]">LIVE</Badge>}
+              {portfolio.execution_mode === "local" && <Badge className="bg-gray-700/50 text-gray-400 text-[9px]">LOCAL</Badge>}
             </div>
           </div>
-          <div className="flex flex-col gap-1 shrink-0">
-            {(portfolio.execution_mode === "paper" || portfolio.execution_mode === "live") && (
-              <AlpacaSyncButton portfolioId={portfolioId} />
-            )}
-            <button onClick={() => { setCashMode(cashMode === "deposit" ? null : "deposit"); setCashAmount(""); }}
-              className={`text-[9px] px-2.5 py-1 rounded border transition ${cashMode === "deposit" ? "bg-profit/20 border-profit text-profit" : "bg-[#1f2937] border-[#374151] text-gray-400 hover:text-profit"}`}
-              style={FONT_OUTFIT}>
-              Deposit
-            </button>
-            <button onClick={() => { setCashMode(cashMode === "withdraw" ? null : "withdraw"); setCashAmount(""); }}
-              className={`text-[9px] px-2.5 py-1 rounded border transition ${cashMode === "withdraw" ? "bg-loss/20 border-loss text-loss" : "bg-[#1f2937] border-[#374151] text-gray-400 hover:text-loss"}`}
-              style={FONT_OUTFIT}>
-              Withdraw
-            </button>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight" style={FONT_OUTFIT}>{portfolio.name}</h1>
+              {portfolio.description && (
+                <p className="text-xs text-gray-500 mt-1.5 max-w-2xl line-clamp-1" style={FONT_OUTFIT}>{portfolio.description}</p>
+              )}
+              <div className="flex items-baseline gap-3 mt-3">
+                <span className="text-4xl sm:text-5xl font-bold text-white tracking-tight" style={FONT_MONO}>{formatCurrency(portfolio.equity)}</span>
+                <span className={`text-lg sm:text-xl font-semibold ${pnlColor(portfolio.total_return_pct)}`} style={FONT_MONO}>
+                  {formatPercent(portfolio.total_return_pct)}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mt-4">
+                {[
+                  { label: "Initial", value: formatCurrency(portfolio.initial_capital) },
+                  { label: "Cash", value: formatCurrency(portfolio.cash) },
+                  performance ? { label: "Drawdown", value: formatPercent(-Math.abs(performance.max_drawdown_pct)), color: "text-loss" } : null,
+                  performance ? { label: "Win Rate", value: `${performance.win_rate.toFixed(1)}%`, color: performance.win_rate >= 50 ? "text-profit" : "text-loss" } : null,
+                  { label: "Positions", value: String(portfolio.open_positions) },
+                ].filter(Boolean).map((pill) => (
+                  <span key={pill!.label} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#0a0a14]/80 border border-[#1e1e3a]/60 text-[10px]" style={FONT_OUTFIT}>
+                    <span className="text-gray-500">{pill!.label}</span>
+                    <span className={`font-mono font-medium ${pill!.color || "text-white"}`}>{pill!.value}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 shrink-0">
+              {(portfolio.execution_mode === "paper" || portfolio.execution_mode === "live") && (
+                <AlpacaSyncButton portfolioId={portfolioId} />
+              )}
+              <button onClick={() => { setCashMode(cashMode === "deposit" ? null : "deposit"); setCashAmount(""); }}
+                className={`text-[9px] px-3 py-1.5 rounded-lg border transition ${cashMode === "deposit" ? "bg-profit/20 border-profit text-profit" : "bg-[#0a0a14] border-[#1e1e3a]/60 text-gray-400 hover:text-profit hover:border-profit/30"}`}
+                style={FONT_OUTFIT}>
+                Deposit
+              </button>
+              <button onClick={() => { setCashMode(cashMode === "withdraw" ? null : "withdraw"); setCashAmount(""); }}
+                className={`text-[9px] px-3 py-1.5 rounded-lg border transition ${cashMode === "withdraw" ? "bg-loss/20 border-loss text-loss" : "bg-[#0a0a14] border-[#1e1e3a]/60 text-gray-400 hover:text-loss hover:border-loss/30"}`}
+                style={FONT_OUTFIT}>
+                Withdraw
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2335,24 +2338,24 @@ export default function PortfolioDetailPage({ params }: { params: { portfolioId:
           surfaced through the positions endpoint. */}
       {/* Content Tabs */}
       <Tabs defaultValue="positions" className="w-full">
-        <TabsList className="bg-surface-light/30 border border-border p-1 rounded-lg">
-          <TabsTrigger value="positions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+        <TabsList className="bg-[#0f0f19]/80 border border-[#1e1e3a]/60 p-1.5 rounded-xl">
+          <TabsTrigger value="positions" className="text-xs font-medium data-[state=active]:bg-[#6366f1]/15 data-[state=active]:text-[#818cf8] data-[state=active]:shadow-sm" style={FONT_OUTFIT}>
             Positions ({(() => {
               const held = new Set((holdings || []).map((h) => `${h.ticker}:${h.direction}`));
               const extra = (positions || []).filter((p) => !held.has(`${p.ticker}:${p.direction}`)).length;
               return (holdings?.length ?? 0) + extra;
             })()})
           </TabsTrigger>
-          <TabsTrigger value="trades" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+          <TabsTrigger value="trades" className="text-xs font-medium data-[state=active]:bg-[#6366f1]/15 data-[state=active]:text-[#818cf8] data-[state=active]:shadow-sm" style={FONT_OUTFIT}>
             Trades ({trades?.length ?? 0})
           </TabsTrigger>
-          <TabsTrigger value="actions" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+          <TabsTrigger value="actions" className="text-xs font-medium data-[state=active]:bg-[#6366f1]/15 data-[state=active]:text-[#818cf8] data-[state=active]:shadow-sm" style={FONT_OUTFIT}>
             Actions
           </TabsTrigger>
-          <TabsTrigger value="options" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+          <TabsTrigger value="options" className="text-xs font-medium data-[state=active]:bg-[#6366f1]/15 data-[state=active]:text-[#818cf8] data-[state=active]:shadow-sm" style={FONT_OUTFIT}>
             Options
           </TabsTrigger>
-          <TabsTrigger value="henry" className="text-xs font-medium data-[state=active]:bg-surface-light data-[state=active]:text-white" style={FONT_OUTFIT}>
+          <TabsTrigger value="henry" className="text-xs font-medium data-[state=active]:bg-[#6366f1]/15 data-[state=active]:text-[#818cf8] data-[state=active]:shadow-sm" style={FONT_OUTFIT}>
             Henry
           </TabsTrigger>
         </TabsList>
