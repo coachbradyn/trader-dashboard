@@ -85,14 +85,14 @@ function AlpacaSyncButton({ portfolioId }: { portfolioId: string }) {
 // ── Stat Card ───────────────────────────────────────────────────────
 
 function StatCard({ label, value, color = "text-white", sub, tip }: { label: string; value: string; color?: string; sub?: string; tip?: string }) {
-  const labelEl = <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5 font-medium" style={FONT_OUTFIT}>{label}</div>;
+  const labelEl = <div className="text-[9px] sm:text-[10px] text-gray-500 uppercase tracking-wider mb-1 sm:mb-1.5 font-medium" style={FONT_OUTFIT}>{label}</div>;
   return (
-    <div className="relative overflow-hidden bg-[#0f0f19]/80 rounded-xl p-4 border border-[#1e1e3a]/60 hover:border-[#6366f1]/20 transition-colors group">
+    <div className="relative overflow-hidden bg-[#0f0f19]/80 rounded-xl p-2.5 sm:p-4 border border-[#1e1e3a]/60 hover:border-[#6366f1]/20 transition-colors group">
       <div className="absolute inset-0 bg-gradient-to-br from-[#6366f1]/[0.03] to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
       <div className="relative">
         {tip ? <MetricTooltip tip={tip}>{labelEl}</MetricTooltip> : labelEl}
-        <div className={`text-xl font-mono font-bold tracking-tight ${color}`} style={FONT_MONO}>{value}</div>
-        {sub && <div className="text-[10px] text-gray-600 font-mono mt-1">{sub}</div>}
+        <div className={`text-sm sm:text-xl font-mono font-bold tracking-tight ${color}`} style={FONT_MONO}>{value}</div>
+        {sub && <div className="text-[9px] sm:text-[10px] text-gray-600 font-mono mt-0.5 sm:mt-1">{sub}</div>}
       </div>
     </div>
   );
@@ -102,7 +102,7 @@ function StatCard({ label, value, color = "text-white", sub, tip }: { label: str
 
 function PerformanceGrid({ perf }: { perf: Performance }) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
       <StatCard label="Total Return" value={formatPercent(perf.total_return_pct)} color={pnlColor(perf.total_return_pct)} />
       <StatCard label="Win Rate" value={`${perf.win_rate.toFixed(1)}%`}
         color={perf.win_rate >= 50 ? "text-profit" : "text-loss"}
@@ -552,9 +552,11 @@ function HenryInsights({ portfolioId }: { portfolioId: string }) {
   );
 }
 
-// ── Allocation Donut Chart ──────────────────────────────────────────
+// ── Allocation Ring + Holdings Grid ────────────────────────────────
+// Replaces the old stacked-bar + horizontal-bar pair with a donut
+// ring + integrated holdings grid that works well on mobile.
 
-const ALLOC_COLORS = ["#6366f1", "#22c55e", "#fbbf24", "#ef4444", "#8b5cf6", "#06b6d4", "#f97316", "#ec4899", "#14b8a6", "#a855f7"];
+const ALLOC_COLORS = ["#818cf8", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#22d3ee", "#fb923c", "#f472b6", "#2dd4bf", "#c084fc"];
 
 function AllocationChart({ holdings }: { holdings: PortfolioHolding[] }) {
   if (!holdings.length) return null;
@@ -564,6 +566,10 @@ function AllocationChart({ holdings }: { holdings: PortfolioHolding[] }) {
       ticker: h.ticker,
       value: (h.current_price ?? h.entry_price) * h.qty,
       pnlPct: h.unrealized_pnl_pct ?? 0,
+      pnlDollar: h.unrealized_pnl ?? 0,
+      qty: h.qty,
+      entry: h.entry_price,
+      current: h.current_price ?? h.entry_price,
     }))
     .sort((a, b) => b.value - a.value);
 
@@ -574,91 +580,136 @@ function AllocationChart({ holdings }: { holdings: PortfolioHolding[] }) {
     color: ALLOC_COLORS[i % ALLOC_COLORS.length],
   }));
 
+  // Build SVG donut ring data
+  const radius = 70;
+  const cx = 90;
+  const cy = 90;
+  const circumference = 2 * Math.PI * radius;
+  let cumulative = 0;
+  const arcs = rows.map((r) => {
+    const dashLen = (r.pct / 100) * circumference;
+    const dashOffset = -(cumulative / 100) * circumference;
+    cumulative += r.pct;
+    return { ...r, dashLen, dashOffset };
+  });
+
+  const totalPnl = rows.reduce((s, r) => s + r.pnlDollar, 0);
+
   return (
-    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
-      <CardContent className="p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Allocation</h3>
-          <span className="text-[10px] text-gray-500 font-mono">{formatCurrency(total)} total</span>
+    <div className="bg-[#0f0f19]/80 rounded-2xl border border-[#1e1e3a]/60 p-5 sm:p-6">
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="font-semibold text-white text-sm" style={FONT_OUTFIT}>Portfolio Allocation</h3>
+        <span className="text-[10px] text-gray-500 font-mono">{rows.length} holding{rows.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-6 items-center sm:items-start">
+        {/* Donut ring */}
+        <div className="relative shrink-0" style={{ width: 180, height: 180 }}>
+          <svg viewBox="0 0 180 180" className="w-full h-full -rotate-90">
+            {arcs.map((a) => (
+              <circle
+                key={a.ticker}
+                cx={cx} cy={cy} r={radius}
+                fill="none"
+                stroke={a.color}
+                strokeWidth={18}
+                strokeDasharray={`${a.dashLen} ${circumference - a.dashLen}`}
+                strokeDashoffset={a.dashOffset}
+                strokeLinecap="butt"
+                className="transition-all duration-500"
+              />
+            ))}
+            <circle cx={cx} cy={cy} r={radius - 14} fill="transparent" />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+            <span className="text-lg font-bold text-white font-mono" style={FONT_MONO}>
+              {formatCurrency(total)}
+            </span>
+            <span className={`text-[11px] font-mono font-semibold ${pnlColor(totalPnl)}`}>
+              {totalPnl >= 0 ? "+" : ""}{formatCurrency(totalPnl)}
+            </span>
+          </div>
         </div>
 
-        {/* Full-width stacked horizontal bar */}
-        <div className="flex h-8 rounded-lg overflow-hidden mb-5">
+        {/* Holdings grid */}
+        <div className="flex-1 w-full min-w-0 space-y-1">
           {rows.map((r) => (
-            <div
-              key={r.ticker}
-              style={{ width: `${Math.max(r.pct, 1.5)}%`, backgroundColor: r.color }}
-              className="relative group transition-opacity hover:opacity-80"
-              title={`${r.ticker}: ${r.pct.toFixed(1)}% (${formatCurrency(r.value)})`}
-            >
-              {r.pct >= 6 && (
-                <span className="absolute inset-0 flex items-center justify-center text-[9px] font-mono font-bold text-white/90 truncate px-1">
-                  {r.ticker} {r.pct.toFixed(0)}%
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {/* Horizontal legend rows */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1.5">
-          {rows.map((r) => (
-            <div key={r.ticker} className="flex items-center gap-2 text-[11px] font-mono py-0.5">
-              <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: r.color }} />
-              <span className="text-white font-semibold w-12">{r.ticker}</span>
-              <span className="text-gray-400 w-12 text-right">{r.pct.toFixed(1)}%</span>
-              <span className="text-gray-500 w-16 text-right">{formatCurrency(r.value)}</span>
-              <span className={`w-14 text-right font-semibold ${pnlColor(r.pnlPct)}`}>
+            <div key={r.ticker} className="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-white/[0.02] transition group">
+              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+              <span className="text-[12px] text-white font-semibold w-12 truncate" style={FONT_MONO}>{r.ticker}</span>
+              {/* Inline allocation bar */}
+              <div className="flex-1 h-1.5 rounded-full bg-[#1e1e3a]/80 overflow-hidden hidden sm:block">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(r.pct, 2)}%`, backgroundColor: r.color, opacity: 0.7 }}
+                />
+              </div>
+              <span className="text-[10px] text-gray-400 font-mono w-10 text-right">{r.pct.toFixed(1)}%</span>
+              <span className="text-[10px] text-gray-500 font-mono w-16 text-right hidden sm:inline">{formatCurrency(r.value)}</span>
+              <span className={`text-[10px] font-mono w-14 text-right font-semibold ${pnlColor(r.pnlPct)}`}>
                 {r.pnlPct >= 0 ? "+" : ""}{r.pnlPct.toFixed(1)}%
               </span>
             </div>
           ))}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
-// ── Holdings Performance Bar Chart ─────────────────────────────────
+// ── Holdings Performance Bars (pure CSS, no Recharts) ───────────────
 
 function HoldingsPerformanceBars({ holdings }: { holdings: PortfolioHolding[] }) {
   if (!holdings.length) return null;
 
-  const chartData = holdings
+  const sorted = holdings
     .filter((h) => h.unrealized_pnl_pct != null)
     .map((h) => ({
       ticker: h.ticker,
       pnlPct: h.unrealized_pnl_pct!,
-      fill: (h.unrealized_pnl_pct ?? 0) >= 0 ? "#22c55e" : "#ef4444",
+      pnlDollar: h.unrealized_pnl ?? 0,
     }))
     .sort((a, b) => b.pnlPct - a.pnlPct);
 
-  if (!chartData.length) return null;
+  if (!sorted.length) return null;
+
+  const maxAbs = Math.max(...sorted.map((s) => Math.abs(s.pnlPct)), 1);
 
   return (
-    <Card className="bg-[#0f0f19]/80 border-[#1e1e3a]/60 rounded-2xl">
-      <CardContent className="p-5">
-        <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Holdings Performance</h3>
-        <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 36)}>
-          <BarChart data={chartData} layout="vertical" margin={{ left: 10, right: 20 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" horizontal={false} />
-            <XAxis type="number" stroke="#4b5563" tick={{ fontSize: 10, fill: "#6b7280" }} tickFormatter={(v) => `${v}%`} />
-            <YAxis type="category" dataKey="ticker" stroke="#4b5563" tick={{ fontSize: 11, fill: "#e5e7eb", fontFamily: "'JetBrains Mono', monospace" }} width={50} />
-            <Tooltip
-              contentStyle={CHART_TOOLTIP}
-              labelStyle={{ color: "#9ca3af" }}
-              formatter={(value: number) => [`${value.toFixed(2)}%`, "Unrealized P&L"]}
-            />
-            <ReferenceLine x={0} stroke="#374151" />
-            <Bar dataKey="pnlPct" radius={[0, 4, 4, 0]}>
-              {chartData.map((d, i) => (
-                <Cell key={i} fill={d.fill} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
+    <div className="bg-[#0f0f19]/80 rounded-2xl border border-[#1e1e3a]/60 p-5 sm:p-6">
+      <h3 className="font-semibold text-white text-sm mb-4" style={FONT_OUTFIT}>Holdings Performance</h3>
+      <div className="space-y-1.5">
+        {sorted.map((s) => {
+          const isProfit = s.pnlPct >= 0;
+          const barWidth = Math.min(Math.abs(s.pnlPct) / maxAbs * 100, 100);
+          return (
+            <div key={s.ticker} className="flex items-center gap-2">
+              <span className="text-[11px] text-gray-300 font-mono w-12 shrink-0 text-right" style={FONT_MONO}>{s.ticker}</span>
+              <div className="flex-1 h-5 relative">
+                {/* Center line */}
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-[#1e1e3a]" />
+                {/* Bar */}
+                <div
+                  className="absolute top-0.5 bottom-0.5 rounded transition-all duration-500"
+                  style={{
+                    width: `${barWidth / 2}%`,
+                    ...(isProfit
+                      ? { left: "50%", background: "linear-gradient(90deg, rgba(34,197,94,0.5), rgba(34,197,94,0.15))" }
+                      : { right: "50%", background: "linear-gradient(270deg, rgba(239,68,68,0.5), rgba(239,68,68,0.15))" }),
+                  }}
+                />
+              </div>
+              <span className={`text-[11px] font-mono w-16 text-right font-semibold ${pnlColor(s.pnlPct)}`} style={FONT_MONO}>
+                {s.pnlPct >= 0 ? "+" : ""}{s.pnlPct.toFixed(1)}%
+              </span>
+              <span className={`text-[10px] font-mono w-16 text-right hidden sm:inline ${pnlColor(s.pnlDollar)}`} style={FONT_MONO}>
+                {s.pnlDollar >= 0 ? "+" : ""}{formatCurrency(s.pnlDollar)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
