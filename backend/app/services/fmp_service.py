@@ -159,10 +159,19 @@ async def _fmp_get(
     params: dict | None = None,
     cache_tier: str = "daily",
     essential: bool = False,
+    fallbacks: list[tuple[str, dict]] | None = None,
 ) -> dict | list | None:
     """
     Make a GET request to FMP with caching and rate limiting.
     Returns parsed JSON or None on failure.
+
+    ``fallbacks`` is an ordered list of (endpoint, params_override) tuples
+    to retry with when the primary call returns a 4xx. Used for endpoints
+    where FMP has renamed paths or changed param names on the /stable/
+    migration (e.g. ``symbol`` → ``symbols`` for batch endpoints,
+    ``historical-price-eod-full`` → ``historical-price-eod/full``). The
+    override dict is merged over the primary params; pass ``{"_drop": [key,...]}``
+    to remove a param instead of overriding it.
     """
     settings = get_settings()
     if not settings.fmp_api_key:
@@ -179,28 +188,88 @@ async def _fmp_get(
         logger.warning(f"FMP rate limit reached, skipping {endpoint}")
         return None
 
-    url = f"{FMP_BASE}{endpoint}"
-    query = {"apikey": settings.fmp_api_key}
-    if params:
-        query.update(params)
+    # Build attempt list: primary + any fallbacks
+    attempts: list[tuple[str, dict | None]] = [(endpoint, params)]
+    for fb_endpoint, fb_override in (fallbacks or []):
+        merged = dict(params or {})
+        drop = fb_override.pop("_drop", []) if isinstance(fb_override, dict) else []
+        merged.update(fb_override or {})
+        for k in drop:
+            merged.pop(k, None)
+        attempts.append((fb_endpoint, merged or None))
 
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(url, params=query)
-            _increment_rate_counter()
-            if resp.status_code == 200:
-                data = resp.json()
-                # Don't cache error responses that FMP returns as 200
-                if isinstance(data, dict) and ("Error" in data or "error" in data):
-                    logger.warning(f"FMP API returned error in 200: {str(data)[:200]}")
+    last_status = None
+    last_body = None
+    last_url = None
+    for attempt_endpoint, attempt_params in attempts:
+        url = f"{FMP_BASE}{attempt_endpoint}"
+        query = {"apikey": settings.fmp_api_key}
+        if attempt_params:
+            query.update(attempt_params)
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(url, params=query)
+                _increment_rate_counter()
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Don't cache error responses that FMP returns as 200
+                    if isinstance(data, dict) and ("Error" in data or "error" in data):
+                        logger.warning(f"FMP API returned error in 200: {str(data)[:200]}")
+                        _record_fmp_error(attempt_endpoint, attempt_params, 200, str(data)[:300])
+                        return None
+                    # Cache against the ORIGINAL endpoint key so subsequent
+                    # calls via the same public function hit the cache
+                    # regardless of which fallback served the response.
+                    await _set_cache(endpoint, params, cache_tier, data)
+                    return data
+                last_status = resp.status_code
+                last_body = resp.text[:300]
+                last_url = str(resp.url).replace(settings.fmp_api_key, "***")
+                logger.warning(
+                    f"FMP API {resp.status_code} for {attempt_endpoint}: {last_body}"
+                )
+                _record_fmp_error(attempt_endpoint, attempt_params, resp.status_code, last_body)
+                # Only retry on 4xx — 5xx is a server issue, no point in
+                # spamming fallbacks.
+                if not (400 <= resp.status_code < 500):
                     return None
-                await _set_cache(endpoint, params, cache_tier, data)
-                return data
-            logger.warning(f"FMP API {resp.status_code} for {url}: {resp.text[:300]}")
+        except Exception as e:
+            logger.warning(f"FMP API error for {attempt_endpoint}: {e}")
+            _record_fmp_error(attempt_endpoint, attempt_params, 0, str(e)[:300])
             return None
-    except Exception as e:
-        logger.warning(f"FMP API error for {url}: {e}")
-        return None
+
+    # All attempts exhausted.
+    return None
+
+
+# Recent FMP 4xx responses, capped to the last 50 per-endpoint. Surfaced
+# via the admin diagnostic endpoint so operators can see exactly what
+# FMP is rejecting without tailing server logs.
+_FMP_ERROR_LOG: dict[str, list[dict]] = {}
+_FMP_ERROR_CAP = 50
+
+
+def _record_fmp_error(endpoint: str, params: dict | None, status: int, body: str) -> None:
+    try:
+        entry = {
+            "ts": utcnow().isoformat(),
+            "endpoint": endpoint,
+            "params": {k: v for k, v in (params or {}).items() if k != "apikey"},
+            "status": status,
+            "body": body,
+        }
+        bucket = _FMP_ERROR_LOG.setdefault(endpoint, [])
+        bucket.append(entry)
+        if len(bucket) > _FMP_ERROR_CAP:
+            del bucket[: len(bucket) - _FMP_ERROR_CAP]
+    except Exception:
+        pass
+
+
+def get_recent_errors() -> dict[str, list[dict]]:
+    """Return the in-memory ring buffer of recent FMP 4xx/error responses."""
+    return {k: list(v) for k, v in _FMP_ERROR_LOG.items()}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -213,16 +282,53 @@ async def get_quote(ticker: str) -> dict | list | None:
 
 
 async def get_batch_quotes(tickers: list[str]) -> dict | list | None:
-    """Real-time quotes for multiple tickers."""
-    return await _fmp_get("/stable/batch-quote", params={"symbol": ",".join(tickers)}, cache_tier="realtime")
+    """Real-time quotes for multiple tickers.
+
+    FMP's /stable/batch-quote (and the aliases `batch-quote-short` /
+    `quote/batch` on some plans) moved to the plural ``symbols`` param.
+    The previous ``symbol`` form returned 100% Bad Request on the
+    dashboard's usage panel, so we lead with ``symbols`` and keep the
+    legacy forms as fallbacks.
+    """
+    joined = ",".join(tickers)
+    return await _fmp_get(
+        "/stable/batch-quote",
+        params={"symbols": joined},
+        cache_tier="realtime",
+        fallbacks=[
+            # Some plans expose the endpoint as `batch-quote-short` — same shape.
+            ("/stable/batch-quote-short", {"symbols": joined}),
+            # Legacy v3-style param as a last resort.
+            ("/stable/batch-quote", {"_drop": ["symbols"], "symbol": joined}),
+        ],
+    )
 
 
 async def get_historical_daily(ticker: str, days: int = 90) -> dict | list | None:
-    """Historical daily OHLCV."""
+    """Historical daily OHLCV.
+
+    FMP renamed the full endpoint from ``historical-price-eod-full``
+    (hyphen) to ``historical-price-eod/full`` (slash) and deprecated the
+    ``timeseries`` param in favour of a ``from``/``to`` date window. Lead
+    with the current form; fall back to the legacy hyphenated path so we
+    work on older plans too.
+    """
+    from datetime import timedelta as _td
+    today = utcnow().date()
+    _from = (today - _td(days=days)).isoformat()
+    _to = today.isoformat()
     return await _fmp_get(
-        "/stable/historical-price-eod-full",
-        params={"symbol": ticker, "timeseries": str(days)},
+        "/stable/historical-price-eod/full",
+        params={"symbol": ticker, "from": _from, "to": _to},
         cache_tier="intraday",
+        fallbacks=[
+            # Legacy hyphen path with date range.
+            ("/stable/historical-price-eod-full",
+             {"_drop": [], "symbol": ticker, "from": _from, "to": _to}),
+            # Legacy hyphen path with the older timeseries param.
+            ("/stable/historical-price-eod-full",
+             {"_drop": ["from", "to"], "timeseries": str(days)}),
+        ],
     )
 
 
@@ -341,20 +447,43 @@ async def get_stock_news(ticker: str, limit: int = 10) -> dict | list | None:
 
 
 async def get_press_releases(ticker: str, limit: int = 5) -> dict | list | None:
-    """Get press releases for a ticker from FMP."""
+    """Get press releases for a ticker from FMP.
+
+    /stable/news/press-releases consistently returned 400 on the usage
+    panel. That endpoint under /stable/ requires the plural ``symbols``
+    param (same convention as /stable/news/stock on recent plans). Lead
+    with plural, fall back to the latest-only variant so Henry still
+    gets *some* press-release context when a per-ticker filter fails.
+    """
     return await _fmp_get(
         "/stable/news/press-releases",
-        params={"symbol": ticker, "limit": str(limit)},
+        params={"symbols": ticker, "limit": str(limit)},
         cache_tier="daily",
+        fallbacks=[
+            # Some plans expose releases without a symbol filter — filter client-side.
+            ("/stable/news/press-releases-latest",
+             {"_drop": ["symbols"], "limit": str(limit)}),
+            # Legacy singular param.
+            ("/stable/news/press-releases",
+             {"_drop": ["symbols"], "symbol": ticker, "limit": str(limit)}),
+        ],
     )
 
 
 async def get_earnings_calendar(from_date: str, to_date: str) -> dict | list | None:
-    """Earnings calendar for a date range."""
+    """Earnings calendar for a date range.
+
+    FMP's stable API renamed ``earning-calendar`` → ``earnings-calendar``
+    (plural). Kept both as fallbacks so the dashboard works on plans
+    that haven't been migrated.
+    """
     return await _fmp_get(
-        "/stable/earning-calendar",
+        "/stable/earnings-calendar",
         params={"from": from_date, "to": to_date},
         cache_tier="daily",
+        fallbacks=[
+            ("/stable/earning-calendar", {}),
+        ],
     )
 
 
@@ -374,13 +503,36 @@ async def get_losers() -> dict | list | None:
 
 
 async def get_most_active() -> dict | list | None:
-    """Most active stocks."""
-    return await _fmp_get("/stable/most-active", cache_tier="intraday")
+    """Most active stocks. FMP renamed to the plural path."""
+    return await _fmp_get(
+        "/stable/most-actives",
+        cache_tier="intraday",
+        fallbacks=[("/stable/most-active", {})],
+    )
 
 
 async def get_sector_performance() -> dict | list | None:
-    """Sector performance."""
-    return await _fmp_get("/stable/historical-sector-performance", cache_tier="intraday")
+    """Sector performance snapshot.
+
+    ``historical-sector-performance`` doesn't exist on /stable/; the
+    snapshot endpoint takes a single date. We pass today's date first,
+    falling back to yesterday when the market is closed and today has
+    no snapshot yet, and finally to the legacy path in case a plan
+    still exposes it.
+    """
+    from datetime import timedelta as _td
+    today = utcnow().date().isoformat()
+    yesterday = (utcnow().date() - _td(days=1)).isoformat()
+    return await _fmp_get(
+        "/stable/historical-sector-performance-snapshot",
+        params={"date": today},
+        cache_tier="intraday",
+        fallbacks=[
+            ("/stable/historical-sector-performance-snapshot", {"date": yesterday}),
+            ("/stable/sector-performance-snapshot", {"date": today}),
+            ("/stable/historical-sector-performance", {"_drop": ["date"]}),
+        ],
+    )
 
 
 async def run_screener(params: dict) -> dict | list | None:

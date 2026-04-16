@@ -257,3 +257,26 @@ async def get_fmp_usage():
     """Get FMP API usage for today."""
     from app.services.fmp_service import get_api_usage
     return get_api_usage()
+
+
+@router.get("/fmp-errors")
+async def get_fmp_errors():
+    """Recent FMP 4xx/error responses captured by the client.
+
+    Intended for the ops panel: when an endpoint shows high Bad Request
+    rates on the FMP usage dashboard, this surfaces the exact response
+    bodies so we can see which param/path FMP is complaining about.
+    """
+    from app.services.fmp_service import get_recent_errors
+    errors = get_recent_errors()
+    summary = {
+        ep: {
+            "count": len(rows),
+            "last_status": rows[-1]["status"] if rows else None,
+            "last_body": rows[-1]["body"] if rows else None,
+            "last_params": rows[-1]["params"] if rows else None,
+            "last_ts": rows[-1]["ts"] if rows else None,
+        }
+        for ep, rows in errors.items()
+    }
+    return {"summary": summary, "samples": errors}
