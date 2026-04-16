@@ -208,8 +208,7 @@ function DrawdownChart({ data }: { data: EquityPoint[] }) {
             <Area type="monotone" dataKey="drawdown" stroke="#f87171" strokeWidth={1.5} fill="url(#ddGrad)" dot={false} animationDuration={800} />
           </AreaChart>
         </ResponsiveContainer>
-      </CardContent>
-    </Card>
+      </ChartCard>
   );
 }
 
