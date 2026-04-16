@@ -347,6 +347,20 @@ async def _refresh_fundamentals():
         logger.error(f"Fundamentals refresh failed: {e}")
 
 
+async def _warm_general_news():
+    """Pull a batch of general market news so the home page's News /
+    Macro card has content even when Gemini is down (the card falls
+    back to cached news when `intel.macro` is empty). Runs hourly
+    during market hours; results go into news_cache for the /news
+    endpoint to serve."""
+    try:
+        from app.services.news_service import news_service
+        count = await news_service.fetch_and_cache_general_news(limit=20)
+        logger.info(f"General news warm: cached {count} new articles")
+    except Exception as e:
+        logger.debug(f"General news warm failed: {e}")
+
+
 async def _warm_ticker_news():
     """Pre-fetch news for watchlist + active-holding tickers so ticker pages
     aren't cold on first visit. Runs every 2 hours during market hours.
@@ -834,6 +848,16 @@ def start_scheduler():
         _warm_ticker_news,
         CronTrigger(hour="9,11,13,15", minute=15, timezone=ET, day_of_week="mon-fri"),
         id="news_warm",
+        replace_existing=True,
+    )
+
+    # Warm general market news every hour during market hours + once
+    # pre-market + once after close so the home page's News / Macro
+    # card has real headlines even when Gemini's market-intel is empty.
+    scheduler.add_job(
+        _warm_general_news,
+        CronTrigger(hour="8-17", minute=5, timezone=ET, day_of_week="mon-fri"),
+        id="news_warm_general",
         replace_existing=True,
     )
 

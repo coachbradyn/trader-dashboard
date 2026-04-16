@@ -282,10 +282,77 @@ async def _call_gemini_for_intel() -> dict | None:
     return None
 
 
+async def _fmp_sector_fallback() -> list[dict] | None:
+    """Build a sector list from FMP's historical-sector-performance-snapshot
+    when Gemini is unavailable. This keeps the Sector Analysis card
+    populated with REAL data (just without Gemini's commentary) instead
+    of showing 11 flat neutral rows until Gemini recovers.
+
+    Returns None when FMP also fails — the caller falls back to the
+    empty default payload in that case.
+    """
+    try:
+        from app.services.fmp_service import get_sector_performance
+        data = await get_sector_performance()
+        if not data or not isinstance(data, list):
+            return None
+        # FMP returns items like:
+        #   {"sector": "Technology", "changesPercentage": "+1.23%", ...}
+        # Normalize against our canonical sector list.
+        by_sector: dict[str, float] = {}
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            name = (row.get("sector") or row.get("name") or "").strip()
+            change = row.get("changesPercentage") or row.get("averageChange") or 0
+            if isinstance(change, str):
+                try:
+                    change = float(change.replace("%", "").replace("+", "").strip())
+                except ValueError:
+                    change = 0.0
+            try:
+                change = float(change)
+            except (TypeError, ValueError):
+                change = 0.0
+            by_sector[name] = change
+
+        out = []
+        for canonical in SECTORS:
+            # Best-effort fuzzy match — FMP sometimes emits "Consumer
+            # Cyclical" instead of "Consumer Discretionary" etc.
+            pct = by_sector.get(canonical)
+            if pct is None:
+                for k, v in by_sector.items():
+                    if canonical.split()[0].lower() in k.lower():
+                        pct = v
+                        break
+            pct = float(pct or 0.0)
+            score = 1 if pct >= 0.4 else -1 if pct <= -0.4 else 0
+            sentiment = "bullish" if score > 0 else "bearish" if score < 0 else "neutral"
+            out.append({
+                "name": canonical,
+                "score": score,
+                "sentiment": sentiment,
+                "summary": f"{canonical} sector {pct:+.2f}% today.",
+                "leaders": [],
+            })
+        return out
+    except Exception as e:
+        logger.debug(f"FMP sector fallback failed: {e}")
+        return None
+
+
 async def get_market_intel(force_refresh: bool = False) -> dict:
     """Return cached intel or generate fresh. Always returns a valid
     payload — failure modes reduce to the default shape rather than
-    raising, so the frontend never crashes on a dead upstream."""
+    raising, so the frontend never crashes on a dead upstream.
+
+    IMPORTANT: fallback payloads are NOT cached. A single Gemini
+    transient error used to poison the 15-minute cache with empty
+    sectors + no macro headlines, which left the home page showing
+    "Awaiting Gemini refresh" long after Gemini recovered. Only
+    genuine Gemini (or coerced) responses get persisted.
+    """
     from app.database import async_session
     from app.services.henry_cache import get_cached, set_cached
 
@@ -300,19 +367,31 @@ async def get_market_intel(force_refresh: bool = False) -> dict:
                 return await _resolve_play_from_actions(cached, db)
 
         raw = await _call_gemini_for_intel()
+        is_real = raw is not None
         if raw is None:
             payload = _default_payload()
+            # Upgrade the sector list with real FMP snapshot data when
+            # Gemini is down — Gemini was the only sector source, and a
+            # flat "all neutral" card is worse than no card.
+            fmp_sectors = await _fmp_sector_fallback()
+            if fmp_sectors:
+                payload["sectors"] = fmp_sectors
+                payload["source"] = "fmp_fallback"
         else:
             try:
                 payload = _coerce(raw)
             except Exception as e:
                 logger.error(f"market-intel coerce failed: {e}")
                 payload = _default_payload()
+                is_real = False
 
-        try:
-            await set_cached(db, CACHE_KEY, CACHE_TYPE, payload)
-            await db.commit()
-        except Exception as e:
-            logger.debug(f"market-intel cache write failed: {e}")
+        # Only cache real Gemini responses. Fallback payloads expire
+        # immediately so the next request retries the grounded call.
+        if is_real:
+            try:
+                await set_cached(db, CACHE_KEY, CACHE_TYPE, payload)
+                await db.commit()
+            except Exception as e:
+                logger.debug(f"market-intel cache write failed: {e}")
 
         return await _resolve_play_from_actions(payload, db)
