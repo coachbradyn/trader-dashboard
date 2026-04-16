@@ -311,12 +311,18 @@ function DecisionsTab() {
     confidence: number; reasoning: string; status: string;
     outcome: { pnl_pct: number; pnl_dollars: number; correct: boolean } | null;
     created_at: string;
+    portfolio_id?: string; portfolio_name?: string;
   }>>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getAIPortfolioDecisions(filter, 100).then(setDecisions).catch(() => {}).finally(() => setLoading(false));
+    setFetchError(null);
+    api.getAIPortfolioDecisions(filter, 100)
+      .then(setDecisions)
+      .catch((e) => setFetchError(e instanceof Error ? e.message : "Failed to load decisions"))
+      .finally(() => setLoading(false));
   }, [filter]);
 
   if (loading) return <div className="space-y-2">{[1,2,3,4,5].map((i) => <Skeleton key={i} className="h-20" />)}</div>;
@@ -347,8 +353,12 @@ function DecisionsTab() {
         </div>
       </div>
 
-      {decisions.length === 0 ? (
-        <p className="text-gray-500 text-sm text-center py-12">No decisions yet</p>
+      {fetchError ? (
+        <p className="text-loss text-sm text-center py-12">Couldn&apos;t load decisions: {fetchError}</p>
+      ) : decisions.length === 0 ? (
+        <p className="text-gray-500 text-sm text-center py-12">
+          No decisions yet — enable AI evaluation on a portfolio (or create one with Henry as manager) and wait for the next scan cycle.
+        </p>
       ) : (
         <div className="space-y-2">
           {decisions.map((d) => (
@@ -370,6 +380,15 @@ function DecisionsTab() {
                     <div key={i} className={`w-1.5 h-1 rounded-sm ${i < d.confidence ? "bg-[#6366f1]" : "bg-gray-800"}`} />
                   ))}
                 </div>
+                {d.portfolio_name && (
+                  <span
+                    className="text-[9px] text-gray-500 font-mono ml-1 px-1.5 py-0 rounded bg-[#1f2937]/40"
+                    style={FONT_MONO}
+                    title={`Portfolio: ${d.portfolio_name}`}
+                  >
+                    {d.portfolio_name}
+                  </span>
+                )}
                 <span className="text-[9px] text-gray-600 font-mono ml-auto">{formatTimeAgo(d.created_at)}</span>
                 {d.outcome && (
                   <Badge className={`text-[8px] px-1.5 py-0 ${d.outcome.correct ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"}`}>

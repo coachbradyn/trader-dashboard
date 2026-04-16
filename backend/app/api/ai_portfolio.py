@@ -273,15 +273,47 @@ async def get_equity_history(
 async def get_decisions(
     filter: str = Query("all", enum=["all", "taken", "skipped"]),
     limit: int = Query(50, le=200),
+    portfolio_id: str | None = Query(None, description="Filter to a single portfolio. Default: all AI-enabled."),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get Henry's decision log for the AI portfolio."""
-    from app.services.ai_portfolio import get_ai_portfolio
-    portfolio = await get_ai_portfolio(db)
-    if not portfolio:
-        raise HTTPException(404, "No AI portfolio exists")
+    """Get Henry's decision log across all AI-enabled portfolios.
 
-    query = select(PortfolioAction).where(PortfolioAction.portfolio_id == portfolio.id)
+    Previously scoped to the single `is_ai_managed=True` portfolio and
+    raised 404 when none existed — the frontend's `.catch` swallowed
+    that, which is why the Decisions tab showed "No decisions yet" even
+    when Henry had been logging actions against other AI-enabled
+    portfolios (paper/live Alpaca accounts with
+    `ai_evaluation_enabled=True`).
+
+    Now returns actions from every portfolio with either flag set, with
+    an optional `portfolio_id` filter for per-portfolio drill-down.
+    """
+    from sqlalchemy import or_
+
+    # Collect every portfolio Henry makes decisions on. If
+    # portfolio_id is provided, scope to that one portfolio regardless
+    # of its flags (user may be asking about a specific book).
+    if portfolio_id:
+        port_q = select(Portfolio).where(Portfolio.id == portfolio_id)
+    else:
+        port_q = select(Portfolio).where(
+            Portfolio.is_active == True,
+            or_(
+                Portfolio.is_ai_managed == True,
+                Portfolio.ai_evaluation_enabled == True,
+            ),
+        )
+    portfolio_rows = (await db.execute(port_q)).scalars().all()
+    if not portfolio_rows:
+        # Empty list — not a 404. The frontend renders "No decisions
+        # yet" from an empty array; raising 404 was getting swallowed
+        # by the client's catch and producing the same UX either way,
+        # but without a debuggable signal.
+        return []
+    portfolio_ids = [p.id for p in portfolio_rows]
+    portfolio_names = {p.id: p.name for p in portfolio_rows}
+
+    query = select(PortfolioAction).where(PortfolioAction.portfolio_id.in_(portfolio_ids))
 
     if filter == "taken":
         query = query.where(PortfolioAction.status == "approved", PortfolioAction.action_type != "SKIP")
@@ -304,7 +336,7 @@ async def get_decisions(
                 select(Trade)
                 .join(PortfolioTrade)
                 .where(
-                    PortfolioTrade.portfolio_id == portfolio.id,
+                    PortfolioTrade.portfolio_id == a.portfolio_id,
                     Trade.ticker == a.ticker,
                     # Include both simulated and real trades linked to this portfolio
                     Trade.status == "closed",
@@ -331,6 +363,12 @@ async def get_decisions(
             "status": a.status,
             "outcome": outcome,
             "created_at": a.created_at.isoformat(),
+            # Per-portfolio attribution so the UI can show which book
+            # each decision targeted. Henry may be running on three
+            # portfolios at once; "BUY NOK" means different things
+            # depending on which account executed it.
+            "portfolio_id": a.portfolio_id,
+            "portfolio_name": portfolio_names.get(a.portfolio_id, ""),
         })
 
     return decisions
