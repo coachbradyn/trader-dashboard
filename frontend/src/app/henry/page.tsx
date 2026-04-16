@@ -467,38 +467,90 @@ function MemoryTab() {
       ) : memories.length === 0 ? (
         <p className="text-gray-500 text-sm text-center py-12">No memories stored</p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {memories.map((m) => (
-            <div key={m.id} className="flex items-start gap-3 px-3 py-2.5 rounded-lg border border-border/30 hover:border-border/60 transition group">
-              <div className="flex-1 min-w-0">
-                <p className="text-[12px] text-gray-300 leading-relaxed">{m.content}</p>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <Badge className="text-[8px] px-1.5 py-0 bg-[#1f2937] text-gray-500">{m.type}</Badge>
-                  {m.ticker && <Badge className="text-[8px] px-1.5 py-0 bg-[#6366f1]/10 text-[#6366f1]">{m.ticker}</Badge>}
-                  {m.strategy && <Badge className="text-[8px] px-1.5 py-0 bg-amber-500/10 text-amber-400">{m.strategy}</Badge>}
-                  <span className="text-[9px] text-gray-600 font-mono">{m.source}</span>
-                  <span className="text-[9px] text-gray-600 font-mono ml-auto">{formatTimeAgo(m.created_at)}</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {/* Importance */}
-                <div className="flex gap-px">
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <button key={i} onClick={() => handleUpdateImportance(m.id, i + 1)}
-                      className={`w-1.5 h-3 rounded-sm transition ${i < m.importance ? "bg-[#6366f1]" : "bg-gray-800 hover:bg-gray-700"}`} />
-                  ))}
-                </div>
-                <button onClick={() => handleDelete(m.id)}
-                  className="text-gray-700 hover:text-loss transition opacity-0 group-hover:opacity-100 ml-1">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+            <MemoryRow
+              key={m.id}
+              memory={m}
+              onDelete={handleDelete}
+              onUpdateImportance={handleUpdateImportance}
+            />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// Per-row component — keeps a local expanded state so long memories
+// can be read in full without the tab being dominated by one card.
+// Also renders content in a full-width column (importance dots moved
+// below) so paragraphs don't get squeezed into a narrow lane.
+function MemoryRow({
+  memory: m,
+  onDelete,
+  onUpdateImportance,
+}: {
+  memory: Memory;
+  onDelete: (id: string) => void;
+  onUpdateImportance: (id: string, importance: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = m.content.length > 240;
+  return (
+    <div className="px-3 py-2.5 rounded-lg border border-border/30 hover:border-border/60 transition group">
+      <p
+        className={`text-[12px] text-gray-300 leading-relaxed whitespace-pre-wrap ${isLong && !expanded ? "line-clamp-3" : ""}`}
+        style={FONT_OUTFIT}
+      >
+        {m.content}
+      </p>
+      {isLong && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="text-[10px] text-[#6366f1] hover:text-white mt-1 transition"
+          style={FONT_MONO}
+        >
+          {expanded ? "Collapse" : "Read full"}
+        </button>
+      )}
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
+        <Badge className="text-[8px] px-1.5 py-0 bg-[#1f2937] text-gray-500">{m.type}</Badge>
+        {m.ticker && <Badge className="text-[8px] px-1.5 py-0 bg-[#6366f1]/10 text-[#6366f1]">{m.ticker}</Badge>}
+        {m.strategy && <Badge className="text-[8px] px-1.5 py-0 bg-amber-500/10 text-amber-400">{m.strategy}</Badge>}
+        {m.validated && (
+          <Badge className="text-[8px] px-1.5 py-0 bg-profit/15 text-profit" title="Validated by later outcome">
+            validated
+          </Badge>
+        )}
+        <span className="text-[9px] text-gray-600 font-mono" title={`Source: ${m.source}`}>
+          src:{m.source}
+        </span>
+        <span className="text-[9px] text-gray-600 font-mono ml-auto">{formatTimeAgo(m.created_at)}</span>
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[9px] text-gray-600 font-mono shrink-0">importance</span>
+        <div className="flex gap-px">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <button
+              key={i}
+              onClick={() => onUpdateImportance(m.id, i + 1)}
+              className={`w-2 h-3 rounded-sm transition ${i < m.importance ? "bg-[#6366f1]" : "bg-gray-800 hover:bg-gray-700"}`}
+              title={`Set importance to ${i + 1}`}
+            />
+          ))}
+        </div>
+        <button
+          onClick={() => onDelete(m.id)}
+          className="text-gray-700 hover:text-loss transition opacity-0 group-hover:opacity-100 ml-auto"
+          title="Delete memory"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }

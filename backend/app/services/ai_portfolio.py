@@ -476,6 +476,41 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
             )
             db.add(action_record)
             await db.flush()
+
+            # Persist a memory when Henry skips (or is blocked by a hard
+            # rule). Without this, the reasoning lived only on the
+            # PortfolioAction row and never fed the retrieval pipeline —
+            # so Henry couldn't learn from "why I passed on NOK last
+            # time" when a similar setup arrived. Keep the content
+            # quantitative (ticker, strategy, ADX/sig, regime, reason)
+            # so memory extraction + cosine retrieval can match it
+            # against future signals.
+            is_skip = (action == "SKIP") or (confidence < min_conf)
+            if is_skip:
+                try:
+                    from app.services.ai_service import save_memory
+                    skip_content = (
+                        f"SKIP {trader.trader_id} {trade.direction.upper()} "
+                        f"{trade.ticker} @ ${trade.entry_price:.2f} "
+                        f"(sig={sig_val:.0f}, ADX={adx_val:.0f}, "
+                        f"conf={confidence}, DD={current_dd:.1f}%). "
+                        f"Reason: {reasoning[:300] if reasoning else 'low conviction'}."
+                    )
+                    # Skips are generally lower importance than trade
+                    # entries, but clamp to a 4 floor so they're not
+                    # immediately aged out — SKIP reasons are exactly
+                    # what the calibration system needs.
+                    skip_importance = max(4, min(7, int(confidence or 4)))
+                    asyncio.create_task(save_memory(
+                        content=skip_content,
+                        memory_type="decision",
+                        strategy_id=trader.trader_id,
+                        ticker=trade.ticker,
+                        importance=skip_importance,
+                        source="signal_skip",
+                    ))
+                except Exception:
+                    pass
             # Phase 4 — populate position sizing fields (Kelly + cond prob).
             # Skipped for non-add action types inside the helper.
             try:

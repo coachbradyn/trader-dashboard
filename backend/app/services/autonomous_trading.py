@@ -83,6 +83,10 @@ async def run_autonomous_trading() -> dict:
     # ── Phase 1: Find opportunities (scan ONCE, execute across all portfolios) ──
     opportunities = []
 
+    # Pre-init so the "no opportunities" memory path below can reference
+    # it safely even if the scanner-phase try block bails before assigning.
+    profiles: list = []
+
     # Try scanner first
     try:
         from app.services.scanner_service import select_profiles_for_now, run_scanner
@@ -126,6 +130,31 @@ async def run_autonomous_trading() -> dict:
 
     if not opportunities:
         await log_activity("No opportunities found across all profiles and patterns", "status")
+        # Document the inactive-scan pass as a memory so the
+        # retrieval pipeline can learn "Henry looked and passed on
+        # $DATE with VIX=X, regime=Y" instead of leaving a silent
+        # gap. Matches the spec: if Henry doesn't trade for any
+        # reason, he documents why.
+        try:
+            from app.services.ai_service import save_memory
+            from app.services.market_regime import current_regime_classification
+            regime = await current_regime_classification()
+            regime_note = regime.get("label") if regime else "unknown regime"
+            vix = price_service.get_price("VIX")
+            vix_note = f"VIX={vix:.1f}" if vix else "VIX=?"
+            profile_names = ",".join(p.get("name") or p.get("id") or "?" for p in (profiles or []))
+            asyncio.create_task(save_memory(
+                content=(
+                    f"SCAN: ran {profile_names or 'no profiles'} — 0 opportunities surfaced. "
+                    f"{vix_note}, regime={regime_note}. Henry held cash across "
+                    f"{len(portfolios)} AI-enabled portfolios."
+                ),
+                memory_type="decision",
+                importance=5,
+                source="scan_empty",
+            ))
+        except Exception:
+            pass
         return summary
 
     await log_activity(f"Found {len(opportunities)} opportunities — executing across {len(portfolios)} portfolios", "scan_result")
