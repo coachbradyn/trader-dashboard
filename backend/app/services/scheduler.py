@@ -931,6 +931,25 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Daily Henry recap: per AI-portfolio summary of today's decisions +
+    # trades, written as an EOD_RECAP PortfolioAction (shows in Decisions
+    # tab) and also committed to memory. Runs 15 minutes after the close
+    # so final exits from the 15:30 autonomous-exit sweep are captured.
+    async def _run_daily_recap():
+        from app.services.daily_recap import run_daily_recap_job
+        try:
+            n = await run_daily_recap_job()
+            logger.info(f"Daily recap: saved {n} portfolio summaries")
+        except Exception as e:
+            logger.exception(f"daily_recap failed: {e}")
+
+    scheduler.add_job(
+        _run_daily_recap,
+        CronTrigger(hour=16, minute=15, timezone=ET, day_of_week="mon-fri"),
+        id="daily_recap",
+        replace_existing=True,
+    )
+
     # Adaptive Kelly weekly self-adjustment (intelligence upgrade
     # Phase 6, System 9). Sundays at 11pm ET — runs after the trading
     # week is fully resolved but before Monday open. Weekly rather than
