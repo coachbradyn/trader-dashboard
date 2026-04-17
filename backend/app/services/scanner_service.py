@@ -63,14 +63,8 @@ DEFAULT_SCANNER_CRITERIA = {
     # ──────────────────────────────────────────────────────────────────────
     "momentum_filter": {
         "enabled": True,
-        # Raised from 1.5% → 2.0% to filter noise. Stocks moving <2% on
-        # a typical day aren't actionable setups at our timeframe; this
-        # trims the candidate pool for technical-rule evaluation so each
-        # remaining name is a real mover.
-        "min_change_pct": 2.0,
-        # Bumped the post-filter cap from 40 → 60. With a wider screener
-        # pool (500 vs 200) and a tighter momentum floor, 60 gives
-        # Henry more genuinely-moving names to evaluate technically.
+        "min_change_pct": 1.5,
+        "fallback_min_change_pct": 0.8,
         "top_n": 60,
     },
     # ── Technical filter rules (evaluated in sequence, all must pass) ──
@@ -1204,14 +1198,26 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
     momentum_cfg = criteria.get("momentum_filter", DEFAULT_SCANNER_CRITERIA.get("momentum_filter", {}))
     if momentum_cfg.get("enabled", True):
         min_change = float(momentum_cfg.get("min_change_pct", 1.5))
-        top_n = int(momentum_cfg.get("top_n", 40))
+        fallback_min = float(momentum_cfg.get("fallback_min_change_pct", 0.8))
+        top_n = int(momentum_cfg.get("top_n", 60))
         before = len(screener_results)
+        original_pool = list(screener_results)
         screener_results = await _filter_by_momentum(
             screener_results, min_change_pct=min_change, top_n=top_n,
         )
+        used_threshold = min_change
+        if not screener_results and fallback_min < min_change:
+            logger.info(
+                f"Scanner momentum: 0 results at {min_change}%, "
+                f"relaxing to {fallback_min}%"
+            )
+            screener_results = await _filter_by_momentum(
+                original_pool, min_change_pct=fallback_min, top_n=top_n,
+            )
+            used_threshold = fallback_min
         logger.info(
             f"Scanner momentum filter: {before} → {len(screener_results)} "
-            f"(|Δ| ≥ {min_change}%, top {top_n})"
+            f"(|Δ| ≥ {used_threshold}%, top {top_n})"
         )
         if screener_results:
             top_preview = ", ".join(

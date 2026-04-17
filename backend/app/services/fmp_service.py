@@ -234,8 +234,8 @@ async def _fmp_get(
     attempts: list[tuple[str, dict | None]] = [(endpoint, params)]
     for fb_endpoint, fb_override in (fallbacks or []):
         merged = dict(params or {})
-        drop = fb_override.pop("_drop", []) if isinstance(fb_override, dict) else []
-        merged.update(fb_override or {})
+        drop = fb_override.get("_drop", []) if isinstance(fb_override, dict) else []
+        merged.update({k: v for k, v in (fb_override or {}).items() if k != "_drop"})
         for k in drop:
             merged.pop(k, None)
         attempts.append((fb_endpoint, merged or None))

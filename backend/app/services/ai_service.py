@@ -198,8 +198,13 @@ async def _build_system_prompt(
                         eq = info.get("equity") or info.get("portfolio_value") or 0.0
                         bp = info.get("buying_power") or 0.0
                         cash = info.get("cash") or 0.0
+                        ai_tag = ""
+                        if getattr(p, "is_ai_managed", False):
+                            ai_tag = " [AI-MANAGED]"
+                        elif getattr(p, "ai_evaluation_enabled", False):
+                            ai_tag = " [AI-EVAL-ENABLED — you trade here]"
                         return (
-                            f"  {p.name} ({p.execution_mode}): "
+                            f"  {p.name}{ai_tag} ({p.execution_mode}): "
                             f"equity ${float(eq):,.2f} | "
                             f"buying power ${float(bp):,.2f} | "
                             f"cash ${float(cash):,.2f}"
@@ -2529,6 +2534,7 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         # had zero visibility into manual holdings, Alpaca-synced
         # positions, or which portfolio owned what.
         portfolio_holdings_ctx = ""
+        managed_portfolio_names = []
         try:
             from app.database import async_session as _h_as
             from app.models.portfolio_holding import PortfolioHolding
@@ -2540,19 +2546,31 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
                 )).scalars().all()
                 sections = []
                 for p in ports:
+                    ai_managed = getattr(p, "is_ai_managed", False)
+                    ai_eval = getattr(p, "ai_evaluation_enabled", False)
+                    if ai_managed:
+                        role = "AI-MANAGED"
+                        managed_portfolio_names.append(p.name)
+                    elif ai_eval:
+                        role = "AI-EVALUATION-ENABLED"
+                        managed_portfolio_names.append(p.name)
+                    else:
+                        role = "manual"
+
                     hlds = (await hdb.execute(
                         _hsel(PortfolioHolding).where(
                             PortfolioHolding.portfolio_id == p.id,
                             PortfolioHolding.is_active == True,
                         )
                     )).scalars().all()
+                    mode = p.execution_mode or "local"
                     if not hlds:
                         sections.append(
-                            f"  {p.name} ({p.execution_mode or 'local'}): no holdings"
+                            f"  {p.name} [{role}] ({mode}): no holdings"
                         )
                         continue
                     lines = [
-                        f"  {p.name} ({p.execution_mode or 'local'}) — "
+                        f"  {p.name} [{role}] ({mode}) — "
                         f"${p.cash:.2f} cash:"
                     ]
                     for h in hlds:
@@ -2577,11 +2595,16 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
         except Exception:
             pass
 
+        managed_list = ", ".join(managed_portfolio_names) if managed_portfolio_names else "your AI portfolio"
+
         enhanced_question = f"""The user is asking about your trading decisions and activity.
 
-IMPORTANT: You are an AUTONOMOUS trader. You make your own buy/sell decisions for the AI portfolio without needing user approval. When you evaluate a signal and decide BUY, the trade executes immediately. You also run scanner profiles to find your own opportunities. You are NOT a recommendation engine that waits for approval — you are an independent trader.
-
-You manage MULTIPLE portfolios. Each has its own holdings and execution mode. When the user asks about a specific portfolio (e.g. "the Alpaca portfolio" or "the live portfolio"), refer to the PORTFOLIO HOLDINGS section below — NOT the trade log, which tracks webhook signals across all books.
+IMPORTANT — YOUR ROLE AND AUTHORITY:
+You are Henry, an AUTONOMOUS AI trader. You actively manage these portfolios: {managed_list}.
+Portfolios tagged [AI-MANAGED] are your primary paper book where you make independent buy/sell decisions.
+Portfolios tagged [AI-EVALUATION-ENABLED] are LIVE brokerage accounts (e.g. Alpaca) where you also execute trades — approved buys from your paper book are mirrored there, and you run exit checks on their holdings.
+You have FULL VISIBILITY and TRADING AUTHORITY over every portfolio listed below. When you approve a BUY, it executes in your paper book AND mirrors to all AI-evaluation-enabled live accounts. When you flag an EXIT, it closes in BOTH your paper book and the live accounts.
+You are NOT a recommendation engine — you are an independent trader who owns these positions.
 {portfolio_holdings_ctx}
 
 YOUR RECENT ACTIVITY LOG:
@@ -2589,7 +2612,7 @@ YOUR RECENT ACTIVITY LOG:
 {history_section}
 USER QUESTION: {req.question}
 
-Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring or scanning for. Reference the conversation history if relevant."""
+Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring. When the user asks about a specific portfolio (e.g. "the Alpaca portfolio" or "the live portfolio"), refer to the PORTFOLIO HOLDINGS section — cite specific positions, P&L, and your rationale. Reference the conversation history if relevant."""
 
         result = await query_trades(enhanced_question, all_trades, positions)
         try:
