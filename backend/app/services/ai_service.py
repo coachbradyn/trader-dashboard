@@ -2600,6 +2600,90 @@ Answer based on your actual activity and decisions. Be specific about which trad
 
     # ─── HENRY'S PRICE TARGETS ──────────────────────────────────────
 
+    def _parse_gemini_text_targets(raw: str, current_price: float | None) -> dict:
+        """Extract price-target fields from Gemini's plain-text response.
+
+        Gemini can't reliably produce the nested JSON schema, so we ask
+        it numbered questions and parse the answers with simple regexes.
+        Missing fields get safe defaults so the frontend always has a
+        renderable structure.
+        """
+        import re as _re
+
+        def _dollar(pattern: str, text: str, default: float = 0.0) -> float:
+            m = _re.search(pattern, text)
+            if m:
+                try:
+                    return float(m.group(1).replace(",", ""))
+                except (ValueError, IndexError):
+                    pass
+            return default
+
+        def _word(pattern: str, text: str, default: str = "") -> str:
+            m = _re.search(pattern, text, _re.IGNORECASE)
+            return m.group(1).strip() if m else default
+
+        def _sentence(pattern: str, text: str, default: str = "") -> str:
+            m = _re.search(pattern, text, _re.IGNORECASE | _re.DOTALL)
+            return m.group(1).strip()[:300] if m else default
+
+        cp = current_price or 0.0
+        bias = _word(r"(?:technical\s*)?bias[:\s]*(\w+)", raw, "neutral").lower()
+        if bias not in ("bullish", "bearish", "neutral"):
+            if "bull" in bias:
+                bias = "bullish"
+            elif "bear" in bias:
+                bias = "bearish"
+            else:
+                bias = "neutral"
+
+        support = _dollar(r"support[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 0.95, 2))
+        resistance = _dollar(r"resistance[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
+        stop = _dollar(r"stop[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 0.93, 2))
+
+        st_target = _dollar(r"(?:short[- ]?term|1[- ]?week)[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.02, 2))
+        st_conf = _word(r"(?:short[- ]?term|1[- ]?week)[^\n]{0,80}confidence[:\s]*(\w+)", raw, "medium")
+        st_reason = _sentence(r"(?:short[- ]?term|1[- ]?week)\s*reason[:\s]*(.*?)(?:\n|$)", raw, f"Near-term {bias} momentum.")
+
+        mt_target = _dollar(r"(?:medium[- ]?term|1[- ]?month)[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
+        mt_conf = _word(r"(?:medium[- ]?term|1[- ]?month)[^\n]{0,80}confidence[:\s]*(\w+)", raw, "medium")
+        mt_reason = _sentence(r"(?:medium[- ]?term|1[- ]?month)\s*reason[:\s]*(.*?)(?:\n|$)", raw, f"Base-case trajectory for the next month.")
+
+        bear_target = _dollar(r"bear[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 0.90, 2))
+        bear_trigger = _sentence(r"bear[^\n]{0,20}(?:trigger|cause)[:\s]*(.*?)(?:\n|$)", raw, "Macro deterioration or earnings miss.")
+        base_target = _dollar(r"base[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.03, 2))
+        base_trigger = _sentence(r"base[^\n]{0,20}(?:trigger|path|scenario)[:\s]*(.*?)(?:\n|$)", raw, "Continuation of current trend.")
+        bull_target = _dollar(r"bull[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.15, 2))
+        bull_trigger = _sentence(r"bull[^\n]{0,20}(?:trigger|cause)[:\s]*(.*?)(?:\n|$)", raw, "Strong catalyst or sector rotation.")
+
+        catalysts_m = _re.findall(r"catalyst[s]?[:\s]*(?:\d+[.)]\s*)?(.+?)(?:\n|$)", raw, _re.IGNORECASE)
+        catalysts = [c.strip() for c in catalysts_m[:3]] if catalysts_m else ["Upcoming earnings", "Sector momentum"]
+
+        rr = _dollar(r"risk[/\s]*reward[^$\d]{0,20}([\d,.]+)", raw, 0.0)
+
+        reasoning = _sentence(r"(?:overall\s*)?thesis[:\s]*([\s\S]{20,400}?)(?:\n\n|$)", raw, "")
+        if not reasoning:
+            lines = [l.strip() for l in raw.strip().split("\n") if len(l.strip()) > 40]
+            reasoning = " ".join(lines[-3:])[:400] if lines else "Analysis based on available technicals and fundamentals."
+
+        return {
+            "current_price": cp,
+            "generated_at": utcnow().isoformat() + "Z",
+            "technical_bias": bias,
+            "key_levels": {"support": support, "resistance": resistance, "stop_suggested": stop},
+            "short_term": {"target": st_target, "timeframe": "1 week", "reason": st_reason, "confidence": st_conf},
+            "medium_term": {"target": mt_target, "timeframe": "1 month", "reason": mt_reason, "confidence": mt_conf},
+            "scenarios": {
+                "bear": {"target": bear_target, "trigger": bear_trigger, "probability": "low"},
+                "base": {"target": base_target, "trigger": base_trigger, "probability": "high"},
+                "bull": {"target": bull_target, "trigger": bull_trigger, "probability": "low"},
+            },
+            "catalysts": catalysts,
+            "risk_reward": rr,
+            "reasoning": reasoning,
+            "raw_analysis": raw[:2000],
+        }
+
     @app.get("/api/ai/price-targets/{ticker}")
     async def get_henry_price_targets(ticker: str, force: bool = False, provider: str = "claude"):
         """Generate Henry's price targets with enriched technical/strategy context."""
@@ -2879,90 +2963,131 @@ Generate a full price target analysis with THREE SCENARIOS — bear, base, and b
 Respond in EXACTLY this JSON (no markdown, no backticks):
 {{"current_price": {current_price or 0}, "generated_at": "{utcnow().isoformat()}Z", "technical_bias": "bullish", "key_levels": {{"support": 0.00, "resistance": 0.00, "stop_suggested": 0.00}}, "short_term": {{"target": 0.00, "timeframe": "1 week", "reason": "2 sentences max", "confidence": "low"}}, "medium_term": {{"target": 0.00, "timeframe": "1 month", "reason": "2 sentences max", "confidence": "medium"}}, "scenarios": {{"bear": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}, "base": {{"target": 0.00, "trigger": "most likely path", "probability": "high"}}, "bull": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}}}, "catalysts": ["string", "string"], "risk_reward": 0.0, "reasoning": "3-4 sentence overall thesis integrating technicals, fundamentals, and strategy history"}}"""
 
-        try:
-            # Provider toggle: "claude" (default, high-stakes routing)
-            # or "gemini" (faster, cheaper, user-selectable from the UI).
-            # Gemini gets web_search=False because Google Search grounding
-            # injects citation markers [1][2] that break JSON extraction.
-            # The prompt already includes all the data Gemini needs from
-            # the context blocks above; web search only helps Claude.
-            is_gemini = provider == "gemini"
-            pt_fn = "signal_evaluation" if not is_gemini else "price_targets_gemini"
-            raw = await call_ai(
-                system, prompt, function_name=pt_fn, max_tokens=2048,
-                enable_web_search=not is_gemini,
-            )
-            clean = raw.strip().replace("```json", "").replace("```", "").strip()
+        # ── Gemini plain-text fallback ──────────────────────────────
+        # Gemini can't reliably produce the deeply nested JSON schema
+        # even with JSON mode + low temperature. Instead, let it write
+        # a structured plain-text analysis and extract the numbers
+        # into our JSON shape on the backend.
+        if provider == "gemini":
+            gemini_prompt = f"""Provide a price target analysis for {ticker}.
 
-            # Strip grounding citation markers ([1], [2], etc.) that
-            # Gemini sometimes injects even without explicit grounding.
-            import re
-            clean = re.sub(r'\[\d+\]', '', clean)
+Current price: {f'${current_price:.2f}' if current_price else 'Unknown'}
 
-            json_match = re.search(r'\{[\s\S]*\}', clean)
-            if not json_match:
-                _pt_log.warning(f"Price targets: no JSON found in response for {ticker}. Raw (first 300): {clean[:300]}")
-                return {"error": "AI response did not contain valid JSON", "current_price": current_price}
-            targets = json.loads(json_match.group())
+PRICE HISTORY (30 days):
+  {price_history_ctx}
 
-            # Persist until the user regenerates. The old code silently
-            # swallowed cache-write failures and omitted generated_at
-            # on new rows, which caused the 4h TTL check at the top of
-            # this handler to think nothing was cached.
+TECHNICAL INDICATORS:
+  {technicals_ctx}
+
+FUNDAMENTALS:
+  {fund_context or 'Not available'}
+
+STRATEGY PERFORMANCE ON {ticker}:
+{strategy_ctx}
+
+Answer these questions with specific dollar amounts:
+1. Technical bias: bullish, bearish, or neutral?
+2. Key support level (dollar amount):
+3. Key resistance level (dollar amount):
+4. Suggested stop loss (dollar amount):
+5. Short-term target (1 week, dollar amount) and confidence (low/medium/high):
+6. Short-term reason (1 sentence):
+7. Medium-term target (1 month, dollar amount) and confidence:
+8. Medium-term reason (1 sentence):
+9. Bear scenario target (6 weeks) and what triggers it:
+10. Base scenario target (6 weeks) and the most likely path:
+11. Bull scenario target (6 weeks) and what triggers it:
+12. Top 2-3 catalysts (upcoming events, earnings, etc.):
+13. Risk/reward ratio (number):
+14. Overall thesis (3-4 sentences):"""
+
             try:
-                from app.models.henry_cache import HenryCache
-                async with async_session() as db:
-                    old = await db.execute(select(HenryCache).where(HenryCache.cache_key == f"price_targets:{ticker}"))
-                    old_entry = old.scalar_one_or_none()
-                    if old_entry:
-                        old_entry.content = targets
-                        old_entry.generated_at = utcnow()
-                        old_entry.is_stale = False
-                        await db.flush()
-                    else:
-                        db.add(HenryCache(
-                            cache_key=f"price_targets:{ticker}",
-                            cache_type="price_targets",
-                            content=targets,
-                            ticker=ticker,
-                            generated_at=utcnow(),
-                            is_stale=False,
-                        ))
-                    await db.commit()
-            except Exception as e:
-                _pt_log.warning(f"Failed to cache price targets for {ticker}: {e}")
-
-            # Save to Henry's memory for future reference
-            try:
-                memory_parts = [f"Price targets for {ticker}"]
-                if targets.get("technical_bias"):
-                    memory_parts.append(f"bias={targets['technical_bias']}")
-                for tf in ("short_term", "medium_term"):
-                    t = targets.get(tf)
-                    if t and t.get("target"):
-                        memory_parts.append(f"{tf}=${t['target']:.2f} ({t.get('confidence', '?')} conf)")
-                if targets.get("scenarios"):
-                    for sc in ("bear", "base", "bull"):
-                        s = targets["scenarios"].get(sc)
-                        if s and s.get("target"):
-                            memory_parts.append(f"{sc}=${s['target']:.2f}")
-                if targets.get("reasoning"):
-                    memory_parts.append(targets["reasoning"][:200])
-
-                await save_memory(
-                    content=". ".join(memory_parts),
-                    memory_type="observation",
-                    ticker=ticker,
-                    importance=7,
-                    source="price_targets",
+                from app.services.ai_provider import call_ai
+                raw = await call_ai(
+                    system, gemini_prompt,
+                    function_name="price_targets_gemini",
+                    max_tokens=1500,
+                    enable_web_search=False,
                 )
-            except Exception:
-                pass
+                targets = _parse_gemini_text_targets(raw, current_price)
+                targets["provider"] = "gemini"
+            except Exception as e:
+                _pt_log.error(f"Gemini text price targets failed for {ticker}: {e}")
+                return {"error": f"Gemini analysis failed: {e}", "current_price": current_price}
 
-            return targets
-        except json.JSONDecodeError as e:
-            _pt_log.error(f"Price targets JSON parse failed for {ticker}: {e}. Raw (first 500): {clean[:500]}")
-            return {"error": f"Failed to parse AI response: {e}", "current_price": current_price}
+        # ── Claude JSON path (default) ──────────────────────────────
+        else:
+            try:
+                from app.services.ai_provider import call_ai
+                raw = await call_ai(
+                    system, prompt, function_name="signal_evaluation",
+                    max_tokens=2048, enable_web_search=True,
+                )
+                clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                import re
+                clean = re.sub(r'\[\d+\]', '', clean)
+
+                json_match = re.search(r'\{[\s\S]*\}', clean)
+                if not json_match:
+                    _pt_log.warning(f"Price targets: no JSON found for {ticker}. Raw (first 300): {clean[:300]}")
+                    return {"error": "AI response did not contain valid JSON", "current_price": current_price}
+                targets = json.loads(json_match.group())
+                targets["provider"] = "claude"
+            except json.JSONDecodeError as e:
+                _pt_log.error(f"Price targets JSON parse failed for {ticker}: {e}")
+                return {"error": f"Failed to parse AI response: {e}", "current_price": current_price}
+            except Exception as e:
+                _pt_log.error(f"Price targets generation failed for {ticker}: {e}")
+                return {"error": str(e)[:200], "current_price": current_price}
+
+        # ── Shared post-processing (both providers) ─────────────────
+        # `targets` is set by whichever branch ran above.
+        try:
+            from app.models.henry_cache import HenryCache
+            async with async_session() as db:
+                old = await db.execute(select(HenryCache).where(HenryCache.cache_key == f"price_targets:{ticker}"))
+                old_entry = old.scalar_one_or_none()
+                if old_entry:
+                    old_entry.content = targets
+                    old_entry.generated_at = utcnow()
+                    old_entry.is_stale = False
+                    await db.flush()
+                else:
+                    db.add(HenryCache(
+                        cache_key=f"price_targets:{ticker}",
+                        cache_type="price_targets",
+                        content=targets,
+                        ticker=ticker,
+                        generated_at=utcnow(),
+                        is_stale=False,
+                    ))
+                await db.commit()
         except Exception as e:
-            _pt_log.error(f"Price targets generation failed for {ticker}: {e}")
-            return {"error": str(e), "current_price": current_price}
+            _pt_log.warning(f"Failed to cache price targets for {ticker}: {e}")
+
+        try:
+            memory_parts = [f"Price targets for {ticker}"]
+            if targets.get("technical_bias"):
+                memory_parts.append(f"bias={targets['technical_bias']}")
+            for tf in ("short_term", "medium_term"):
+                t = targets.get(tf)
+                if t and isinstance(t, dict) and t.get("target"):
+                    memory_parts.append(f"{tf}=${t['target']} ({t.get('confidence', '?')} conf)")
+            if targets.get("scenarios"):
+                for sc in ("bear", "base", "bull"):
+                    s = targets["scenarios"].get(sc)
+                    if s and isinstance(s, dict) and s.get("target"):
+                        memory_parts.append(f"{sc}=${s['target']}")
+            if targets.get("reasoning"):
+                memory_parts.append(str(targets["reasoning"])[:200])
+            await save_memory(
+                content=". ".join(memory_parts),
+                memory_type="observation",
+                ticker=ticker,
+                importance=7,
+                source="price_targets",
+            )
+        except Exception:
+            pass
+
+        return targets
