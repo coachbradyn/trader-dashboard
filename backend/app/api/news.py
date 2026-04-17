@@ -218,6 +218,35 @@ def _synthetic_sentiment_label(score: float) -> str:
     return "Neutral"
 
 
+def _parse_thesis_text(raw: str) -> dict:
+    """Parse Gemini's plain-text bull/bear thesis into the JSON shape the frontend expects."""
+    import re
+
+    def _section(header: str, text: str) -> str:
+        pattern = rf"{header}\s*[:\-]?\s*(.*?)(?=\n[A-Z]{{2,}}[\s:\-]|\Z)"
+        m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        return m.group(1).strip() if m else ""
+
+    def _bullets(header: str, text: str) -> list[str]:
+        block = _section(header, text)
+        items = re.findall(r"[-*]\s*(.+?)(?:\n|$)", block)
+        return [i.strip() for i in items[:5] if i.strip()] or [block[:120]] if block else []
+
+    bull = _section("BULL CASE", raw) or "Analysis unavailable."
+    bear = _section("BEAR CASE", raw) or "Analysis unavailable."
+    catalysts = _bullets("CATALYSTS", raw)
+    risks = _bullets("RISKS", raw)
+    sentiment = _section("SENTIMENT", raw) or "Sentiment data unavailable."
+
+    return {
+        "bull_case": bull[:500],
+        "bear_case": bear[:500],
+        "key_catalysts": catalysts[:5],
+        "risk_factors": risks[:5],
+        "sentiment_summary": sentiment[:300],
+    }
+
+
 @router.get("/news/ticker/{ticker}/thesis")
 async def get_ticker_thesis(ticker: str):
     """
@@ -294,30 +323,39 @@ async def generate_ticker_thesis(ticker: str):
 
 {news_ctx}
 
-Return a JSON object with this exact structure:
-{{
-  "bull_case": "2-3 sentence bull thesis — why this stock could go up significantly",
-  "bear_case": "2-3 sentence bear thesis — the key risks and why it could go down",
-  "key_catalysts": ["catalyst 1", "catalyst 2", "catalyst 3"],
-  "risk_factors": ["risk 1", "risk 2", "risk 3"],
-  "sentiment_summary": "One sentence: what's the overall market sentiment right now?"
-}}
+Use this EXACT format with the section headers shown:
 
-Be specific to {ticker} — reference actual business drivers, not generic statements. Keep each thesis under 80 words."""
+BULL CASE:
+2-3 sentences on why {ticker} could go up significantly. Reference specific business drivers.
+
+BEAR CASE:
+2-3 sentences on the key risks and why {ticker} could go down.
+
+CATALYSTS:
+- catalyst 1
+- catalyst 2
+- catalyst 3
+
+RISKS:
+- risk 1
+- risk 2
+- risk 3
+
+SENTIMENT:
+One sentence on overall market sentiment toward {ticker} right now.
+
+Be specific — reference actual numbers, products, and events. No generic filler."""
 
         from app.services.ai_provider import call_ai
         raw = await call_ai(
-            system="You are a financial analyst. Return ONLY valid JSON, no markdown, no code blocks.",
+            system="You are a financial analyst. Write in plain text with the section headers requested. No JSON, no markdown fences.",
             prompt=prompt,
             function_name="bull_bear_thesis",
             max_tokens=800,
+            enable_web_search=True,
         )
 
-        from app.utils.json_extract import extract_json_object
-        thesis_data = extract_json_object(raw)
-        if thesis_data is None:
-            import json
-            raise json.JSONDecodeError("No JSON object found in AI response", raw[:200], 0)
+        thesis_data = _parse_thesis_text(raw)
 
         # Cache it
         try:
@@ -374,8 +412,6 @@ Be specific to {ticker} — reference actual business drivers, not generic state
             "cached": False,
         }
 
-    except json.JSONDecodeError:
-        return {"ticker": ticker, "thesis": None, "error": "Failed to parse AI response"}
     except Exception as e:
         logger.error(f"Failed to generate thesis for {ticker}: {e}")
         return {"ticker": ticker, "thesis": None, "error": str(e)}
