@@ -53,6 +53,15 @@ _GEMINI_TEMPERATURE: dict[str, float] = {
     "memory_extraction": 0.4,
 }
 
+# Functions that should use Gemini's native JSON mode
+# (response_mime_type: application/json). This forces the decoder to
+# only emit valid JSON — no markdown, no prose, no citations.
+_GEMINI_JSON_MODE: set[str] = {
+    "price_targets_gemini",
+    "bull_bear_thesis",
+    "memory_extraction",
+}
+
 
 async def call_ai(
     system: str,
@@ -96,9 +105,10 @@ async def call_ai(
 
     if provider == "gemini":
         gemini_temp = _GEMINI_TEMPERATURE.get(function_name)
+        gemini_json = function_name in _GEMINI_JSON_MODE
         result, model, in_tok, out_tok = await _call_gemini(
             system, prompt, max_tokens, web_search=enable_web_search,
-            temperature=gemini_temp,
+            temperature=gemini_temp, json_mode=gemini_json,
         )
         if result is None:
             # Fallback to Claude — preserve the caller's web_search intent.
@@ -234,7 +244,7 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
 
 async def _call_gemini(
     system: str, prompt: str, max_tokens: int, web_search: bool = False,
-    temperature: float | None = None,
+    temperature: float | None = None, json_mode: bool = False,
 ) -> tuple:
     """Call Gemini API. Returns (text, model, input_tokens, output_tokens).
 
@@ -274,15 +284,23 @@ async def _call_gemini(
                     [genai.types.Tool(google_search=genai.types.GoogleSearch())]
                     if web_search else []
                 )
+                config_kwargs = {
+                    "system_instruction": system,
+                    "max_output_tokens": max_tokens,
+                    "temperature": temperature if temperature is not None else 0.7,
+                    "tools": tools,
+                }
+                # JSON mode forces the model to output valid JSON at
+                # the decoding level — no markdown fences, no prose.
+                # Incompatible with grounding tools (which inject
+                # citations), so we only enable it when web_search is
+                # off. This is the key fix for Gemini price targets.
+                if json_mode and not web_search:
+                    config_kwargs["response_mime_type"] = "application/json"
                 response = client.models.generate_content(
                     model=mn,
                     contents=prompt,
-                    config=genai.types.GenerateContentConfig(
-                        system_instruction=system,
-                        max_output_tokens=max_tokens,
-                        temperature=temperature if temperature is not None else 0.7,
-                        tools=tools,
-                    ),
+                    config=genai.types.GenerateContentConfig(**config_kwargs),
                 )
                 # response.text can raise when content is blocked by safety
                 # filters — surface that so we try the next model.
