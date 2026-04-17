@@ -188,10 +188,10 @@ DEFAULT_PROFILES = [
         "id": "value_catalyst",
         "name": "Value + Catalyst",
         "description": "Fundamentally solid stocks approaching catalyst events",
-        "enabled": False,
+        "enabled": True,
         "market_conditions": {
             "trend": "any",
-            "time_slots": ["afternoon"],
+            "time_slots": ["morning", "midday", "afternoon"],
         },
         "criteria": None,
     },
@@ -232,10 +232,10 @@ DEFAULT_PROFILES = [
         "id": "small_cap_momentum",
         "name": "Small Cap Momentum",
         "description": "$300M–$1B small caps with high relative volume — higher risk, higher reward",
-        "enabled": False,
+        "enabled": True,
         "market_conditions": {
             "trend": "any",
-            "time_slots": ["morning"],
+            "time_slots": ["morning", "midday"],
         },
         "criteria": None,
     },
@@ -529,8 +529,8 @@ def get_preset_criteria(preset_name: str) -> dict:
             "technical_rules": [
                 {
                     "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
-                    "condition": "below", "value": 30, "compare_indicator": None,
-                    "label": "RSI < 30 (oversold)",
+                    "condition": "below", "value": 40, "compare_indicator": None,
+                    "label": "RSI < 40 (pulling back)",
                 },
                 {
                     "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
@@ -539,7 +539,7 @@ def get_preset_criteria(preset_name: str) -> dict:
                     "label": "Price above SMA 200 (uptrend)",
                 },
             ],
-            "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
+            "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
             "active_preset": "oversold_bounce",
         },
         "breakout": {
@@ -550,8 +550,8 @@ def get_preset_criteria(preset_name: str) -> dict:
             "technical_rules": [
                 {
                     "enabled": True, "indicator": "adx", "period": 14, "timeframe": "daily",
-                    "condition": "crosses_above", "value": 20, "compare_indicator": None,
-                    "label": "ADX crosses above 20 (breakout)",
+                    "condition": "above", "value": 20, "compare_indicator": None,
+                    "label": "ADX > 20 (directional move)",
                 },
                 {
                     "enabled": True, "indicator": "price", "period": 0, "timeframe": "daily",
@@ -560,7 +560,7 @@ def get_preset_criteria(preset_name: str) -> dict:
                     "label": "Price above EMA 50",
                 },
             ],
-            "volume_filter": {"enabled": True, "surge_multiplier": 2.0, "avg_period": 20},
+            "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
             "active_preset": "breakout",
         },
         "value_catalyst": {
@@ -608,34 +608,31 @@ def get_preset_criteria(preset_name: str) -> dict:
         "dead_cat_bounce": {
             "screener": {
                 **DEFAULT_SCANNER_CRITERIA["screener"],
-                "marketCapMoreThan": 500000000,  # >500M — avoid penny stocks
+                "marketCapMoreThan": 500000000,
                 "volumeMoreThan": 500000,
                 "limit": 80,
             },
             "technical_rules": [
                 {
-                    # EMA 9 crossing above EMA 21 = positive LMA signal
                     "enabled": True, "indicator": "ema", "period": 9, "timeframe": "daily",
-                    "condition": "crosses_above", "value": 0,
+                    "condition": "above", "value": 0,
                     "compare_indicator": {"indicator": "ema", "period": 21},
-                    "label": "EMA 9 crosses above EMA 21 (positive LMA)",
-                },
-                {
-                    # RSI recovering from oversold — between 30-50
-                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
-                    "condition": "above", "value": 30, "compare_indicator": None,
-                    "label": "RSI > 30 (leaving oversold)",
+                    "label": "EMA 9 > EMA 21 (short-term recovery)",
                 },
                 {
                     "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
-                    "condition": "below", "value": 55, "compare_indicator": None,
-                    "label": "RSI < 55 (not yet overbought — room to run)",
+                    "condition": "above", "value": 25, "compare_indicator": None,
+                    "label": "RSI > 25 (leaving oversold)",
+                },
+                {
+                    "enabled": True, "indicator": "rsi", "period": 14, "timeframe": "daily",
+                    "condition": "below", "value": 60, "compare_indicator": None,
+                    "label": "RSI < 60 (room to run)",
                 },
             ],
             "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
             "active_preset": "dead_cat_bounce",
-            # Drawdown filter: stock must be down >15% from 30-day high
-            "drawdown_filter": {"enabled": True, "min_drawdown_pct": 15, "lookback_days": 30},
+            "drawdown_filter": {"enabled": True, "min_drawdown_pct": 10, "lookback_days": 30},
         },
         "mid_cap_momentum": {
             "screener": {
@@ -689,9 +686,8 @@ def get_preset_criteria(preset_name: str) -> dict:
                     "label": "RSI < 75 (not yet blow-off top)",
                 },
             ],
-            "volume_filter": {"enabled": True, "surge_multiplier": 2.0, "avg_period": 20},
-            # High change floor — small caps need to be clearly in motion
-            "momentum_filter": {"enabled": True, "min_change_pct": 3.0, "top_n": 30},
+            "volume_filter": {"enabled": True, "surge_multiplier": 1.5, "avg_period": 20},
+            "momentum_filter": {"enabled": True, "min_change_pct": 1.0, "top_n": 40},
             "active_preset": "small_cap_momentum",
         },
     }
