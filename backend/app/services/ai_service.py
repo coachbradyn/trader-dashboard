@@ -2610,19 +2610,21 @@ Answer based on your actual activity and decisions. Be specific about which trad
 
         ticker = ticker.upper().strip()
 
-        # Check cache — persist until regenerated (no time-based
-        # expiry). The old 4h TTL caused targets to vanish and
-        # require regeneration on every session. Now we serve the
-        # cached version indefinitely; only a `?force=true` call
-        # (the Refresh button on the UI) triggers a new generation.
+        # Check cache — persist until regenerated. Serve any row that
+        # isn't explicitly marked stale (including NULL which is the
+        # default for rows created before the is_stale column existed).
         if not force:
             try:
                 from app.models.henry_cache import HenryCache
+                from sqlalchemy import or_
                 async with async_session() as db:
                     cached = await db.execute(
                         select(HenryCache).where(
                             HenryCache.cache_key == f"price_targets:{ticker}",
-                            HenryCache.is_stale == False,
+                            or_(
+                                HenryCache.is_stale == False,
+                                HenryCache.is_stale.is_(None),
+                            ),
                         )
                     )
                     hit = cached.scalar_one_or_none()

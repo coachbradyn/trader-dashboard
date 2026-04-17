@@ -396,6 +396,7 @@ export default function TickerDetailPage() {
   const [thesisData, setThesisData] = useState<{ bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null>(null);
   const [thesisLoading, setThesisLoading] = useState(false);
   const [thesisCached, setThesisCached] = useState(false);
+  const [thesisError, setThesisError] = useState<string | null>(null);
 
   // Monte Carlo state
   const [mcResults, setMcResults] = useState<MonteCarloResponse | null>(null);
@@ -446,13 +447,21 @@ export default function TickerDetailPage() {
 
   const generateThesis = async () => {
     setThesisLoading(true);
+    setThesisError(null);
     try {
       const result = await api.generateTickerThesis(ticker);
       if (result.thesis) {
         setThesisData(result.thesis);
         setThesisCached(false);
+        setThesisError(null);
+      } else if (result.error) {
+        setThesisError(result.error as string);
+      } else {
+        setThesisError("No thesis returned — try again");
       }
-    } catch {}
+    } catch (e) {
+      setThesisError(e instanceof Error ? e.message : "Thesis generation failed");
+    }
     setThesisLoading(false);
   };
 
@@ -1030,6 +1039,11 @@ export default function TickerDetailPage() {
                       </div>
                     )}
                   </div>
+                </div>
+              ) : thesisError ? (
+                <div className="py-4 text-center">
+                  <p className="text-xs text-loss">{thesisError}</p>
+                  <p className="text-[10px] text-gray-600 mt-1">Click Generate to retry</p>
                 </div>
               ) : (
                 <p className="text-xs text-gray-600 text-center py-4">Click Generate for Henry&apos;s bull/bear analysis</p>

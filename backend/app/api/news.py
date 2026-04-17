@@ -309,8 +309,8 @@ Be specific to {ticker} — reference actual business drivers, not generic state
         raw = await call_ai(
             system="You are a financial analyst. Return ONLY valid JSON, no markdown, no code blocks.",
             prompt=prompt,
-            function_name="watchlist_summary",
-            max_tokens=600,
+            function_name="bull_bear_thesis",
+            max_tokens=800,
         )
 
         # Parse JSON — strip fences and use regex to extract the JSON
