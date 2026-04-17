@@ -2621,7 +2621,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
         import re as _re
 
         def _dollar(pattern: str, text: str, default: float = 0.0) -> float:
-            m = _re.search(pattern, text)
+            m = _re.search(pattern, text, _re.IGNORECASE)
             if m:
                 try:
                     return float(m.group(1).replace(",", ""))
@@ -2633,45 +2633,51 @@ Answer based on your actual activity and decisions. Be specific about which trad
             m = _re.search(pattern, text, _re.IGNORECASE)
             return m.group(1).strip() if m else default
 
-        def _sentence(pattern: str, text: str, default: str = "") -> str:
-            m = _re.search(pattern, text, _re.IGNORECASE | _re.DOTALL)
+        def _grab_after(keyword: str, text: str, default: str = "") -> str:
+            """Grab everything after *keyword* up to the next numbered line or double-newline."""
+            m = _re.search(
+                rf"{keyword}[:\s\-]*(.*?)(?:\n\s*\d+[.):]|\n\n|\Z)",
+                text, _re.IGNORECASE | _re.DOTALL,
+            )
             return m.group(1).strip()[:300] if m else default
 
         cp = current_price or 0.0
-        bias = _word(r"(?:technical\s*)?bias[:\s]*(\w+)", raw, "neutral").lower()
-        if bias not in ("bullish", "bearish", "neutral"):
-            if "bull" in bias:
-                bias = "bullish"
-            elif "bear" in bias:
-                bias = "bearish"
-            else:
-                bias = "neutral"
 
-        support = _dollar(r"support[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 0.95, 2))
-        resistance = _dollar(r"resistance[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
-        stop = _dollar(r"stop[^$\d]{0,20}\$?([\d,.]+)", raw, round(cp * 0.93, 2))
+        # Bias: look for bullish/bearish/neutral anywhere near "bias"
+        bias_raw = _word(r"bias[:\s\-]*(\w+)", raw, "")
+        if "bull" in bias_raw.lower():
+            bias = "bullish"
+        elif "bear" in bias_raw.lower():
+            bias = "bearish"
+        else:
+            bias = "neutral"
 
-        st_target = _dollar(r"(?:short[- ]?term|1[- ]?week)[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.02, 2))
-        st_conf = _word(r"(?:short[- ]?term|1[- ]?week)[^\n]{0,80}confidence[:\s]*(\w+)", raw, "medium")
-        st_reason = _sentence(r"(?:short[- ]?term|1[- ]?week)\s*reason[:\s]*(.*?)(?:\n|$)", raw, f"Near-term {bias} momentum.")
+        # Dollar amounts: generous gaps between keyword and $amount
+        support = _dollar(r"support[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 0.95, 2))
+        resistance = _dollar(r"resistance[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
+        stop = _dollar(r"stop[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 0.93, 2))
 
-        mt_target = _dollar(r"(?:medium[- ]?term|1[- ]?month)[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
-        mt_conf = _word(r"(?:medium[- ]?term|1[- ]?month)[^\n]{0,80}confidence[:\s]*(\w+)", raw, "medium")
-        mt_reason = _sentence(r"(?:medium[- ]?term|1[- ]?month)\s*reason[:\s]*(.*?)(?:\n|$)", raw, f"Base-case trajectory for the next month.")
+        st_target = _dollar(r"(?:short.{0,6}term|1.?week)[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 1.02, 2))
+        st_conf = _word(r"(?:short.{0,6}term|1.?week).{0,80}?confidence[:\s]*(\w+)", raw, "medium")
+        st_reason = _grab_after(r"(?:short.{0,6}term|1.?week).{0,10}reason", raw, f"Near-term {bias} momentum.")
 
-        bear_target = _dollar(r"bear[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 0.90, 2))
-        bear_trigger = _sentence(r"bear[^\n]{0,20}(?:trigger|cause)[:\s]*(.*?)(?:\n|$)", raw, "Macro deterioration or earnings miss.")
-        base_target = _dollar(r"base[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.03, 2))
-        base_trigger = _sentence(r"base[^\n]{0,20}(?:trigger|path|scenario)[:\s]*(.*?)(?:\n|$)", raw, "Continuation of current trend.")
-        bull_target = _dollar(r"bull[^$\d]{0,30}\$?([\d,.]+)", raw, round(cp * 1.15, 2))
-        bull_trigger = _sentence(r"bull[^\n]{0,20}(?:trigger|cause)[:\s]*(.*?)(?:\n|$)", raw, "Strong catalyst or sector rotation.")
+        mt_target = _dollar(r"(?:medium.{0,6}term|1.?month)[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 1.05, 2))
+        mt_conf = _word(r"(?:medium.{0,6}term|1.?month).{0,80}?confidence[:\s]*(\w+)", raw, "medium")
+        mt_reason = _grab_after(r"(?:medium.{0,6}term|1.?month).{0,10}reason", raw, f"Base-case trajectory for the next month.")
+
+        bear_target = _dollar(r"bear[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 0.90, 2))
+        bear_trigger = _grab_after(r"bear.{0,30}(?:trigger|cause|scenario)", raw, "Macro deterioration or earnings miss.")
+        base_target = _dollar(r"base[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 1.03, 2))
+        base_trigger = _grab_after(r"base.{0,30}(?:trigger|path|scenario|likely)", raw, "Continuation of current trend.")
+        bull_target = _dollar(r"bull[^$\d]{0,40}\$?([\d,.]+)", raw, round(cp * 1.15, 2))
+        bull_trigger = _grab_after(r"bull.{0,30}(?:trigger|cause|scenario)", raw, "Strong catalyst or sector rotation.")
 
         catalysts_m = _re.findall(r"catalyst[s]?[:\s]*(?:\d+[.)]\s*)?(.+?)(?:\n|$)", raw, _re.IGNORECASE)
         catalysts = [c.strip() for c in catalysts_m[:3]] if catalysts_m else ["Upcoming earnings", "Sector momentum"]
 
-        rr = _dollar(r"risk[/\s]*reward[^$\d]{0,20}([\d,.]+)", raw, 0.0)
+        rr = _dollar(r"risk.{0,5}reward[^$\d]{0,20}([\d,.]+)", raw, 0.0)
 
-        reasoning = _sentence(r"(?:overall\s*)?thesis[:\s]*([\s\S]{20,400}?)(?:\n\n|$)", raw, "")
+        reasoning = _grab_after(r"(?:overall\s*)?thesis", raw, "")
         if not reasoning:
             lines = [l.strip() for l in raw.strip().split("\n") if len(l.strip()) > 40]
             reasoning = " ".join(lines[-3:])[:400] if lines else "Analysis based on available technicals and fundamentals."
@@ -3052,15 +3058,14 @@ Answer these questions with specific dollar amounts:
                     system, prompt, function_name="signal_evaluation",
                     max_tokens=2048, enable_web_search=True,
                 )
-                clean = raw.strip().replace("```json", "").replace("```", "").strip()
                 import re
-                clean = re.sub(r'\[\d+\]', '', clean)
+                clean = re.sub(r'\[\d+\]', '', raw)
 
-                json_match = re.search(r'\{[\s\S]*\}', clean)
-                if not json_match:
+                from app.utils.json_extract import extract_json_object
+                targets = extract_json_object(clean)
+                if targets is None:
                     _pt_log.warning(f"Price targets: no JSON found for {ticker}. Raw (first 300): {clean[:300]}")
                     return {"error": "AI response did not contain valid JSON", "current_price": current_price}
-                targets = json.loads(json_match.group())
                 targets["provider"] = "claude"
             except json.JSONDecodeError as e:
                 _pt_log.error(f"Price targets JSON parse failed for {ticker}: {e}")

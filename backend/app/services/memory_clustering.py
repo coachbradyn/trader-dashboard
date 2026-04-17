@@ -680,13 +680,11 @@ async def _generate_cluster_labels(
             "memories. Output ONLY a 3-5 word label as plain text — no quotes, "
             "no markdown, no punctuation, no preamble."
         )
-        # max_tokens raised 20 → 60 to give the model headroom; we cap
-        # length post-clean instead of choking on it mid-generation.
         try:
             text = await call_ai(
                 system=system,
                 prompt=prompt,
-                function_name="memory_extraction",  # Gemini-routed
+                function_name="cluster_labeling",
                 max_tokens=60,
             )
         except Exception as e:

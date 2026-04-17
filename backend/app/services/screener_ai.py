@@ -165,9 +165,11 @@ Rules:
         from app.services.ai_provider import call_ai
         raw = await call_ai(SCREENER_SYSTEM_PROMPT, prompt, function_name="screener_analysis", max_tokens=1200)
 
-        # Parse JSON response
-        clean = raw.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(clean)
+        from app.utils.json_extract import extract_json_object
+        result = extract_json_object(raw)
+        if result is None:
+            logger.error("Failed to extract JSON from screener AI response")
+            return {"picks": [], "market_context": {"sector_heat": "Parse error", "catalysts": "N/A", "noise_ratio": "N/A"}}
 
         return {
             "picks": result.get("picks", []),
@@ -178,7 +180,7 @@ Rules:
             }),
         }
     except json.JSONDecodeError:
-        logger.error(f"Failed to parse screener AI response")
+        logger.error("Failed to parse screener AI response")
         return {"picks": [], "market_context": {"sector_heat": "Parse error", "catalysts": "N/A", "noise_ratio": "N/A"}}
     except Exception as e:
         logger.error(f"Screener AI analysis failed: {e}")
@@ -450,12 +452,14 @@ Rules:
 
     try:
         from app.services.ai_provider import call_ai
+        from app.utils.json_extract import extract_json_object
         system = TICKER_ANALYSIS_SYSTEM_PROMPT_TEMPLATE.format(
             strategies_section=_get_strategies_section()
         )
         raw = await call_ai(system, prompt, function_name="screener_analysis", max_tokens=2500)
-        clean = raw.strip().replace("```json", "").replace("```", "").strip()
-        result = json.loads(clean)
+        result = extract_json_object(raw)
+        if result is None:
+            raise json.JSONDecodeError("No JSON object found", raw[:200], 0)
 
         # Bridge to the memory layer (intelligence upgrade Phase 2,
         # System 3): synthesize a structured-text view of the analysis

@@ -21,6 +21,7 @@ FUNCTION_ROUTING = {
     "scheduled_review": "claude",
     "conflict_resolution": "claude",
     "ai_portfolio_decision": "claude",
+    "cluster_labeling": "claude",
     # Gemini (high-volume, lower-stakes)
     "morning_briefing": "gemini",
     "watchlist_summary": "gemini",
@@ -29,7 +30,7 @@ FUNCTION_ROUTING = {
     "trade_review": "gemini",
     "memory_extraction": "gemini",
     "price_targets_gemini": "gemini",
-    "bull_bear_thesis": "gemini",
+    "bull_bear_thesis": "claude",
 }
 
 # Keywords that escalate Ask Henry to Claude

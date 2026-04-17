@@ -313,18 +313,11 @@ Be specific to {ticker} — reference actual business drivers, not generic state
             max_tokens=800,
         )
 
-        # Parse JSON — strip fences and use regex to extract the JSON
-        # object even when the model wraps it in prose or markdown.
-        import json
-        import re
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        # Regex extract first JSON object if still not pure JSON.
-        json_match = re.search(r"\{[\s\S]*\}", cleaned)
-        if json_match:
-            cleaned = json_match.group(0)
-        thesis_data = json.loads(cleaned)
+        from app.utils.json_extract import extract_json_object
+        thesis_data = extract_json_object(raw)
+        if thesis_data is None:
+            import json
+            raise json.JSONDecodeError("No JSON object found in AI response", raw[:200], 0)
 
         # Cache it
         try:
