@@ -57,8 +57,6 @@ _GEMINI_TEMPERATURE: dict[str, float] = {
 # (response_mime_type: application/json). This forces the decoder to
 # only emit valid JSON — no markdown, no prose, no citations.
 _GEMINI_JSON_MODE: set[str] = {
-    "price_targets_gemini",
-    "bull_bear_thesis",
     "memory_extraction",
 }
 

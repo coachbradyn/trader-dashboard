@@ -2926,12 +2926,12 @@ Answer based on your actual activity and decisions. Be specific about which trad
         # ── Build enriched prompt ──────────────────────────────────────
 
         from app.services.ai_provider import call_ai
-        # Gemini gets a leaner system prompt without web-search guidance
-        # (we disable grounding for it). Claude still gets the full prompt.
-        is_gemini_pt = provider == "gemini"
+        # Both providers get the full system prompt with web search
+        # guidance. Gemini uses plain text (not JSON) so grounding
+        # citations don't cause parsing issues anymore.
         system = await _build_system_prompt(
             ticker=ticker,
-            enable_web_search=not is_gemini_pt,
+            enable_web_search=True,
             query_text=f"price target analysis {ticker}",
         )
         prompt = f"""Provide a structured price target analysis for {ticker}.
@@ -3002,12 +3002,11 @@ Answer these questions with specific dollar amounts:
 14. Overall thesis (3-4 sentences):"""
 
             try:
-                from app.services.ai_provider import call_ai
                 raw = await call_ai(
                     system, gemini_prompt,
                     function_name="price_targets_gemini",
                     max_tokens=1500,
-                    enable_web_search=False,
+                    enable_web_search=True,
                 )
                 targets = _parse_gemini_text_targets(raw, current_price)
                 targets["provider"] = "gemini"
@@ -3018,7 +3017,6 @@ Answer these questions with specific dollar amounts:
         # ── Claude JSON path (default) ──────────────────────────────
         else:
             try:
-                from app.services.ai_provider import call_ai
                 raw = await call_ai(
                     system, prompt, function_name="signal_evaluation",
                     max_tokens=2048, enable_web_search=True,
