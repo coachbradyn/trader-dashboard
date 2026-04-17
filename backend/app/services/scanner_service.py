@@ -63,14 +63,7 @@ DEFAULT_SCANNER_CRITERIA = {
     # ──────────────────────────────────────────────────────────────────────
     "momentum_filter": {
         "enabled": True,
-        # Raised from 1.5% → 2.0% to filter noise. Stocks moving <2% on
-        # a typical day aren't actionable setups at our timeframe; this
-        # trims the candidate pool for technical-rule evaluation so each
-        # remaining name is a real mover.
-        "min_change_pct": 2.0,
-        # Bumped the post-filter cap from 40 → 60. With a wider screener
-        # pool (500 vs 200) and a tighter momentum floor, 60 gives
-        # Henry more genuinely-moving names to evaluate technically.
+        "min_change_pct": 0.5,
         "top_n": 60,
     },
     # ── Technical filter rules (evaluated in sequence, all must pass) ──
@@ -672,7 +665,7 @@ def get_preset_criteria(preset_name: str) -> dict:
             ],
             "volume_filter": {"enabled": False, "surge_multiplier": 1.5, "avg_period": 20},
             # Stronger momentum bar for mid caps — they move more
-            "momentum_filter": {"enabled": True, "min_change_pct": 2.0, "top_n": 40},
+            "momentum_filter": {"enabled": True, "min_change_pct": 0.5, "top_n": 60},
             "active_preset": "mid_cap_momentum",
         },
         "small_cap_momentum": {
@@ -715,18 +708,17 @@ def get_preset_criteria(preset_name: str) -> dict:
 
 async def _filter_by_momentum(
     screener_results: list[dict],
-    min_change_pct: float = 1.5,
-    top_n: int = 40,
+    min_change_pct: float = 0.5,
+    top_n: int = 60,
 ) -> list[dict]:
-    """Enrich screener results with batch quotes and filter/sort by daily %change.
+    """Enrich screener results with batch quotes and sort by daily %change.
 
-    The FMP /stable/company-screener endpoint returns results sorted by market
-    cap descending with no sort override, so the default top-50 is always the
-    MAG 7 + megacaps regardless of technical configuration. This function pulls
-    current %change for the full screener pool, drops anything that hasn't
-    moved at least min_change_pct today, sorts by |change_pct| descending, and
-    returns the top N candidates — so the downstream technical pipeline
-    evaluates actual movers instead of size-sorted megacaps.
+    The FMP screener returns results sorted by market cap, so without this
+    step the candidate pool is always megacaps. This function pulls live
+    quotes, attaches %change, and returns the top N movers.
+
+    If batch quotes fail entirely, returns the original list (capped to
+    top_n) so the technical pipeline still has something to evaluate.
     """
     from app.services.fmp_service import get_batch_quotes
 
@@ -737,8 +729,6 @@ async def _filter_by_momentum(
     if not tickers:
         return []
 
-    # Batch quote in chunks (FMP batch-quote supports many symbols per call
-    # but individual endpoints have length limits).
     change_map: dict[str, float] = {}
     volume_map: dict[str, float] = {}
     CHUNK = 50
@@ -746,6 +736,7 @@ async def _filter_by_momentum(
         chunk = tickers[i:i + CHUNK]
         quotes = await get_batch_quotes(chunk)
         if not quotes or not isinstance(quotes, list):
+            logger.warning(f"Momentum filter: batch quote failed for chunk {i//CHUNK+1} ({len(chunk)} tickers)")
             continue
         for q in quotes:
             sym = q.get("symbol")
@@ -758,25 +749,60 @@ async def _filter_by_momentum(
                 except (TypeError, ValueError):
                     continue
 
-    # Attach change% to each screener result and filter
-    enriched: list[dict] = []
+    # If batch quotes failed entirely, pass stocks through unfiltered
+    # so the technical pipeline has candidates to work with.
+    if not change_map:
+        logger.warning(
+            f"Momentum filter: no quote data at all — passing {min(len(screener_results), top_n)} "
+            f"stocks through unfiltered"
+        )
+        return screener_results[:top_n]
+
+    # Attach change% and sort by absolute movement
+    with_change: list[dict] = []
+    without_change: list[dict] = []
     for s in screener_results:
         sym = s.get("symbol")
         if not sym:
             continue
         cp = change_map.get(sym)
         if cp is None:
-            continue  # drop silent tickers — probably halted or stale
-        if abs(cp) < min_change_pct:
+            without_change.append(s)
             continue
         s["_change_pct"] = cp
         s["_live_volume"] = volume_map.get(sym, s.get("volume"))
-        enriched.append(s)
+        with_change.append(s)
 
-    # Sort by absolute %change descending (captures both long and short setups)
-    enriched.sort(key=lambda x: abs(x.get("_change_pct", 0)), reverse=True)
+    # Sort movers by absolute %change descending
+    with_change.sort(key=lambda x: abs(x.get("_change_pct", 0)), reverse=True)
 
-    return enriched[:top_n]
+    # Apply the min_change threshold, but guarantee a minimum pool
+    above_threshold = [s for s in with_change if abs(s.get("_change_pct", 0)) >= min_change_pct]
+
+    if len(above_threshold) >= 10:
+        result = above_threshold[:top_n]
+    else:
+        # Not enough movers above threshold — take the top N by absolute
+        # change regardless. On flat days this ensures the scanner still
+        # evaluates the most active names rather than returning nothing.
+        result = with_change[:top_n]
+        if above_threshold:
+            logger.info(
+                f"Momentum filter: only {len(above_threshold)} stocks above "
+                f"{min_change_pct}% — taking top {min(len(with_change), top_n)} by abs change"
+            )
+        else:
+            logger.info(
+                f"Momentum filter: 0 stocks above {min_change_pct}% threshold — "
+                f"taking top {min(len(with_change), top_n)} movers regardless"
+            )
+
+    logger.info(
+        f"Momentum filter: {len(screener_results)} in → {len(result)} out "
+        f"(quotes: {len(change_map)}, above {min_change_pct}%: {len(above_threshold)}, "
+        f"no quote: {len(without_change)})"
+    )
+    return result
 
 
 _FMP_SCREENER_KEYS = frozenset({
@@ -1216,8 +1242,8 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
     # movers by today's %change before burning API calls on technical rules.
     momentum_cfg = criteria.get("momentum_filter", DEFAULT_SCANNER_CRITERIA.get("momentum_filter", {}))
     if momentum_cfg.get("enabled", True):
-        min_change = float(momentum_cfg.get("min_change_pct", 1.5))
-        top_n = int(momentum_cfg.get("top_n", 40))
+        min_change = float(momentum_cfg.get("min_change_pct", 0.5))
+        top_n = int(momentum_cfg.get("top_n", 60))
         before = len(screener_results)
         screener_results = await _filter_by_momentum(
             screener_results, min_change_pct=min_change, top_n=top_n,
