@@ -160,8 +160,10 @@ function inlineFormat(text: string): string {
     // Positive percentages: +1.23%, ▲ 1.23%
     .replace(/([▲+])(\s?\d+\.?\d*%)/g, '<span class="text-profit">$1$2</span>')
     // Negative percentages: -1.23%, ▼ 1.23%
+    // But NOT ranges like "10-20%" — a hyphen after a digit is a range dash,
+    // not a negative sign. Use a negative lookbehind for digits.
     .replace(/([▼])(\s?\d+\.?\d*%)/g, '<span class="text-loss">$1$2</span>')
-    .replace(/(-)(\d+\.?\d*%)/g, '<span class="text-loss">$1$2</span>')
+    .replace(/(?<!\d)(-)(\d+\.?\d*%)/g, '<span class="text-loss">$1$2</span>')
     // Bullish / Bearish labels
     .replace(/\b(bullish|BULLISH|Bullish)\b/g, '<span class="text-profit font-semibold">$1</span>')
     .replace(/\b(bearish|BEARISH|Bearish)\b/g, '<span class="text-loss font-semibold">$1</span>')

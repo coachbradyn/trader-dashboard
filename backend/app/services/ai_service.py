@@ -1617,7 +1617,17 @@ Be direct, have opinions, use real numbers. Have personality."""
             _logger.error(f"Briefing attempt 3 failed: {e}")
             result = "Henry's having a rough morning. Check that your AI API keys are configured."
 
+    # Strip Gemini meta-preamble. Gemini often starts with narration
+    # like "Okay, I have all the information I need..." or "Here's
+    # your morning briefing..." before the actual content. Cut
+    # everything before the first markdown heading or substantive line.
     if result and not result.startswith("Henry's having"):
+        import re as _re
+        # Remove common preamble patterns (case-insensitive, multiline)
+        result = _re.sub(
+            r"^(?:okay|ok|alright|sure|here(?:'s| is)|let me|i have|i've|now i)[^\n]{0,120}\n+",
+            "", result.strip(), count=1, flags=_re.IGNORECASE,
+        ).strip()
         asyncio.create_task(extract_and_save_memories(result, source="briefing"))
 
     return result
