@@ -2520,9 +2520,69 @@ def register_ai_routes(app, get_trades_fn, get_positions_fn, get_market_data_fn=
 
         history_section = f"\nRECENT CONVERSATION:\n{chat_history_text}\n" if chat_history_text else ""
 
+        all_trades = await get_trades_fn(days_back=7)
+        positions = await get_positions_fn()
+
+        # Pull EVERY portfolio's holdings so Henry knows what's
+        # actually in each book — especially the Alpaca live account.
+        # Without this he only saw Trade rows (webhook signals) and
+        # had zero visibility into manual holdings, Alpaca-synced
+        # positions, or which portfolio owned what.
+        portfolio_holdings_ctx = ""
+        try:
+            from app.database import async_session as _h_as
+            from app.models.portfolio_holding import PortfolioHolding
+            from app.models.portfolio import Portfolio as _Port
+            from sqlalchemy import select as _hsel
+            async with _h_as() as hdb:
+                ports = (await hdb.execute(
+                    _hsel(_Port).where(_Port.is_active == True)
+                )).scalars().all()
+                sections = []
+                for p in ports:
+                    hlds = (await hdb.execute(
+                        _hsel(PortfolioHolding).where(
+                            PortfolioHolding.portfolio_id == p.id,
+                            PortfolioHolding.is_active == True,
+                        )
+                    )).scalars().all()
+                    if not hlds:
+                        sections.append(
+                            f"  {p.name} ({p.execution_mode or 'local'}): no holdings"
+                        )
+                        continue
+                    lines = [
+                        f"  {p.name} ({p.execution_mode or 'local'}) — "
+                        f"${p.cash:.2f} cash:"
+                    ]
+                    for h in hlds:
+                        cp = price_service.get_price(h.ticker) or h.entry_price
+                        pnl = 0.0
+                        if h.entry_price and h.entry_price > 0:
+                            if h.direction == "long":
+                                pnl = (cp - h.entry_price) / h.entry_price * 100
+                            else:
+                                pnl = (h.entry_price - cp) / h.entry_price * 100
+                        lines.append(
+                            f"    {h.direction.upper()} {h.ticker} "
+                            f"x{h.qty:.4f} @ ${h.entry_price:.2f} → "
+                            f"${cp:.2f} ({pnl:+.1f}%)"
+                        )
+                    sections.append("\n".join(lines))
+                if sections:
+                    portfolio_holdings_ctx = (
+                        "\n\nPORTFOLIO HOLDINGS (all portfolios):\n"
+                        + "\n".join(sections)
+                    )
+        except Exception:
+            pass
+
         enhanced_question = f"""The user is asking about your trading decisions and activity.
 
 IMPORTANT: You are an AUTONOMOUS trader. You make your own buy/sell decisions for the AI portfolio without needing user approval. When you evaluate a signal and decide BUY, the trade executes immediately. You also run scanner profiles to find your own opportunities. You are NOT a recommendation engine that waits for approval — you are an independent trader.
+
+You manage MULTIPLE portfolios. Each has its own holdings and execution mode. When the user asks about a specific portfolio (e.g. "the Alpaca portfolio" or "the live portfolio"), refer to the PORTFOLIO HOLDINGS section below — NOT the trade log, which tracks webhook signals across all books.
+{portfolio_holdings_ctx}
 
 YOUR RECENT ACTIVITY LOG:
 {activity_text}
@@ -2531,11 +2591,7 @@ USER QUESTION: {req.question}
 
 Answer based on your actual activity and decisions. Be specific about which trades you made or skipped, why, and what you're currently monitoring or scanning for. Reference the conversation history if relevant."""
 
-        all_trades = await get_trades_fn(days_back=7)
-        positions = await get_positions_fn()
         result = await query_trades(enhanced_question, all_trades, positions)
-
-        # Persist both user message and Henry's reply for chat history
         try:
             from app.database import async_session as _chat_as
             from app.models import HenryContext
