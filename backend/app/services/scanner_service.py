@@ -779,22 +779,35 @@ async def _filter_by_momentum(
     return enriched[:top_n]
 
 
+_FMP_SCREENER_KEYS = frozenset({
+    "priceMoreThan", "priceLowerThan", "priceLessThan",
+    "marketCapMoreThan", "marketCapLowerThan", "marketCapLessThan",
+    "volumeMoreThan", "volumeLowerThan", "volumeLessThan",
+    "betaMoreThan", "betaLowerThan", "betaLessThan",
+    "dividendMoreThan", "dividendLowerThan", "dividendLessThan",
+    "sector", "industry", "country", "exchange",
+    "isEtf", "isFund", "isActivelyTrading",
+    "limit",
+})
+
+
 def _build_screener_params(screener_cfg: dict) -> dict:
     """Convert the screener section of criteria into FMP query params.
-    Skips None values.  For booleans, only passes if True.
 
-    Non-FMP post-filter keys (e.g. 'limit' when >200) are clamped, and
-    aliases like 'marketCapLessThan' are passed through unchanged — FMP's
-    stable endpoint accepts both the v3 'LessThan' and 'LowerThan' suffixes.
+    Only passes keys that the FMP /stable/company-screener endpoint
+    actually supports. Technical indicator keys (adx, rsi, etc.) are
+    NOT screener params — they belong in technical_rules and are
+    evaluated per-ticker after the screener narrows the universe.
     """
     params: dict = {}
     for key, value in screener_cfg.items():
+        if key not in _FMP_SCREENER_KEYS:
+            continue
         if value is None:
             continue
         if isinstance(value, bool):
             if value:
                 params[key] = "true"
-            # skip False booleans
             continue
         if isinstance(value, str) and value == "":
             continue
@@ -838,7 +851,7 @@ async def _fetch_indicator_for_ticker(
         three_ago = _extract(data[3]) if len(data) > 3 else None
         return (current, prev, three_ago)
     except Exception as e:
-        logger.debug(f"Failed to fetch {indicator}({period}) for {ticker}: {e}")
+        logger.warning(f"Failed to fetch {indicator}({period}) for {ticker}: {e}")
         return (None, None, None)
 
 
@@ -995,10 +1008,10 @@ async def _evaluate_technical_rules(
                     logger.debug(f"Scanner: {ticker} failed rule '{label}' (current={current}, compare={compare_value})")
 
             except Exception as e:
-                # Gracefully skip this rule for this stock
-                logger.debug(f"Scanner: error evaluating rule '{label}' for {ticker}: {e}")
-                # Keep the ticker if we can't evaluate (don't crash)
-                passed_tickers.append(ticker)
+                logger.warning(f"Scanner: error evaluating rule '{label}' for {ticker}: {e}")
+                # Drop tickers that can't be evaluated — keeping them
+                # defeats the purpose of the filter. If we can't confirm
+                # the indicator condition holds, don't trade on it.
 
         # Remove tickers that didn't pass
         removed = set(candidates.keys()) - set(passed_tickers)
