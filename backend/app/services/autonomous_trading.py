@@ -95,8 +95,13 @@ async def run_autonomous_trading() -> dict:
         profiles = await select_profiles_for_now()
         for profile in profiles:
             usage = get_api_usage()
-            if usage.get("remaining", 0) < 20:
-                break
+            if usage.get("rpm", 0) >= usage.get("rpm_limit", 300):
+                logger.info("Autonomous: pausing 10s between profiles for rate limit")
+                import asyncio as _aio_at
+                await _aio_at.sleep(10)
+                usage = get_api_usage()
+                if usage.get("rpm", 0) >= usage.get("rpm_limit", 300):
+                    break
             criteria = profile.get("criteria")
             if not criteria:
                 continue
@@ -351,10 +356,11 @@ async def _execute_multi_profile_scan(
         if trades_made >= max_trades:
             break
 
-        # Check API budget before each profile
+        # Pace between profiles if nearing per-minute rate limit
         usage = get_api_usage()
-        if usage.get("remaining", 0) < 20:
-            logger.info(f"Autonomous: stopping profile rotation — FMP budget low ({usage.get('remaining')} remaining)")
+        if usage.get("rpm", 0) >= usage.get("rpm_limit", 300):
+            logger.info("Autonomous: pausing 10s between profiles for rate limit")
+            await asyncio.sleep(10)
             break
 
         profile_name = profile.get("name", profile.get("id", "unknown"))
