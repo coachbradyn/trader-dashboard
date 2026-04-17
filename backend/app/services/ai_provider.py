@@ -29,6 +29,7 @@ FUNCTION_ROUTING = {
     "trade_review": "gemini",
     "memory_extraction": "gemini",
     "price_targets_gemini": "gemini",
+    "bull_bear_thesis": "gemini",
 }
 
 # Keywords that escalate Ask Henry to Claude
