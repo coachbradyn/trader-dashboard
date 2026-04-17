@@ -415,6 +415,7 @@ export default function TickerDetailPage() {
   const [priceTargets, setPriceTargets] = useState<Record<string, any> | null>(null);
   const [ptLoading, setPtLoading] = useState(false);
   const [ptError, setPtError] = useState<string | null>(null);
+  const [ptProvider, setPtProvider] = useState<"claude" | "gemini">("claude");
 
   // Chart range state
   const [chartDays, setChartDays] = useState(90);
@@ -753,6 +754,15 @@ export default function TickerDetailPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white" style={FONT_OUTFIT}>Price Targets</h2>
             <div className="flex items-center gap-2">
+              {/* Provider toggle */}
+              <div className="inline-flex rounded border border-border overflow-hidden">
+                {(["claude", "gemini"] as const).map((p) => (
+                  <button key={p} onClick={() => setPtProvider(p)}
+                    className={`px-2 py-0.5 text-[9px] font-mono transition ${ptProvider === p ? "bg-ai-blue/20 text-ai-blue" : "text-gray-600 hover:text-gray-300"}`}>
+                    {p === "claude" ? "Claude" : "Gemini"}
+                  </button>
+                ))}
+              </div>
               {priceTargets?.generated_at && (
                 <span className="text-[9px] text-gray-600 font-mono">
                   Generated {formatTimeAgo(priceTargets.generated_at as string)}
@@ -762,7 +772,7 @@ export default function TickerDetailPage() {
                 <button onClick={async () => {
                   setPtLoading(true); setPtError(null);
                   try {
-                    const pt = await api.getHenryPriceTargets(ticker, true);
+                    const pt = await api.getHenryPriceTargets(ticker, true, ptProvider);
                     if (pt && !(pt as Record<string, unknown>).error) { setPriceTargets(pt); setPtError(null); }
                     else if (pt?.error) setPtError(pt.error as string);
                   } catch (e) { setPtError("Request failed"); }
@@ -777,7 +787,7 @@ export default function TickerDetailPage() {
                 <Button variant="outline" size="sm" onClick={async () => {
                   setPtLoading(true); setPtError(null);
                   try {
-                    const pt = await api.getHenryPriceTargets(ticker);
+                    const pt = await api.getHenryPriceTargets(ticker, false, ptProvider);
                     if (pt && !(pt as Record<string, unknown>).error) { setPriceTargets(pt); setPtError(null); }
                     else if (pt?.error) setPtError(pt.error as string);
                   } catch (e) { setPtError("Request failed"); }

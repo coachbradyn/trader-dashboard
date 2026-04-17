@@ -2601,7 +2601,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
     # ─── HENRY'S PRICE TARGETS ──────────────────────────────────────
 
     @app.get("/api/ai/price-targets/{ticker}")
-    async def get_henry_price_targets(ticker: str, force: bool = False):
+    async def get_henry_price_targets(ticker: str, force: bool = False, provider: str = "claude"):
         """Generate Henry's price targets with enriched technical/strategy context."""
         import asyncio
         import json
@@ -2873,7 +2873,10 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
 {{"current_price": {current_price or 0}, "generated_at": "{utcnow().isoformat()}Z", "technical_bias": "bullish", "key_levels": {{"support": 0.00, "resistance": 0.00, "stop_suggested": 0.00}}, "short_term": {{"target": 0.00, "timeframe": "1 week", "reason": "2 sentences max", "confidence": "low"}}, "medium_term": {{"target": 0.00, "timeframe": "1 month", "reason": "2 sentences max", "confidence": "medium"}}, "scenarios": {{"bear": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}, "base": {{"target": 0.00, "trigger": "most likely path", "probability": "high"}}, "bull": {{"target": 0.00, "trigger": "what would cause this", "probability": "low"}}}}, "catalysts": ["string", "string"], "risk_reward": 0.0, "reasoning": "3-4 sentence overall thesis integrating technicals, fundamentals, and strategy history"}}"""
 
         try:
-            raw = await call_ai(system, prompt, function_name="signal_evaluation", max_tokens=2048, enable_web_search=True)
+            # Provider toggle: "claude" (default, high-stakes routing)
+            # or "gemini" (faster, cheaper, user-selectable from the UI).
+            pt_fn = "signal_evaluation" if provider != "gemini" else "price_targets_gemini"
+            raw = await call_ai(system, prompt, function_name=pt_fn, max_tokens=2048, enable_web_search=True)
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
 
             # Extract JSON object even if Claude wraps it in prose

@@ -365,8 +365,13 @@ export const api = {
     }),
 
   // Henry Context / Memory
-  getHenryPriceTargets: (ticker: string, force = false) =>
-    fetchApi<Record<string, unknown>>(`/ai/price-targets/${ticker}${force ? "?force=true" : ""}`),
+  getHenryPriceTargets: (ticker: string, force = false, provider = "claude") => {
+    const sp = new URLSearchParams();
+    if (force) sp.set("force", "true");
+    if (provider) sp.set("provider", provider);
+    const qs = sp.toString();
+    return fetchApi<Record<string, unknown>>(`/ai/price-targets/${ticker}${qs ? "?" + qs : ""}`);
+  },
   getHenryActivity: (limit?: number, ticker?: string) => {
     const sp = new URLSearchParams();
     if (limit) sp.set("limit", String(limit));
@@ -695,7 +700,7 @@ export const api = {
   getTickerThesis: (ticker: string) =>
     fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean; generated_at?: string }>("/news/ticker/" + ticker + "/thesis"),
   generateTickerThesis: (ticker: string) =>
-    fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean }>("/news/ticker/" + ticker + "/thesis", { method: "POST" }),
+    fetchApi<{ ticker: string; thesis: { bull_case: string; bear_case: string; key_catalysts: string[]; risk_factors: string[]; sentiment_summary: string } | null; cached: boolean; error?: string }>("/news/ticker/" + ticker + "/thesis", { method: "POST" }),
   getNews: async (params?: { ticker?: string; limit?: number; hours?: number }) => {
     const sp = new URLSearchParams();
     if (params?.ticker) sp.set("ticker", params.ticker);
