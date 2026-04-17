@@ -44,6 +44,16 @@ def _should_escalate(question: str) -> bool:
     return bool(words & ESCALATION_KEYWORDS)
 
 
+# Gemini needs lower temperature for structured JSON output. Functions
+# that return strict JSON get 0.3; everything else uses the default 0.7.
+_GEMINI_TEMPERATURE: dict[str, float] = {
+    "price_targets_gemini": 0.3,
+    "bull_bear_thesis": 0.4,
+    "screener_analysis": 0.5,
+    "memory_extraction": 0.4,
+}
+
+
 async def call_ai(
     system: str,
     prompt: str,
@@ -85,8 +95,10 @@ async def call_ai(
     was_fallback = False
 
     if provider == "gemini":
+        gemini_temp = _GEMINI_TEMPERATURE.get(function_name)
         result, model, in_tok, out_tok = await _call_gemini(
-            system, prompt, max_tokens, web_search=enable_web_search
+            system, prompt, max_tokens, web_search=enable_web_search,
+            temperature=gemini_temp,
         )
         if result is None:
             # Fallback to Claude — preserve the caller's web_search intent.
@@ -221,7 +233,8 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
 
 
 async def _call_gemini(
-    system: str, prompt: str, max_tokens: int, web_search: bool = False
+    system: str, prompt: str, max_tokens: int, web_search: bool = False,
+    temperature: float | None = None,
 ) -> tuple:
     """Call Gemini API. Returns (text, model, input_tokens, output_tokens).
 
@@ -267,7 +280,7 @@ async def _call_gemini(
                     config=genai.types.GenerateContentConfig(
                         system_instruction=system,
                         max_output_tokens=max_tokens,
-                        temperature=0.7,
+                        temperature=temperature if temperature is not None else 0.7,
                         tools=tools,
                     ),
                 )

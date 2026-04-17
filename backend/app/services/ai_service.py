@@ -2842,7 +2842,14 @@ Answer based on your actual activity and decisions. Be specific about which trad
         # ── Build enriched prompt ──────────────────────────────────────
 
         from app.services.ai_provider import call_ai
-        system = await _build_system_prompt(ticker=ticker, enable_web_search=True, query_text=f"price target analysis {ticker}")
+        # Gemini gets a leaner system prompt without web-search guidance
+        # (we disable grounding for it). Claude still gets the full prompt.
+        is_gemini_pt = provider == "gemini"
+        system = await _build_system_prompt(
+            ticker=ticker,
+            enable_web_search=not is_gemini_pt,
+            query_text=f"price target analysis {ticker}",
+        )
         prompt = f"""Provide a structured price target analysis for {ticker}.
 
 Current price: {f'${current_price:.2f}' if current_price else 'Unknown'}
@@ -2875,12 +2882,23 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
         try:
             # Provider toggle: "claude" (default, high-stakes routing)
             # or "gemini" (faster, cheaper, user-selectable from the UI).
-            pt_fn = "signal_evaluation" if provider != "gemini" else "price_targets_gemini"
-            raw = await call_ai(system, prompt, function_name=pt_fn, max_tokens=2048, enable_web_search=True)
+            # Gemini gets web_search=False because Google Search grounding
+            # injects citation markers [1][2] that break JSON extraction.
+            # The prompt already includes all the data Gemini needs from
+            # the context blocks above; web search only helps Claude.
+            is_gemini = provider == "gemini"
+            pt_fn = "signal_evaluation" if not is_gemini else "price_targets_gemini"
+            raw = await call_ai(
+                system, prompt, function_name=pt_fn, max_tokens=2048,
+                enable_web_search=not is_gemini,
+            )
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
 
-            # Extract JSON object even if Claude wraps it in prose
+            # Strip grounding citation markers ([1], [2], etc.) that
+            # Gemini sometimes injects even without explicit grounding.
             import re
+            clean = re.sub(r'\[\d+\]', '', clean)
+
             json_match = re.search(r'\{[\s\S]*\}', clean)
             if not json_match:
                 _pt_log.warning(f"Price targets: no JSON found in response for {ticker}. Raw (first 300): {clean[:300]}")
