@@ -2676,6 +2676,27 @@ Answer based on your actual activity and decisions. Be specific about which trad
             lines = [l.strip() for l in raw.strip().split("\n") if len(l.strip()) > 40]
             reasoning = " ".join(lines[-3:])[:400] if lines else "Analysis based on available technicals and fundamentals."
 
+        # ── Sanity checks: Gemini's regex extraction can grab wrong
+        # numbers (e.g. bull=$80 when price=$258 — a 68% drop). Enforce
+        # bear < current < bull and fix obvious inversions.
+        if cp > 0:
+            if bear_target >= cp:
+                bear_target = round(cp * 0.90, 2)
+            if bull_target <= cp:
+                bull_target = round(cp * 1.15, 2)
+            if base_target <= bear_target or base_target >= bull_target:
+                base_target = round(cp * 1.03, 2)
+            if st_target <= 0:
+                st_target = round(cp * 1.02, 2)
+            if mt_target <= 0:
+                mt_target = round(cp * 1.05, 2)
+            if support >= cp:
+                support = round(cp * 0.95, 2)
+            if resistance <= cp:
+                resistance = round(cp * 1.05, 2)
+            if stop >= cp:
+                stop = round(cp * 0.93, 2)
+
         return {
             "current_price": cp,
             "generated_at": utcnow().isoformat() + "Z",
