@@ -20,6 +20,7 @@ import * as THREE from "three";
 import { api } from "@/lib/api";
 import { MemoryCurationPanel } from "./MemoryCurationPanel";
 import { BayesianOptimizationPanel } from "./BayesianOptimizationPanel";
+import DecisionSignalPanel from "./DecisionSignalPanel";
 import type {
   MemoryProjection,
   MemoryProjectionPoint,
@@ -1880,6 +1881,15 @@ export function MemoryMap3D() {
 
       {/* Phase 7 — Bayesian hyperparameter optimization. Closed by
           default; the panel polls /optimization/status on open. */}
+      <details className="pt-2" open>
+        <summary className="text-[11px] text-gray-500 cursor-pointer hover:text-gray-400">
+          Decision Signal Quality (Bayesian Learning)
+        </summary>
+        <div className="pt-2">
+          <DecisionSignalPanel />
+        </div>
+      </details>
+
       <details className="pt-2">
         <summary className="text-[11px] text-gray-500 cursor-pointer hover:text-gray-400">
           Hyperparameter Optimization (System 10)

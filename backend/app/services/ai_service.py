@@ -952,6 +952,57 @@ async def _build_system_prompt(
     except Exception:
         pass  # Calibration is advisory; missing data → no section
 
+    # ── Decision signal posteriors (Bayesian Decision Learning) ────────
+    # Tells Henry which of his signal dimensions historically predict
+    # outcomes well vs. poorly, so he can weight future decisions.
+    try:
+        from app.models import HenryStats as _HS_sig
+        async with async_session() as db:
+            sig_row = (
+                await db.execute(
+                    select(_HS_sig)
+                    .where(_HS_sig.stat_type == "signal_posterior_summary")
+                    .order_by(_HS_sig.computed_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if sig_row and sig_row.data:
+            sig_data = sig_row.data
+            global_sigs = sig_data.get("global", {})
+            top = sig_data.get("top_signals", [])
+            weak = sig_data.get("weak_signals", [])
+
+            sig_lines = []
+            for sig_key, info in sorted(
+                global_sigs.items(),
+                key=lambda x: x[1].get("mean", 0),
+                reverse=True,
+            ):
+                n = info.get("n", 0)
+                if n < 5:
+                    continue
+                mean_pct = info["mean"] * 100
+                ci = info.get("ci", [0, 0])
+                sig_lines.append(
+                    f"  {sig_key}: {mean_pct:.0f}% win rate "
+                    f"({n} obs, CI [{ci[0]*100:.0f}%-{ci[1]*100:.0f}%])"
+                )
+
+            if sig_lines:
+                block = "DECISION SIGNAL QUALITY (Bayesian posteriors):\n"
+                block += "\n".join(sig_lines)
+                if top:
+                    block += f"\n  Your strongest signals: {', '.join(top)}"
+                if weak:
+                    block += f"\n  Signals to be skeptical of: {', '.join(weak)}"
+                block += (
+                    "\n  Weight your future confidence scores "
+                    "toward your stronger signals."
+                )
+                sections.append(block)
+    except Exception:
+        pass
+
     # Add web search guidance if enabled
     if enable_web_search:
         sections.append(WEB_SEARCH_GUIDANCE.strip())

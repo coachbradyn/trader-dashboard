@@ -284,3 +284,57 @@ async def admin_reject(
     )
     await db.commit()
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DECISION SIGNAL POSTERIORS (Bayesian Decision Learning)
+# ══════════════════════════════════════════════════════════════════════
+
+@router.get("/decision-signals/posteriors")
+async def get_signal_posteriors(db: AsyncSession = Depends(get_db)):
+    """Return the latest signal_posterior_summary for the frontend."""
+    row = (
+        await db.execute(
+            select(HenryStats)
+            .where(HenryStats.stat_type == "signal_posterior_summary")
+            .order_by(HenryStats.computed_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not row or not row.data:
+        return {
+            "global": {},
+            "by_archetype": {},
+            "top_signals": [],
+            "weak_signals": [],
+            "computed_at": None,
+            "total_actions_with_weights": 0,
+        }
+    return row.data
+
+
+@router.get("/decision-signals/history")
+async def get_signal_history(
+    signal_key: str = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return recent signal_posterior rows for trend display."""
+    query = (
+        select(HenryStats)
+        .where(HenryStats.stat_type == "signal_posterior")
+    )
+    if signal_key:
+        query = query.where(HenryStats.ticker == signal_key)
+    query = query.order_by(HenryStats.computed_at.desc()).limit(limit)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    return [
+        {
+            "signal_key": r.ticker,
+            "archetype": r.strategy,
+            "data": r.data,
+            "computed_at": r.computed_at.isoformat() if r.computed_at else None,
+        }
+        for r in rows
+    ]

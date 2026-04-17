@@ -411,6 +411,7 @@ async def evaluate_signal_for_ai_portfolio(
                 logger.info(f"AI portfolio SKIP {trade.ticker}: ADX too low")
             else:
                 # Need AI judgment — build compact prompt
+                from app.services.decision_signals import SIGNAL_WEIGHTS_PROMPT_FRAGMENT
                 prompt = f"""Henry's autonomous portfolio. BUY or SKIP? JSON only.
 
 SIGNAL: {trader.trader_id} | {trade.direction.upper()} {trade.ticker} @ ${trade.entry_price:.2f} | sig={sig_val:.0f} ADX={adx_val:.0f} | stop=${trade.stop_price:.2f if has_stop else 'NONE'} | tf={trade.timeframe or '?'}
@@ -421,7 +422,8 @@ TRACK RECORD: {hit_rate_text[:100]}
 {f'NOTES: {ctx_text[:150]}' if ctx_text.strip() else ''}
 
 Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
-{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "1-2 sentences"}}"""
+{{"action": "BUY" or "SKIP", "confidence": 1-10, "reasoning": "1-2 sentences", "signal_weights": {{"technical_strength": 0.0-1.0, "fundamental_value": 0.0-1.0, "thesis_quality": 0.0-1.0, "catalyst_proximity": 0.0-1.0, "risk_reward_ratio": 0.0-1.0, "memory_alignment": 0.0-1.0, "regime_fit": 0.0-1.0, "entry_timing": 0.0-1.0}}}}
+{SIGNAL_WEIGHTS_PROMPT_FRAGMENT}"""
 
                 # Check cache — skip Claude if we recently evaluated same signal
                 from app.services.henry_cache import get_cached, set_cached, _make_hash
@@ -440,11 +442,9 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
                     )
 
                     try:
-                        clean = raw.strip().replace("```json", "").replace("```", "").strip()
-                        import re as _re
-                        json_match = _re.search(r'\{[\s\S]*\}', clean)
-                        result = json.loads(json_match.group()) if json_match else {"action": "SKIP", "confidence": 0, "reasoning": "No JSON"}
-                    except json.JSONDecodeError:
+                        from app.utils.json_extract import extract_json_object
+                        result = extract_json_object(raw) or {"action": "SKIP", "confidence": 0, "reasoning": "No JSON"}
+                    except Exception:
                         logger.warning(f"AI portfolio: failed to parse response for {trade.ticker}")
                         result = {"action": "SKIP", "confidence": 0, "reasoning": "Parse error"}
 
@@ -454,6 +454,9 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
             action = result.get("action", "SKIP").upper()
             confidence = result.get("confidence", 0)
             reasoning = result.get("reasoning", "")
+
+            from app.services.decision_signals import validate_signal_weights
+            sig_weights = validate_signal_weights(result.get("signal_weights"))
 
             # Log the decision as a portfolio action
             cfg = get_ai_config()
@@ -473,6 +476,7 @@ Rules: R/R>{rr_ratio}:1, no pyramiding, concentration<{max_pct_per_trade}%.
                 status="approved" if action == "BUY" and confidence >= min_conf else "rejected",
                 resolved_at=utcnow(),
                 reject_reason="Low confidence or SKIP" if action == "SKIP" or confidence < min_conf else None,
+                signal_weights=sig_weights,
             )
             db.add(action_record)
             await db.flush()

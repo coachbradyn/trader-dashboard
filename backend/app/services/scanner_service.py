@@ -1452,8 +1452,9 @@ For each opportunity worth pursuing, provide a DETAILED analysis including:
 - Entry strategy: suggested price level and sizing approach
 
 Respond with a JSON array of opportunities. Each object:
-{{"ticker": "AAPL", "direction": "long", "confidence": 7, "reasoning": "Apple (AAPL) is a $3T consumer tech company showing a momentum pullback to EMA 21 support at $172. RSI at 48 is cooling from overbought, ADX at 28 confirms the uptrend is intact. Analysts rate it Buy with a $195 consensus target (13% upside). Earnings in 3 weeks could be a catalyst. Risk: broad tech selloff if macro deteriorates. Entry near $172 support with a stop below $168.", "suggested_price": 172.00, "setup_type": "momentum_pullback"}}
+{{"ticker": "AAPL", "direction": "long", "confidence": 7, "reasoning": "Apple (AAPL) is a $3T consumer tech company showing a momentum pullback to EMA 21 support at $172. RSI at 48 is cooling from overbought, ADX at 28 confirms the uptrend is intact. Analysts rate it Buy with a $195 consensus target (13% upside). Earnings in 3 weeks could be a catalyst. Risk: broad tech selloff if macro deteriorates. Entry near $172 support with a stop below $168.", "suggested_price": 172.00, "setup_type": "momentum_pullback", "signal_weights": {{"technical_strength": 0.0-1.0, "fundamental_value": 0.0-1.0, "thesis_quality": 0.0-1.0, "catalyst_proximity": 0.0-1.0, "risk_reward_ratio": 0.0-1.0, "memory_alignment": 0.0-1.0, "regime_fit": 0.0-1.0, "entry_timing": 0.0-1.0}}}}
 
+Score each signal_weights dimension 0.0-1.0 based on how strongly it supports the trade.
 Return only the top 5-8 best opportunities. Empty array if nothing compelling.
 No markdown, no backticks. Just the JSON array."""
 
@@ -1572,6 +1573,7 @@ async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:
                 confidence = min(max(int(opp.get("confidence", 5)), 1), 10)
                 expiry = utcnow() + timedelta(hours=24)
 
+                from app.services.decision_signals import validate_signal_weights
                 action = PortfolioAction(
                     portfolio_id=portfolio.id,
                     ticker=ticker,
@@ -1584,6 +1586,7 @@ async def _create_opportunity_actions(opportunities: list[dict]) -> list[dict]:
                     trigger_type="SCANNER",
                     priority_score=round(1.5 * confidence, 1),  # Scanner weight = 1.5
                     expires_at=expiry,
+                    signal_weights=validate_signal_weights(opp.get("signal_weights")),
                 )
                 db.add(action)
                 await db.flush()

@@ -137,6 +137,63 @@ async def _resolve_calibration_ratio(db, confidence: int) -> float:
     return 1.0
 
 
+async def _resolve_signal_quality(db, signal_weights: Optional[dict]) -> float:
+    """Compute a sizing multiplier from the Bayesian signal posteriors.
+
+    For each active signal (weight >= 0.5 in the action's signal_weights),
+    look up the global posterior mean from signal_posterior_summary. The
+    weighted average of those means maps [0, 1] -> [0.7, 1.3] as a
+    scaling factor on f_effective.
+
+    Returns 1.0 (no effect) when posteriors don't exist yet, the action
+    has no signal_weights, or fewer than 5 observations per signal.
+    """
+    if not signal_weights or not isinstance(signal_weights, dict):
+        return 1.0
+    try:
+        from sqlalchemy import select
+        from app.models import HenryStats
+        from app.services.decision_signals import SIGNAL_ACTIVE_THRESHOLD
+
+        row = (
+            await db.execute(
+                select(HenryStats)
+                .where(HenryStats.stat_type == "signal_posterior_summary")
+                .order_by(HenryStats.computed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not row or not row.data:
+            return 1.0
+        global_sigs = row.data.get("global", {})
+        if not global_sigs:
+            return 1.0
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for sig_key, w in signal_weights.items():
+            try:
+                w = float(w)
+            except (TypeError, ValueError):
+                continue
+            if w < SIGNAL_ACTIVE_THRESHOLD:
+                continue
+            info = global_sigs.get(sig_key)
+            if not info or info.get("n", 0) < 5:
+                continue
+            weighted_sum += w * info["mean"]
+            weight_total += w
+
+        if weight_total <= 0:
+            return 1.0
+
+        quality = weighted_sum / weight_total
+        return 0.7 + 0.6 * quality
+    except Exception as e:
+        logger.debug(f"_resolve_signal_quality failed: {e}")
+        return 1.0
+
+
 async def compute_size(
     db,
     portfolio,
@@ -145,6 +202,7 @@ async def compute_size(
     strategy_id: Optional[str],
     confidence: int,
     current_price: Optional[float] = None,
+    signal_weights: Optional[dict] = None,
 ) -> SizingResult:
     """
     Compute recommended size for a proposed trade. As of Phase 6
@@ -285,15 +343,16 @@ async def compute_size(
         )
 
     # Adaptive Kelly multiplier (Phase 6, System 9):
-    #   f_effective = f_full × f_base × calibration_ratio × confidence_scale
-    # Each of the three modifiers comes from a stats row; sensible
-    # defaults make this work even before Systems 8/9 have run.
+    #   f_effective = f_full × f_base × calibration_ratio × confidence_scale × signal_quality
+    # Each modifier comes from a stats row; sensible defaults make this
+    # work even before Systems 8/9/decision-learning have run.
     confidence = max(1, min(10, int(confidence or 5)))
     f_base = await _resolve_kelly_base(db)
     calibration_ratio = await _resolve_calibration_ratio(db, confidence)
     confidence_scale = LOW_CONFIDENCE_MULTIPLIER if confidence < LOW_CONFIDENCE_THRESHOLD else 1.0
+    signal_quality = await _resolve_signal_quality(db, signal_weights)
 
-    f_effective = kelly * f_base * calibration_ratio * confidence_scale
+    f_effective = kelly * f_base * calibration_ratio * confidence_scale * signal_quality
     raw_pct = f_effective * 100.0
     capped_pct = min(raw_pct, cap_pct)
     method = "kelly" if capped_pct == raw_pct else "capped"
@@ -325,7 +384,8 @@ async def compute_size(
 
     notes = (
         f"Adaptive Kelly: f*={kelly:.3f} × f_base={f_base:.2f} × "
-        f"calibration={calibration_ratio:.2f} × conf_scale={confidence_scale:.2f} "
+        f"calibration={calibration_ratio:.2f} × conf_scale={confidence_scale:.2f} × "
+        f"sig_quality={signal_quality:.2f} "
         f"→ {raw_pct:.2f}% target, capped at {capped_pct:.2f}% "
         f"(limit {cap_pct:.1f}%). "
         f"Incremental {incremental_pct:.2f}% after existing {existing_pct:.2f}%. "
