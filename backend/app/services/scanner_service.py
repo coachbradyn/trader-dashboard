@@ -929,7 +929,9 @@ async def _evaluate_technical_rules(
     from app.services.fmp_service import (
         get_technical_indicator, get_quote,
         compute_macd, compute_bollinger,
+        get_api_usage,
     )
+    import asyncio as _aio
 
     # Build candidate dicts: ticker -> collected indicator data
     candidates: dict[str, dict] = {
@@ -938,6 +940,18 @@ async def _evaluate_technical_rules(
     }
 
     fmp_calls = 0
+
+    async def _pace():
+        """Pause briefly when nearing the per-minute rate limit so the
+        rolling window slides and we don't self-throttle."""
+        nonlocal fmp_calls
+        if fmp_calls > 0 and fmp_calls % 50 == 0:
+            usage = get_api_usage()
+            rpm = usage.get("rpm", 0)
+            if rpm >= 200:
+                wait = 5 if rpm >= 250 else 2
+                logger.info(f"Scanner pacing: {rpm} RPM, waiting {wait}s")
+                await _aio.sleep(wait)
 
     for rule in rules:
         if not rule.get("enabled", False):
@@ -1023,6 +1037,8 @@ async def _evaluate_technical_rules(
                     else:
                         compare_value = static_value
 
+                await _pace()
+
                 # ── Evaluate ──
                 if _evaluate_condition(condition, current, prev, three_ago, compare_value):
                     passed_tickers.append(ticker)
@@ -1058,8 +1074,8 @@ async def run_watchlist_scan() -> list[dict]:
     )
 
     usage = get_api_usage()
-    if usage["throttled"]:
-        logger.warning("Watchlist scan skipped: FMP API throttled")
+    if usage.get("rpm", 0) >= usage.get("rpm_limit", 300):
+        logger.warning("Watchlist scan skipped: FMP API at hard rate limit")
         return []
 
     # Get watchlist tickers
@@ -1182,10 +1198,13 @@ async def run_scanner(profile_criteria: dict | None = None, profile_name: str | 
         format_fundamentals_for_prompt, get_api_usage, get_volume_surge,
     )
 
-    # Check if FMP API is available
+    # Check if FMP API is available — only bail on hard ceiling, not soft.
+    # The soft limit (240/min) is a pacing hint, not a stop sign. The
+    # scanner pauses between indicator batches to let the rolling window
+    # slide rather than abandoning the scan entirely.
     usage = get_api_usage()
-    if usage["throttled"]:
-        logger.warning("Scanner skipped: FMP API throttled")
+    if usage.get("rpm", 0) >= usage.get("rpm_limit", 300):
+        logger.warning("Scanner skipped: FMP API at hard rate limit")
         return []
 
     # 1. Get criteria — use profile override if provided, else saved criteria
