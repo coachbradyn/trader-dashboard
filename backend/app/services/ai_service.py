@@ -2610,7 +2610,11 @@ Answer based on your actual activity and decisions. Be specific about which trad
 
         ticker = ticker.upper().strip()
 
-        # Check cache first (valid for 4h) — skip on force refresh
+        # Check cache — persist until regenerated (no time-based
+        # expiry). The old 4h TTL caused targets to vanish and
+        # require regeneration on every session. Now we serve the
+        # cached version indefinitely; only a `?force=true` call
+        # (the Refresh button on the UI) triggers a new generation.
         if not force:
             try:
                 from app.models.henry_cache import HenryCache
@@ -2618,7 +2622,7 @@ Answer based on your actual activity and decisions. Be specific about which trad
                     cached = await db.execute(
                         select(HenryCache).where(
                             HenryCache.cache_key == f"price_targets:{ticker}",
-                            HenryCache.generated_at >= utcnow() - timedelta(hours=4),
+                            HenryCache.is_stale == False,
                         )
                     )
                     hit = cached.scalar_one_or_none()
@@ -2878,7 +2882,10 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
                 return {"error": "AI response did not contain valid JSON", "current_price": current_price}
             targets = json.loads(json_match.group())
 
-            # Cache the result
+            # Persist until the user regenerates. The old code silently
+            # swallowed cache-write failures and omitted generated_at
+            # on new rows, which caused the 4h TTL check at the top of
+            # this handler to think nothing was cached.
             try:
                 from app.models.henry_cache import HenryCache
                 async with async_session() as db:
@@ -2887,16 +2894,20 @@ Respond in EXACTLY this JSON (no markdown, no backticks):
                     if old_entry:
                         old_entry.content = targets
                         old_entry.generated_at = utcnow()
+                        old_entry.is_stale = False
+                        await db.flush()
                     else:
                         db.add(HenryCache(
                             cache_key=f"price_targets:{ticker}",
                             cache_type="price_targets",
                             content=targets,
                             ticker=ticker,
+                            generated_at=utcnow(),
+                            is_stale=False,
                         ))
                     await db.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                _pt_log.warning(f"Failed to cache price targets for {ticker}: {e}")
 
             # Save to Henry's memory for future reference
             try:

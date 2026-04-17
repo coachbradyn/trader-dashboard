@@ -234,7 +234,7 @@ Be concise (2-4 sentences), data-driven, and actionable. Format currency as $X.X
             # Call AI (routes through dual provider system) with web search enabled
             from app.services.ai_provider import call_ai
             system += "\n\n" + "You have access to web search. Use it when you lack critical context about a stock — for example, upcoming catalysts, recent earnings results, FDA decisions, analyst actions, or why a stock is moving significantly. Do not search for basic price data (you already have that). Search for the WHY behind moves and the WHAT's COMING that your existing data doesn't cover. When you find important information through search, highlight it in your analysis so the user knows you researched it."
-            summary_text = await call_ai(system, prompt, function_name="watchlist_summary", max_tokens=500, enable_web_search=True)
+            summary_text = await call_ai(system, prompt, function_name="watchlist_summary", max_tokens=1200, enable_web_search=True)
 
             if not summary_text or summary_text == "AI analysis temporarily unavailable.":
                 logger.error(f"AI call failed for watchlist summary of {ticker}")
