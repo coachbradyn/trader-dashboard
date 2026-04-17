@@ -987,6 +987,29 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # EOD Signal Learning — Bayesian posterior update over decision
+    # signal weights. Runs at 4:45 PM ET so all outcome_correct flags
+    # from today's closes are set (daily_recap runs at 4:15, exits by
+    # 4:30). The same computation also runs every 2h as part of
+    # compute_all_stats; this explicit EOD pass ensures we capture the
+    # full day's resolved outcomes in one shot.
+    async def _run_eod_signal_learning():
+        from app.database import async_session
+        from app.services.henry_stats_engine import compute_signal_posteriors_eod
+        try:
+            async with async_session() as db:
+                summary = await compute_signal_posteriors_eod(db)
+                logger.info(f"EOD signal learning: {summary}")
+        except Exception as e:
+            logger.error(f"eod_signal_learning failed: {e}")
+
+    scheduler.add_job(
+        _run_eod_signal_learning,
+        CronTrigger(hour=16, minute=45, timezone=ET, day_of_week="mon-fri"),
+        id="eod_signal_learning",
+        replace_existing=True,
+    )
+
     # Adaptive Kelly weekly self-adjustment (intelligence upgrade
     # Phase 6, System 9). Sundays at 11pm ET — runs after the trading
     # week is fully resolved but before Monday open. Weekly rather than

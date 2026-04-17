@@ -73,6 +73,8 @@ class PortfolioAction(Base):
     instrument_type: Mapped[str | None] = mapped_column(String(10), default="equity", nullable=True)
     options_strategy: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
+    signal_weights: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
     created_at: Mapped[datetime] = mapped_column(default=lambda: utcnow())
 
     portfolio: Mapped["Portfolio"] = relationship()

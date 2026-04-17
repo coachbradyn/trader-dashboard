@@ -222,6 +222,7 @@ async def run_autonomous_trading() -> dict:
                 cfg,
                 source=opp.get("source", "scanner"),
                 stop_price=opp.get("stop"),
+                signal_weights=opp.get("signal_weights"),
             )
             if success:
                 portfolio_trades += 1
@@ -693,8 +694,9 @@ EVALUATION CRITERIA:
 - Would this stock move enough to justify the trade?
 
 Respond with a JSON array of approved trades. Each object:
-{{"ticker": "AAPL", "direction": "long", "price": 150.00, "confidence": 7, "reasoning": "why", "pattern": "inside_day_breakout", "stop": 145.00}}
+{{"ticker": "AAPL", "direction": "long", "price": 150.00, "confidence": 7, "reasoning": "why", "pattern": "inside_day_breakout", "stop": 145.00, "signal_weights": {{"technical_strength": 0.0-1.0, "fundamental_value": 0.0-1.0, "thesis_quality": 0.0-1.0, "catalyst_proximity": 0.0-1.0, "risk_reward_ratio": 0.0-1.0, "memory_alignment": 0.0-1.0, "regime_fit": 0.0-1.0, "entry_timing": 0.0-1.0}}}}
 
+Score each signal_weights dimension 0.0-1.0 based on how strongly it supports the trade.
 Return empty array if nothing is compelling. No markdown, no backticks."""
 
         raw = await _call_claude_async(
@@ -938,6 +940,7 @@ async def _execute_autonomous_trade(
     cfg: dict,
     source: str = "autonomous",
     stop_price: float | None = None,
+    signal_weights: dict | None = None,
 ) -> bool:
     """Execute a single autonomous trade in the AI portfolio. Returns True on success."""
     import asyncio
@@ -1054,6 +1057,7 @@ async def _execute_autonomous_trade(
             # Deduct cash
             port_obj.cash -= alloc_amount
 
+            from app.services.decision_signals import validate_signal_weights
             # Log action
             action = PortfolioAction(
                 portfolio_id=port_obj.id,
@@ -1070,6 +1074,7 @@ async def _execute_autonomous_trade(
                 status="approved",
                 resolved_at=utcnow(),
                 instrument_type="equity",
+                signal_weights=validate_signal_weights(signal_weights),
             )
             db.add(action)
             await db.flush()

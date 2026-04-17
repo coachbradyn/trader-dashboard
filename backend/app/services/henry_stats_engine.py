@@ -45,6 +45,7 @@ async def compute_all_stats():
             _compute_memory_decay,            # Phase 6, System 7
             _compute_confidence_calibration,  # Phase 6, System 8
             _compute_options_performance,     # Step 4B
+            _compute_signal_posteriors,       # Bayesian Decision Learning
         ]:
             try:
                 await fn(db)
@@ -1200,3 +1201,203 @@ async def compute_adaptive_kelly_weekly(db):
         f"Adaptive Kelly: f_base {f_base:.3f} → {new_f_base:.3f} "
         f"({decision}); rolling_error={rolling_error:.3f} over {len(rows)} trades"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# BAYESIAN DECISION LEARNING — signal posterior computation
+# ══════════════════════════════════════════════════════════════════════
+
+SIGNAL_POSTERIOR_PRIOR_ALPHA = 2
+SIGNAL_POSTERIOR_PRIOR_BETA = 2
+_SIGNAL_ACTIVE_THRESHOLD = 0.5
+_SIGNAL_MIN_OBS = 5
+
+
+async def _compute_signal_posteriors(db) -> None:
+    """Maintain Beta posteriors per signal dimension × position archetype.
+
+    For each of the 8 signal dimensions, we partition resolved
+    PortfolioActions (those with signal_weights + outcome_correct) into
+    "signal active" (weight ≥ 0.5) and "signal inactive". We then count
+    wins/losses in the active partition and update Beta(alpha, beta).
+
+    Posteriors are computed globally and per-archetype (momentum,
+    accumulation, catalyst, conviction) so that Henry can learn e.g.
+    "catalyst_proximity matters a lot for catalyst positions but not
+    for momentum plays."
+    """
+    from app.models import PortfolioAction, HenryStats
+    from app.models.portfolio_holding import PortfolioHolding
+    from app.services.decision_signals import SIGNAL_KEYS, SIGNAL_ACTIVE_THRESHOLD
+    from collections import defaultdict
+    import math
+
+    # Fetch all resolved actions that have signal_weights populated.
+    result = await db.execute(
+        select(PortfolioAction)
+        .where(
+            PortfolioAction.outcome_correct.isnot(None),
+            PortfolioAction.signal_weights.isnot(None),
+        )
+    )
+    actions = result.scalars().all()
+
+    if not actions:
+        return
+
+    # Look up archetype for each action by matching ticker+portfolio_id
+    # to the PortfolioHolding.position_type (if one exists).
+    holding_result = await db.execute(
+        select(
+            PortfolioHolding.portfolio_id,
+            PortfolioHolding.ticker,
+            PortfolioHolding.position_type,
+        )
+        .where(PortfolioHolding.position_type.isnot(None))
+    )
+    archetype_map: dict[tuple[str, str], str] = {}
+    for row in holding_result.all():
+        archetype_map[(row.portfolio_id, row.ticker.upper())] = row.position_type
+
+    # Accumulate alpha/beta per (signal_key, archetype).
+    # archetype=None means "global".
+    counters: dict[tuple[str, str | None], dict] = defaultdict(
+        lambda: {"alpha": SIGNAL_POSTERIOR_PRIOR_ALPHA, "beta": SIGNAL_POSTERIOR_PRIOR_BETA}
+    )
+
+    for a in actions:
+        weights = a.signal_weights
+        if not isinstance(weights, dict):
+            continue
+        correct = bool(a.outcome_correct)
+        archetype = archetype_map.get(
+            (a.portfolio_id, (a.ticker or "").upper())
+        )
+
+        for sig_key in SIGNAL_KEYS:
+            w = weights.get(sig_key)
+            if w is None:
+                continue
+            try:
+                w = float(w)
+            except (TypeError, ValueError):
+                continue
+
+            if w < SIGNAL_ACTIVE_THRESHOLD:
+                continue
+
+            # Global posterior
+            key_global = (sig_key, None)
+            if correct:
+                counters[key_global]["alpha"] += 1
+            else:
+                counters[key_global]["beta"] += 1
+
+            # Archetype-specific posterior
+            if archetype:
+                key_arch = (sig_key, archetype)
+                if correct:
+                    counters[key_arch]["alpha"] += 1
+                else:
+                    counters[key_arch]["beta"] += 1
+
+    # Build per-row stats and the summary blob.
+    global_sigs: dict[str, dict] = {}
+    by_archetype: dict[str, dict[str, dict]] = defaultdict(dict)
+
+    now_iso = utcnow().isoformat() + "Z"
+
+    for (sig_key, archetype), ab in counters.items():
+        alpha = ab["alpha"]
+        beta_ = ab["beta"]
+        n_obs = alpha + beta_ - (SIGNAL_POSTERIOR_PRIOR_ALPHA + SIGNAL_POSTERIOR_PRIOR_BETA)
+        mean = alpha / (alpha + beta_) if (alpha + beta_) > 0 else 0.5
+        # Normal approximation for 95% CI
+        se = math.sqrt(mean * (1 - mean) / (alpha + beta_)) if (alpha + beta_) > 0 else 0.25
+        ci_low = max(0.0, mean - 1.96 * se)
+        ci_high = min(1.0, mean + 1.96 * se)
+
+        info = {
+            "mean": round(mean, 3),
+            "ci": [round(ci_low, 3), round(ci_high, 3)],
+            "n": n_obs,
+            "alpha": alpha,
+            "beta": beta_,
+        }
+
+        # Upsert individual HenryStats row
+        stat_strategy = archetype  # reuse strategy column for archetype
+        existing = await db.execute(
+            select(HenryStats).where(
+                HenryStats.stat_type == "signal_posterior",
+                HenryStats.strategy == stat_strategy,
+                HenryStats.ticker == sig_key,
+            )
+        )
+        row = existing.scalar_one_or_none()
+        data_payload = {
+            "signal_key": sig_key,
+            "archetype": archetype,
+            **info,
+            "last_updated": now_iso,
+        }
+        if row:
+            row.data = data_payload
+            row.computed_at = utcnow()
+        else:
+            db.add(HenryStats(
+                stat_type="signal_posterior",
+                strategy=stat_strategy,
+                ticker=sig_key,
+                data=data_payload,
+                period_days=0,
+            ))
+
+        if archetype is None:
+            global_sigs[sig_key] = info
+        else:
+            by_archetype[archetype][sig_key] = info
+
+    # Rank signals by global posterior mean
+    sorted_sigs = sorted(global_sigs.items(), key=lambda x: x[1]["mean"], reverse=True)
+    top_signals = [k for k, v in sorted_sigs if v["n"] >= _SIGNAL_MIN_OBS and v["mean"] >= 0.6][:3]
+    weak_signals = [k for k, v in sorted_sigs if v["n"] >= _SIGNAL_MIN_OBS and v["mean"] < 0.5][:3]
+
+    # Upsert the summary row
+    summary_data = {
+        "global": global_sigs,
+        "by_archetype": dict(by_archetype),
+        "top_signals": top_signals,
+        "weak_signals": weak_signals,
+        "computed_at": now_iso,
+        "total_actions_with_weights": len(actions),
+    }
+    existing_summary = await db.execute(
+        select(HenryStats).where(
+            HenryStats.stat_type == "signal_posterior_summary",
+            HenryStats.strategy.is_(None),
+            HenryStats.ticker.is_(None),
+        )
+    )
+    summary_row = existing_summary.scalar_one_or_none()
+    if summary_row:
+        summary_row.data = summary_data
+        summary_row.computed_at = utcnow()
+    else:
+        db.add(HenryStats(
+            stat_type="signal_posterior_summary",
+            data=summary_data,
+            period_days=0,
+        ))
+
+    await db.commit()
+    logger.info(
+        f"Signal posteriors: {len(actions)} resolved actions with weights, "
+        f"{len(global_sigs)} global signals tracked"
+    )
+
+
+async def compute_signal_posteriors_eod(db) -> str:
+    """Public wrapper for the EOD scheduler job."""
+    await _compute_signal_posteriors(db)
+    return "signal posteriors updated"

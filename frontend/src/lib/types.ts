@@ -1351,3 +1351,28 @@ export interface MarketIntel {
   source: "gemini" | "fallback";
 }
 
+// Bayesian Decision Learning
+export interface SignalPosterior {
+  mean: number;
+  ci: [number, number];
+  n: number;
+  alpha: number;
+  beta: number;
+}
+
+export interface DecisionSignalStatus {
+  global: Record<string, SignalPosterior>;
+  by_archetype: Record<string, Record<string, SignalPosterior>>;
+  top_signals: string[];
+  weak_signals: string[];
+  computed_at: string | null;
+  total_actions_with_weights: number;
+}
+
+export interface DecisionSignalHistoryEntry {
+  signal_key: string;
+  archetype: string | null;
+  data: SignalPosterior & { signal_key: string; archetype: string | null; last_updated: string };
+  computed_at: string | null;
+}
+

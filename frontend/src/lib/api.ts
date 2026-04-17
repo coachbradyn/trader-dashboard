@@ -556,6 +556,12 @@ export const api = {
       "/optimization/admin/adopt?secret=" + encodeURIComponent(secret),
       { method: "POST", body: JSON.stringify(body) }
     ),
+  getDecisionSignalPosteriors: () =>
+    fetchApi<import("./types").DecisionSignalStatus>("/optimization/decision-signals/posteriors"),
+  getDecisionSignalHistory: (signalKey?: string) =>
+    fetchApi<import("./types").DecisionSignalHistoryEntry[]>(
+      "/optimization/decision-signals/history" + (signalKey ? `?signal_key=${signalKey}` : "")
+    ),
   adminOptimizationReject: (secret: string, notes?: string) => {
     const sp = new URLSearchParams({ secret });
     if (notes) sp.set("notes", notes);
