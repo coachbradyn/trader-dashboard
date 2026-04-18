@@ -69,6 +69,7 @@ async def call_ai(
     max_tokens: int = 1500,
     question_text: str = None,  # For escalation check on ask_henry
     enable_web_search: bool = False,
+    enable_fmp_tools: bool = False,
 ) -> str:
     """
     Route AI call to the appropriate provider based on function_name.
@@ -110,16 +111,17 @@ async def call_ai(
             temperature=gemini_temp, json_mode=gemini_json,
         )
         if result is None:
-            # Fallback to Claude — preserve the caller's web_search intent.
             logger.warning(f"Gemini failed for {function_name}, falling back to Claude")
             result, model, in_tok, out_tok = await _call_claude(
-                system, prompt, max_tokens, web_search=enable_web_search
+                system, prompt, max_tokens, web_search=enable_web_search,
+                fmp_tools=enable_fmp_tools,
             )
             provider = "claude"
             was_fallback = True
     else:
         result, model, in_tok, out_tok = await _call_claude(
-            system, prompt, max_tokens, web_search=enable_web_search
+            system, prompt, max_tokens, web_search=enable_web_search,
+            fmp_tools=enable_fmp_tools,
         )
 
     latency = int((time.monotonic() - start) * 1000)
@@ -138,8 +140,17 @@ async def call_ai(
     return result or "AI analysis temporarily unavailable."
 
 
-async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bool = False) -> tuple:
-    """Call Claude API using async client. Returns (text, model, input_tokens, output_tokens)."""
+async def _call_claude(
+    system: str, prompt: str, max_tokens: int,
+    web_search: bool = False, fmp_tools: bool = False,
+) -> tuple:
+    """Call Claude API using async client. Returns (text, model, input_tokens, output_tokens).
+
+    When ``fmp_tools=True``, FMP MCP tools are added to the request and
+    the function loops on ``stop_reason="tool_use"`` — executing each
+    tool call via the FMP MCP client and feeding results back to Claude
+    so it can incorporate live financial data into its response.
+    """
     try:
         import anthropic
     except ImportError:
@@ -152,18 +163,25 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
         "claude-haiku-4-5-20251001",
     ]
 
-    tools = None
+    tools = []
     if web_search:
-        tools = [{"type": "web_search_20260209", "name": "web_search"}]
+        tools.append({"type": "web_search_20260209", "name": "web_search"})
 
-    # Prompt caching: wrap the system prompt in a single cached block so the
-    # same prefix across calls (base prompt + strategies + memories that
-    # haven't changed) is billed at ~10% of input token cost after the first
-    # hit. Requires the system param to be a list of content blocks, not a
-    # plain string. Blocks with cache_control must be >=1024 tokens for Sonnet
-    # — our system prompt easily clears that once strategies + memories land.
+    fmp_tool_names: set[str] = set()
+    if fmp_tools:
+        try:
+            from app.services.fmp_mcp import get_fmp_tools
+            fmp_defs = await get_fmp_tools()
+            for td in fmp_defs:
+                tools.append(td)
+                fmp_tool_names.add(td["name"])
+            if fmp_defs:
+                logger.info(f"Claude call: {len(fmp_defs)} FMP tools attached")
+        except Exception as e:
+            logger.warning(f"FMP tools unavailable: {e}")
+
     settings = get_settings()
-    use_cache = getattr(settings, "prompt_cache_enabled", True) and not web_search
+    use_cache = getattr(settings, "prompt_cache_enabled", True) and not (web_search or fmp_tools)
     if use_cache:
         system_param = [
             {
@@ -179,30 +197,59 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
         client = anthropic.AsyncAnthropic()
         for model in MODELS:
             try:
+                messages = [{"role": "user", "content": prompt}]
+                timeout = 90.0 if fmp_tools else (60.0 if web_search else 45.0)
                 kwargs = dict(
                     model=model,
                     max_tokens=max_tokens,
                     system=system_param,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=60.0 if web_search else 45.0,
+                    messages=messages,
+                    timeout=timeout,
                 )
                 if tools:
                     kwargs["tools"] = tools
 
                 response = await client.messages.create(**kwargs)
+                total_in = getattr(response.usage, "input_tokens", 0) or 0
+                total_out = getattr(response.usage, "output_tokens", 0) or 0
 
-                # Handle web search: Claude may use web search and return multiple
-                # content blocks. We need to loop if stop_reason is "tool_use" (for
-                # user-defined tools), but web_search is a server-side tool — Claude
-                # handles it internally. The response may include web_search_tool_result
-                # blocks alongside text blocks. We just extract all text blocks.
-                # If stop_reason is "pause_turn", re-send to let server continue.
-                messages = kwargs["messages"]
-                max_continuations = 1
-                for _ in range(max_continuations):
-                    if response.stop_reason == "pause_turn":
-                        messages = [
-                            {"role": "user", "content": prompt},
+                # Tool-use loop: when Claude calls FMP tools, execute them
+                # and feed results back. Max 8 iterations to bound cost.
+                max_tool_rounds = 8
+                for _ in range(max_tool_rounds):
+                    if response.stop_reason == "tool_use":
+                        tool_results = []
+                        for block in response.content:
+                            if block.type == "tool_use" and block.name in fmp_tool_names:
+                                from app.services.fmp_mcp import call_fmp_tool
+                                result_text = await call_fmp_tool(block.name, block.input or {})
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": result_text[:4000],
+                                })
+                                logger.info(f"FMP tool: {block.name}({block.input}) → {len(result_text)} chars")
+
+                        if not tool_results:
+                            break
+
+                        messages = messages + [
+                            {"role": "assistant", "content": response.content},
+                            {"role": "user", "content": tool_results},
+                        ]
+                        response = await client.messages.create(
+                            model=model,
+                            max_tokens=max_tokens,
+                            system=system_param,
+                            messages=messages,
+                            tools=tools,
+                            timeout=timeout,
+                        )
+                        total_in += getattr(response.usage, "input_tokens", 0) or 0
+                        total_out += getattr(response.usage, "output_tokens", 0) or 0
+
+                    elif response.stop_reason == "pause_turn":
+                        messages = messages + [
                             {"role": "assistant", "content": response.content},
                         ]
                         response = await client.messages.create(
@@ -211,26 +258,21 @@ async def _call_claude(system: str, prompt: str, max_tokens: int, web_search: bo
                             system=system_param,
                             messages=messages,
                             tools=tools,
-                            timeout=60.0,
+                            timeout=timeout,
                         )
+                        total_in += getattr(response.usage, "input_tokens", 0) or 0
+                        total_out += getattr(response.usage, "output_tokens", 0) or 0
                     else:
                         break
 
-                # Extract text from all text blocks in the response
                 text_parts = []
                 for block in response.content:
                     if block.type == "text":
                         text_parts.append(block.text)
 
                 result_text = "\n".join(text_parts) if text_parts else ""
+                return (result_text, model, total_in, total_out)
 
-                usage = response.usage
-                return (
-                    result_text,
-                    model,
-                    usage.input_tokens if usage else None,
-                    usage.output_tokens if usage else None,
-                )
             except (anthropic.BadRequestError, anthropic.NotFoundError):
                 continue
             except anthropic.AuthenticationError:

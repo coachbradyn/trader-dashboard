@@ -7,10 +7,30 @@ import httpx
 from app.config import get_settings
 
 
+import logging
+
+_logger = logging.getLogger(__name__)
+
+# Movement thresholds that trigger Henry's reactive evaluation.
+# Checked on every price poll cycle (~15s during market hours).
+MOVE_THRESHOLD_PCT = 3.0       # alert on ±3% move from session baseline
+MOVE_COOLDOWN_SECS = 900       # don't re-alert same ticker within 15 min
+
+# Callbacks registered by the reactive pipeline at startup.
+_move_callbacks: list = []
+
+
+def on_price_move(callback):
+    """Register an async callback(ticker, pct_change, price, direction)."""
+    _move_callbacks.append(callback)
+
+
 class PriceService:
     def __init__(self):
         self.cache: dict[str, dict] = {}  # {ticker: {price, timestamp}}
         self._tickers: set[str] = set()
+        self._baselines: dict[str, float] = {}   # session baseline per ticker
+        self._last_alert: dict[str, float] = {}   # cooldown tracker
 
     def add_ticker(self, ticker: str):
         self._tickers.add(ticker.upper())
@@ -62,14 +82,40 @@ class PriceService:
                 if resp.status_code == 200:
                     data = resp.json()
                     now = utcnow().isoformat()
+                    import time as _time
+                    now_mono = _time.monotonic()
                     for ticker, snapshot in data.items():
                         latest_trade = snapshot.get("latestTrade", {})
                         price = latest_trade.get("p", 0)
                         if price > 0:
-                            self.cache[ticker.upper()] = {
+                            tk = ticker.upper()
+                            self.cache[tk] = {
                                 "price": price,
                                 "timestamp": now,
                             }
+                            # Event detection: check for significant moves
+                            if tk not in self._baselines:
+                                self._baselines[tk] = price
+                            baseline = self._baselines[tk]
+                            if baseline > 0:
+                                pct = ((price - baseline) / baseline) * 100
+                                if (
+                                    abs(pct) >= MOVE_THRESHOLD_PCT
+                                    and self._is_market_hours()
+                                    and _move_callbacks
+                                    and now_mono - self._last_alert.get(tk, 0) > MOVE_COOLDOWN_SECS
+                                ):
+                                    self._last_alert[tk] = now_mono
+                                    self._baselines[tk] = price
+                                    direction = "up" if pct > 0 else "down"
+                                    _logger.info(
+                                        f"Price alert: {tk} moved {pct:+.1f}% "
+                                        f"(${baseline:.2f} → ${price:.2f})"
+                                    )
+                                    for cb in _move_callbacks:
+                                        asyncio.create_task(
+                                            cb(tk, pct, price, direction)
+                                        )
         except Exception:
             pass  # Silently fail — cache retains last known prices
 
@@ -97,6 +143,12 @@ class PriceService:
                     await db.commit()
         except Exception:
             pass
+
+    def reset_baselines(self):
+        """Reset session baselines — call at market open."""
+        self._baselines.clear()
+        self._last_alert.clear()
+        _logger.info("Price baselines reset for new session")
 
     async def run(self):
         settings = get_settings()

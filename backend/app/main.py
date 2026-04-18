@@ -544,6 +544,12 @@ async def lifespan(app: FastAPI):
         await _replay_pending_webhooks()
     except Exception:
         pass
+    # Wire reactive trading pipeline (event-driven Henry)
+    try:
+        from app.services.reactive_trading import wire_reactive_trading
+        wire_reactive_trading()
+    except Exception:
+        pass
     yield
     stop_scheduler()
     task.cancel()

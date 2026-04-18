@@ -955,6 +955,19 @@ def start_scheduler():
     # to HenryStats so _build_system_prompt can inject it into every call.
     from app.services.market_regime import pre_market_job, eod_recap_job
 
+    # Reset price baselines at market open so reactive trading detects
+    # intraday moves from today's opening prices, not yesterday's.
+    def _reset_baselines():
+        from app.services.price_service import price_service
+        price_service.reset_baselines()
+
+    scheduler.add_job(
+        _reset_baselines,
+        CronTrigger(hour=9, minute=30, timezone=ET, day_of_week="mon-fri"),
+        id="reset_price_baselines",
+        replace_existing=True,
+    )
+
     scheduler.add_job(
         pre_market_job,
         CronTrigger(hour=8, minute=30, timezone=ET, day_of_week="mon-fri"),
