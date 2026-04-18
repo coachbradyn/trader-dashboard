@@ -1461,7 +1461,7 @@ Keep it under 300 words. Lead with the most important finding."""
     import asyncio
     from app.services.ai_provider import call_ai
     system = await _build_system_prompt(query_text=prompt)
-    return await call_ai(system, prompt, function_name="trade_review", max_tokens=1500)
+    return await call_ai(system, prompt, function_name="trade_review", max_tokens=1500, enable_fmp_tools=True)
 
 
 # ─── FEATURE 2: MORNING BRIEFING (ENHANCED) ────────────────────────────────
@@ -1642,6 +1642,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
             function_name="morning_briefing",
             max_tokens=2000,
             enable_web_search=True,
+            enable_fmp_tools=True,
         )
     except Exception as e:
         _logger.error(f"Briefing attempt 1 (Claude+web) failed: {e}", exc_info=True)
@@ -1650,7 +1651,7 @@ RULES: Be Henry. Have opinions. Use real numbers — never fabricate. If data is
     if not result or result == "AI analysis temporarily unavailable." or len(result.strip()) < 50:
         try:
             _logger.info("Briefing: fallback without web search")
-            result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2000)
+            result = await call_ai(system, prompt, function_name="morning_briefing", max_tokens=2000, enable_fmp_tools=True)
         except Exception as e:
             _logger.error(f"Briefing attempt 2 failed: {e}", exc_info=True)
 
@@ -1779,7 +1780,7 @@ Answer concisely (<200 words). Use tables for comparisons. If data is insufficie
         portfolio_id=portfolio_id,
         scope="portfolio" if portfolio_id else "general",
     )
-    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, question_text=question, enable_web_search=True)
+    return await call_ai(system, prompt, function_name="ask_henry", max_tokens=800, question_text=question, enable_web_search=True, enable_fmp_tools=True)
 
 
 # ─── FEATURE 4: STRATEGY CONFLICT RESOLUTION ────────────────────────────────
@@ -3232,3 +3233,74 @@ Answer these questions with specific dollar amounts:
             pass
 
         return targets
+
+
+# ─── HOMEPAGE SURFACES (Gemini + FMP function-calling) ─────────────────────
+#
+# Thin wrappers fronted by /api/homepage routes. Each one routes to Gemini
+# with `enable_fmp_tools=True`, so Gemini fetches its own data via the
+# per-lane tool subset configured in `gemini_tools.GEMINI_TOOL_SETS`.
+# Outputs are 5-minute-cached at the route layer to absorb homepage refreshes.
+
+async def news_digest() -> str:
+    from app.services.ai_provider import call_ai
+    system = (
+        "You are a market news editor. Pull the most market-moving stories of "
+        "the morning using your news tools. Output 5-8 short bullets. Each bullet: "
+        "**[TICKER(S)]** — one-sentence what happened, one-sentence why it matters. "
+        "Lead with the biggest mover. No preamble, no closing remarks."
+    )
+    prompt = (
+        "Compile today's market news digest. Use getStockNews for broad headlines "
+        "and getStockNewsSentiment to gauge tone. Focus on actionable single-name "
+        "moves and macro headlines that affect positioning."
+    )
+    return await call_ai(
+        system, prompt,
+        function_name="news_digest",
+        max_tokens=900,
+        enable_fmp_tools=True,
+    )
+
+
+async def upcoming_events(window_days: int = 7) -> str:
+    from app.services.ai_provider import call_ai
+    system = (
+        "You are a market calendar curator. Output a structured list of the "
+        "highest-impact upcoming events. Group by section: ## Earnings, "
+        "## Economic releases, ## Dividends/Splits, ## IPOs. Within each, one "
+        "line per event: `MM/DD — TICKER/EVENT — short context`. Drop sections "
+        "that have nothing in the window. No preamble."
+    )
+    prompt = (
+        f"List the most important market events in the next {window_days} days. "
+        "Use getEarningsCalendar, getEconomicCalendar, getDividendsCalendar, "
+        "getStockSplitCalendar, getIPOCalendar. Cap total to ~20 highest-impact items."
+    )
+    return await call_ai(
+        system, prompt,
+        function_name="upcoming_events",
+        max_tokens=900,
+        enable_fmp_tools=True,
+    )
+
+
+async def sector_analysis() -> str:
+    from app.services.ai_provider import call_ai
+    system = (
+        "You are a sector strategist. Output two short sections: "
+        "**Leaders / Laggards** (4-6 bullets, sector + 1d/5d perf + 1-line driver) "
+        "and **Rotation read** (2-3 sentences on what the sector tape is telling us). "
+        "No preamble."
+    )
+    prompt = (
+        "Analyze today's sector tape. Use getSectorPerformance for current perf, "
+        "getSectorPE / getIndustryPE for relative valuation context. Identify "
+        "leaders, laggards, and any rotation signal."
+    )
+    return await call_ai(
+        system, prompt,
+        function_name="sector_analysis",
+        max_tokens=800,
+        enable_fmp_tools=True,
+    )

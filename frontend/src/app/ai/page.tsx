@@ -15,6 +15,7 @@ import { renderMarkdown } from "@/lib/markdown";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import OnboardingWizard from "@/components/OnboardingWizard";
+import { NewsDigestCard, UpcomingEventsCard, SectorAnalysisCard } from "@/components/ai/MarketContextCards";
 import DottedGlowBackground from "@/components/ui/dotted-glow-background";
 import CardSpotlight from "@/components/ui/card-spotlight";
 import {
@@ -840,6 +841,9 @@ export default function HomePage() {
         <PortfolioCommentaryCard portfolios={portfolios} />
         <SectorCard intel={intel} loading={intelLoading} />
         <NewsCard intel={intel} loading={intelLoading} />
+        <NewsDigestCard />
+        <UpcomingEventsCard />
+        <SectorAnalysisCard />
         <WinsLossesCard />
         <PlayCard actions={actions} intel={intel} />
         <ActionsQueueCard actions={actions} onApprove={handleApprove} />

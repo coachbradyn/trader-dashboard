@@ -766,6 +766,20 @@ export const api = {
       `/ai/market-intel${refresh ? "?refresh=true" : ""}`
     ),
 
+  // ── Gemini + FMP function-calling homepage surfaces ─────────────────
+  getNewsDigest: () =>
+    fetchApi<{ text: string; generated_at: number; cache_ttl_seconds: number }>(
+      "/homepage/news-digest"
+    ),
+  getUpcomingEvents: (window = 7) =>
+    fetchApi<{ text: string; generated_at: number; cache_ttl_seconds: number }>(
+      `/homepage/upcoming-events?window=${window}`
+    ),
+  getSectorAnalysis: () =>
+    fetchApi<{ text: string; generated_at: number; cache_ttl_seconds: number }>(
+      "/homepage/sector-analysis"
+    ),
+
   // Consolidates portfolios + pending actions + action stats into one
   // request so the home page doesn't fire three parallel fetches on each
   // poll. See backend/app/api/market_intel.py:home_snapshot.

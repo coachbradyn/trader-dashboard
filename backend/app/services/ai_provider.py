@@ -9,7 +9,7 @@ Falls back to Claude if Gemini fails.
 import time
 import logging
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,10 @@ FUNCTION_ROUTING = {
     "memory_extraction": "gemini",
     "price_targets_gemini": "gemini",
     "bull_bear_thesis": "gemini",
+    # Homepage surfaces (Gemini with FMP function-calling)
+    "news_digest": "gemini",
+    "upcoming_events": "gemini",
+    "sector_analysis": "gemini",
 }
 
 # Keywords that escalate Ask Henry to Claude
@@ -52,6 +56,9 @@ _GEMINI_TEMPERATURE: dict[str, float] = {
     "bull_bear_thesis": 0.4,
     "screener_analysis": 0.5,
     "memory_extraction": 0.4,
+    "news_digest": 0.4,
+    "upcoming_events": 0.3,
+    "sector_analysis": 0.5,
 }
 
 # Functions that should use Gemini's native JSON mode
@@ -109,6 +116,7 @@ async def call_ai(
         result, model, in_tok, out_tok = await _call_gemini(
             system, prompt, max_tokens, web_search=enable_web_search,
             temperature=gemini_temp, json_mode=gemini_json,
+            fmp_tools=enable_fmp_tools, function_name=function_name,
         )
         if result is None:
             logger.warning(f"Gemini failed for {function_name}, falling back to Claude")
@@ -223,10 +231,11 @@ async def _call_claude(
                             if block.type == "tool_use" and block.name in fmp_tool_names:
                                 from app.services.fmp_mcp import call_fmp_tool
                                 result_text = await call_fmp_tool(block.name, block.input or {})
+                                truncate_at = 12_000 if block.name == "getEarningsTranscripts" else 4_000
                                 tool_results.append({
                                     "type": "tool_result",
                                     "tool_use_id": block.id,
-                                    "content": result_text[:4000],
+                                    "content": result_text[:truncate_at],
                                 })
                                 logger.info(f"FMP tool: {block.name}({block.input}) → {len(result_text)} chars")
 
@@ -286,6 +295,7 @@ async def _call_claude(
 async def _call_gemini(
     system: str, prompt: str, max_tokens: int, web_search: bool = False,
     temperature: float | None = None, json_mode: bool = False,
+    fmp_tools: bool = False, function_name: str | None = None,
 ) -> tuple:
     """Call Gemini API. Returns (text, model, input_tokens, output_tokens).
 
@@ -297,6 +307,12 @@ async def _call_gemini(
     so briefings, ask-henry, and other high-volume calls get fresh market
     context without paying Claude rates. Grounding is a first-class Gemini
     feature (no extra latency / cost on 2.0+ Flash).
+
+    When ``fmp_tools=True`` and ``function_name`` is one of the lanes
+    configured in ``gemini_tools.GEMINI_TOOL_SETS``, the matching FMP
+    function declarations are attached and the response is processed in
+    a tool-use loop (max 8 rounds), dispatching each ``function_call``
+    back through ``call_gemini_tool``.
     """
     settings = get_settings()
     if not settings.gemini_api_key:
@@ -309,6 +325,16 @@ async def _call_gemini(
         logger.warning("google-genai package not installed, skipping Gemini")
         return (None, None, None, None)
 
+    function_declarations: list[Any] = []
+    if fmp_tools and function_name:
+        from app.services.gemini_tools import get_tools_for_function
+        function_declarations = await get_tools_for_function(function_name)
+        if function_declarations:
+            logger.info(
+                f"Gemini call ({function_name}): "
+                f"{len(function_declarations)} FMP tools attached"
+            )
+
     models = [settings.gemini_model] + [
         m.strip() for m in (settings.gemini_fallback_models or "").split(",") if m.strip()
     ]
@@ -316,53 +342,120 @@ async def _call_gemini(
     seen: set[str] = set()
     models = [m for m in models if not (m in seen or seen.add(m))]
 
+    def _build_tools():
+        out = []
+        if web_search:
+            out.append(genai.types.Tool(google_search=genai.types.GoogleSearch()))
+        if function_declarations:
+            out.append(genai.types.Tool(function_declarations=function_declarations))
+        return out
+
     last_err: Exception | None = None
     for model_name in models:
         try:
-            def _sync_call(mn=model_name):
-                client = genai.Client(api_key=settings.gemini_api_key)
-                tools = (
-                    [genai.types.Tool(google_search=genai.types.GoogleSearch())]
-                    if web_search else []
-                )
-                config_kwargs = {
-                    "system_instruction": system,
-                    "max_output_tokens": max_tokens,
-                    "temperature": temperature if temperature is not None else 0.7,
-                    "tools": tools,
-                }
-                # JSON mode forces the model to output valid JSON at
-                # the decoding level — no markdown fences, no prose.
-                # Incompatible with grounding tools (which inject
-                # citations), so we only enable it when web_search is
-                # off. This is the key fix for Gemini price targets.
-                if json_mode and not web_search:
-                    config_kwargs["response_mime_type"] = "application/json"
-                response = client.models.generate_content(
-                    model=mn,
-                    contents=prompt,
-                    config=genai.types.GenerateContentConfig(**config_kwargs),
-                )
-                # response.text can raise when content is blocked by safety
-                # filters — surface that so we try the next model.
-                try:
-                    text = response.text
-                except Exception as e:
-                    raise RuntimeError(f"response.text raised: {e}") from e
-                in_tok = None
-                out_tok = None
-                if hasattr(response, "usage_metadata") and response.usage_metadata:
-                    in_tok = getattr(response.usage_metadata, "prompt_token_count", None)
-                    out_tok = getattr(response.usage_metadata, "candidates_token_count", None)
-                return text, in_tok, out_tok
+            tool_objs = _build_tools()
+            config_kwargs = {
+                "system_instruction": system,
+                "max_output_tokens": max_tokens,
+                "temperature": temperature if temperature is not None else 0.7,
+                "tools": tool_objs,
+            }
+            # JSON mode forces the model to output valid JSON at the
+            # decoding level — no markdown fences, no prose. Incompatible
+            # with both grounding (citations) and function-calling
+            # (function_call parts), so only enable when neither is on.
+            if json_mode and not web_search and not function_declarations:
+                config_kwargs["response_mime_type"] = "application/json"
 
-            text, in_tok, out_tok = await asyncio.wait_for(
-                asyncio.to_thread(_sync_call), timeout=90.0
-            )
-            if text is None:
-                logger.warning(f"Gemini {model_name} returned None text; trying next model")
+            client = genai.Client(api_key=settings.gemini_api_key)
+            config = genai.types.GenerateContentConfig(**config_kwargs)
+
+            contents: list[Any] = [
+                genai.types.Content(
+                    role="user",
+                    parts=[genai.types.Part.from_text(text=prompt)],
+                )
+            ]
+
+            total_in = 0
+            total_out = 0
+            text_result: str | None = None
+            max_tool_rounds = 8
+
+            for round_idx in range(max_tool_rounds + 1):
+                def _sync_call(mn=model_name, ctx=contents, cfg=config):
+                    return client.models.generate_content(
+                        model=mn,
+                        contents=ctx,
+                        config=cfg,
+                    )
+
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(_sync_call), timeout=90.0
+                )
+
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    total_in += getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+                    total_out += getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+
+                candidate = (response.candidates or [None])[0]
+                parts = (candidate.content.parts if candidate and candidate.content else None) or []
+
+                function_calls = []
+                text_chunks = []
+                for part in parts:
+                    fc = getattr(part, "function_call", None)
+                    if fc and getattr(fc, "name", None):
+                        function_calls.append(fc)
+                    elif getattr(part, "text", None):
+                        text_chunks.append(part.text)
+
+                if not function_calls:
+                    text_result = "".join(text_chunks) if text_chunks else None
+                    if text_result is None:
+                        # Fallback for safety-blocked / empty responses
+                        try:
+                            text_result = response.text
+                        except Exception:
+                            text_result = None
+                    break
+
+                if round_idx == max_tool_rounds:
+                    logger.warning(
+                        f"Gemini {model_name} hit max tool rounds ({max_tool_rounds}); "
+                        f"returning partial text"
+                    )
+                    text_result = "".join(text_chunks) if text_chunks else None
+                    break
+
+                # Append model turn (with function_call parts), then dispatch
+                # each tool and append their function_response parts as a
+                # single user turn.
+                contents.append(candidate.content)
+
+                from app.services.gemini_tools import call_gemini_tool
+                response_parts = []
+                for fc in function_calls:
+                    args = dict(fc.args) if getattr(fc, "args", None) else {}
+                    result_text = await call_gemini_tool(fc.name, args)
+                    logger.info(
+                        f"Gemini FMP tool: {fc.name}({args}) → {len(result_text)} chars"
+                    )
+                    response_parts.append(
+                        genai.types.Part.from_function_response(
+                            name=fc.name,
+                            response={"result": result_text},
+                        )
+                    )
+
+                contents.append(
+                    genai.types.Content(role="user", parts=response_parts)
+                )
+
+            if text_result is None:
+                logger.warning(f"Gemini {model_name} returned no text; trying next model")
                 continue
-            return (text, model_name, in_tok, out_tok)
+            return (text_result, model_name, total_in or None, total_out or None)
 
         except asyncio.TimeoutError:
             logger.error(f"Gemini {model_name} timed out (90s)")

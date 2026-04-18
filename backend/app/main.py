@@ -646,6 +646,10 @@ app.include_router(options_router.router, prefix="/api", tags=["options"])
 from app.api import market_intel as market_intel_router  # noqa: E402
 app.include_router(market_intel_router.router, prefix="/api", tags=["ai"])
 
+# Gemini + FMP function-calling homepage surfaces (news / events / sectors)
+from app.api import homepage as homepage_router  # noqa: E402
+app.include_router(homepage_router.router, prefix="/api", tags=["homepage"])
+
 
 # ─── AI DATA-FETCHING FUNCTIONS ──────────────────────────────────────────────
 

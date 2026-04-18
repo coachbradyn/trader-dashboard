@@ -53,6 +53,21 @@ TOOL_ALLOWLIST: set[str] = {
     "getEarningsCalendar", "getEarningsSurprises",
     # Analyst
     "getPriceTarget", "getUpgradesDowngrades",
+    # Valuation & quality (added for scheduled_review / signal_evaluation /
+    # ai_portfolio_decision / conflict_resolution lanes)
+    "getDCF", "getLeveredDCF", "getOwnerEarnings",
+    "getPiotroskiScore", "getAltmanZScore",
+    # Statement depth
+    "getBalanceSheet", "getCashFlowStatement",
+    # Context
+    "getEarningsTranscripts", "getCompanyPeers", "getTreasuryRates",
+    # Gemini-lane additions (calendars, sectors, macro)
+    # — used by morning_briefing / news_digest / upcoming_events /
+    #   sector_analysis / ask_henry. Missing names surface as a startup
+    #   WARN log so renames are caught immediately.
+    "getEconomicCalendar",
+    "getDividendsCalendar", "getStockSplitCalendar", "getIPOCalendar",
+    "getSectorPerformance", "getSectorPE", "getIndustryPE",
 }
 
 
@@ -101,9 +116,18 @@ async def get_fmp_tools(force_refresh: bool = False) -> list[dict]:
                 response = await session.list_tools()
 
                 tools = []
+                discovered_names: set[str] = set()
                 for tool in response.tools:
+                    discovered_names.add(tool.name)
                     if tool.name in TOOL_ALLOWLIST:
                         tools.append(_mcp_tool_to_anthropic(tool))
+
+                missing = TOOL_ALLOWLIST - discovered_names
+                if missing:
+                    logger.warning(
+                        f"FMP MCP: {len(missing)} allowlisted tools missing from catalog: "
+                        f"{sorted(missing)}"
+                    )
 
                 async with _cache_lock:
                     _cached_tools = tools
